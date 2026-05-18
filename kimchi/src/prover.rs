@@ -57,6 +57,40 @@ use std::collections::HashMap;
 /// The result of a proof creation or verification.
 type Result<T> = core::result::Result<T, ProverError>;
 
+fn commit_evaluations_non_hiding_for_prover<G, Srs>(
+    srs: &Srs,
+    domain: D<G::ScalarField>,
+    evals: &Evaluations<G::ScalarField, D<G::ScalarField>>,
+    msm_kind: &'static str,
+) -> PolyComm<G>
+where
+    G: CommitmentCurve,
+    G::ScalarField: FftField,
+    Srs: poly_commitment::SRS<G>,
+{
+    let _ = msm_kind;
+    // Central insertion point for an o1js gpuProving MSM override.
+    srs.commit_evaluations_non_hiding(domain, evals)
+}
+
+fn commit_evaluations_for_prover<G, Srs, RNG>(
+    srs: &Srs,
+    domain: D<G::ScalarField>,
+    evals: &Evaluations<G::ScalarField, D<G::ScalarField>>,
+    rng: &mut RNG,
+    msm_kind: &'static str,
+) -> BlindedCommitment<G>
+where
+    G: CommitmentCurve,
+    G::ScalarField: FftField,
+    Srs: poly_commitment::SRS<G>,
+    RNG: RngCore + CryptoRng,
+{
+    let _ = msm_kind;
+    // Central insertion point for an o1js gpuProving MSM override.
+    srs.commit_evaluations(domain, evals, rng)
+}
+
 /// Helper to quickly test if a witness satisfies a constraint
 macro_rules! check_constraint {
     ($index:expr, $evaluation:expr) => {{
@@ -324,9 +358,12 @@ where
                     );
 
                 // TODO: make this a function rather no? mask_with_custom()
-                let witness_com = index
-                    .srs
-                    .commit_evaluations_non_hiding(index.cs.domain.d1, &witness_eval);
+                let witness_com = commit_evaluations_non_hiding_for_prover(
+                    &index.srs,
+                    index.cs.domain.d1,
+                    &witness_eval,
+                    "witness-column-commitment",
+                );
                 let com = index
                     .srs
                     .mask_custom(witness_com, &blinder)
@@ -568,7 +605,15 @@ where
             //~~ * Commit each of the sorted polynomials.
             let sorted_comms: Vec<_> = sorted
                 .iter()
-                .map(|v| index.srs.commit_evaluations(index.cs.domain.d1, v, rng))
+                .map(|v| {
+                    commit_evaluations_for_prover(
+                        &index.srs,
+                        index.cs.domain.d1,
+                        v,
+                        rng,
+                        "lookup-sorted-commitment",
+                    )
+                })
                 .collect();
 
             //~~ * Absorb each commitments to the sorted polynomials.
@@ -621,9 +666,13 @@ where
             )?;
 
             //~~ * Commit to the aggregation polynomial.
-            let aggreg_comm = index
-                .srs
-                .commit_evaluations(index.cs.domain.d1, &aggreg, rng);
+            let aggreg_comm = commit_evaluations_for_prover(
+                &index.srs,
+                index.cs.domain.d1,
+                &aggreg,
+                rng,
+                "lookup-aggregation-commitment",
+            );
 
             //~~ * Absorb the commitment to the aggregation polynomial with the Fq-Sponge.
             absorb_commitment(&mut fq_sponge, &aggreg_comm.commitment);
