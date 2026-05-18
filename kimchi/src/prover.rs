@@ -68,7 +68,12 @@ where
     G::ScalarField: FftField,
     Srs: poly_commitment::SRS<G>,
 {
-    let _ = msm_kind;
+    eprintln!(
+        "[o1js gpu-proving] msm kind={} hiding=non_hiding domain_size={} eval_count={}",
+        msm_kind,
+        domain.size(),
+        evals.evals.len()
+    );
     // Central insertion point for an o1js gpuProving MSM override.
     srs.commit_evaluations_non_hiding(domain, evals)
 }
@@ -86,7 +91,12 @@ where
     Srs: poly_commitment::SRS<G>,
     RNG: RngCore + CryptoRng,
 {
-    let _ = msm_kind;
+    eprintln!(
+        "[o1js gpu-proving] msm kind={} hiding=blinded domain_size={} eval_count={}",
+        msm_kind,
+        domain.size(),
+        evals.evals.len()
+    );
     // Central insertion point for an o1js gpuProving MSM override.
     srs.commit_evaluations(domain, evals, rng)
 }
@@ -359,7 +369,7 @@ where
 
                 // TODO: make this a function rather no? mask_with_custom()
                 let witness_com = commit_evaluations_non_hiding_for_prover(
-                    &index.srs,
+                    index.srs.as_ref(),
                     index.cs.domain.d1,
                     &witness_eval,
                     "witness-column-commitment",
@@ -607,7 +617,7 @@ where
                 .iter()
                 .map(|v| {
                     commit_evaluations_for_prover(
-                        &index.srs,
+                        index.srs.as_ref(),
                         index.cs.domain.d1,
                         v,
                         rng,
@@ -667,7 +677,7 @@ where
 
             //~~ * Commit to the aggregation polynomial.
             let aggreg_comm = commit_evaluations_for_prover(
-                &index.srs,
+                index.srs.as_ref(),
                 index.cs.domain.d1,
                 &aggreg,
                 rng,
