@@ -117,6 +117,7 @@ pub mod gate_vector;
 pub mod poly_comm;
 /// Curves
 pub mod projective;
+pub mod msm;
 
 /// SRS
 pub mod srs;

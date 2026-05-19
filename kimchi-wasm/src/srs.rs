@@ -1,5 +1,8 @@
 use crate::wasm_vector::WasmVector;
-use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, EvaluationDomain, Evaluations};
+use ark_poly::{
+    univariate::DensePolynomial, DenseUVPolynomial, EvaluationDomain, Evaluations,
+    Radix2EvaluationDomain as D,
+};
 use core::ops::Deref;
 use paste::paste;
 use poly_commitment::{
@@ -200,14 +203,14 @@ macro_rules! impl_srs {
                 domain_size: i32,
                 evals: WasmFlatVector<$WasmF>,
             ) -> Result<$WasmPolyComm, JsValue> {
-                let x_domain = EvaluationDomain::<$F>::new(domain_size as usize).ok_or_else(|| {
+                let x_domain = D::<$F>::new(domain_size as usize).ok_or_else(|| {
                     JsValue::from_str("caml_pasta_fp_urs_commit_evaluations")
                 })?;
 
                 let evals = evals.into_iter().map(Into::into).collect();
-                let p = Evaluations::<$F>::from_vec_and_domain(evals, x_domain).interpolate();
+                let p = Evaluations::<$F, D<$F>>::from_vec_and_domain(evals, x_domain);
 
-                Ok(srs.commit_non_hiding(&p, 1).into())
+                Ok(srs.commit_evaluations_non_hiding(x_domain, &p).into())
             }
 
             #[wasm_bindgen]
