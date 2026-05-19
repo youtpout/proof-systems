@@ -49,6 +49,13 @@ pub fn caml_pasta_fp_plonk_proof_create(
     prev_challenges: Vec<CamlFp>,
     prev_sgs: Vec<CamlGVesta>,
 ) -> Result<CamlProofWithPublic<CamlGVesta, CamlFp>, ocaml::Error> {
+    eprintln!(
+        "[o1js kimchi-stub] enter fp create witness_cols={} runtime_tables={} prev_challenges={} prev_sgs={}",
+        witness.len(),
+        runtime_tables.len(),
+        prev_challenges.len(),
+        prev_sgs.len()
+    );
     {
         index
             .as_ref()
@@ -83,6 +90,13 @@ pub fn caml_pasta_fp_plonk_proof_create(
     let index: &ProverIndex<FULL_ROUNDS, Vesta, Srs> = &index.as_ref().0;
     let runtime_tables: Vec<RuntimeTable<Fp>> =
         runtime_tables.into_iter().map(Into::into).collect();
+    eprintln!(
+        "[o1js kimchi-stub] fp prepared public_inputs={} witness_rows_col0={} runtime_tables={} prev={}",
+        index.cs.public,
+        witness[0].len(),
+        runtime_tables.len(),
+        prev.len()
+    );
 
     // public input
     let public_input = witness[0][0..index.cs.public].to_vec();
@@ -98,7 +112,9 @@ pub fn caml_pasta_fp_plonk_proof_create(
 
     // Release the runtime lock so that other threads can run using it while we generate the proof.
     runtime.releasing_runtime(|| {
+        eprintln!("[o1js kimchi-stub] fp inside releasing_runtime");
         let group_map = GroupMap::<Fq>::setup();
+        eprintln!("[o1js kimchi-stub] fp before create_recursive");
         let proof = ProverProof::create_recursive::<EFqSponge, EFrSponge, _>(
             &group_map,
             witness,
@@ -109,6 +125,7 @@ pub fn caml_pasta_fp_plonk_proof_create(
             &mut rand::rngs::OsRng,
         )
         .map_err(|e| ocaml::Error::Error(e.into()))?;
+        eprintln!("[o1js kimchi-stub] fp after create_recursive");
         Ok((proof, public_input).into())
     })
 }

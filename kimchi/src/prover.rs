@@ -76,6 +76,40 @@ fn gpu_proving_log(message: String) {
     }
 }
 
+fn poly_comm_summary<G>(commitment: &PolyComm<G>) -> String
+where
+    G: CommitmentCurve,
+{
+    let first_chunk_zero = commitment
+        .chunks
+        .first()
+        .map(|chunk| chunk.is_zero())
+        .unwrap_or(true);
+    format!(
+        "chunks={} first_chunk_zero={}",
+        commitment.chunks.len(),
+        first_chunk_zero
+    )
+}
+
+fn blinded_commitment_summary<G>(commitment: &BlindedCommitment<G>) -> String
+where
+    G: CommitmentCurve,
+{
+    let first_blinder_zero = commitment
+        .blinders
+        .chunks
+        .first()
+        .map(|blinder| blinder.is_zero())
+        .unwrap_or(true);
+    format!(
+        "{} blinders={} first_blinder_zero={}",
+        poly_comm_summary(&commitment.commitment),
+        commitment.blinders.chunks.len(),
+        first_blinder_zero
+    )
+}
+
 fn commit_evaluations_non_hiding_for_prover<G, Srs>(
     srs: &Srs,
     domain: D<G::ScalarField>,
@@ -94,7 +128,13 @@ where
         evals.evals.len()
     ));
     // Central insertion point for an o1js gpuProving MSM override.
-    srs.commit_evaluations_non_hiding(domain, evals)
+    let commitment = srs.commit_evaluations_non_hiding(domain, evals);
+    gpu_proving_log(format!(
+        "[o1js gpu-proving] msm-result kind={} hiding=non_hiding {}",
+        msm_kind,
+        poly_comm_summary(&commitment)
+    ));
+    commitment
 }
 
 fn commit_evaluations_for_prover<G, Srs, RNG>(
@@ -117,7 +157,13 @@ where
         evals.evals.len()
     ));
     // Central insertion point for an o1js gpuProving MSM override.
-    srs.commit_evaluations(domain, evals, rng)
+    let commitment = srs.commit_evaluations(domain, evals, rng);
+    gpu_proving_log(format!(
+        "[o1js gpu-proving] msm-result kind={} hiding=blinded {}",
+        msm_kind,
+        blinded_commitment_summary(&commitment)
+    ));
+    commitment
 }
 
 /// Helper to quickly test if a witness satisfies a constraint

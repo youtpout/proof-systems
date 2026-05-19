@@ -662,7 +662,19 @@ macro_rules! impl_proof {
                 prev_sgs: WasmVector<$WasmG>,
             ) -> Result<WasmProverProof, JsError> {
                 console_error_panic_hook::set_once();
-                let (maybe_proof, public_input) = crate::rayon::run_in_pool(|| {
+                log(&format!(
+                    "[o1js kimchi-wasm] enter {}_create witness_cols={} runtime_tables={} prev_challenges={} prev_sgs={}",
+                    stringify!($name),
+                    witness.0.len(),
+                    wasm_runtime_tables.len(),
+                    prev_challenges.len(),
+                    prev_sgs.len()
+                ));
+                let (maybe_proof, public_input) = {
+                    log(&format!(
+                        "[o1js kimchi-wasm] inside pool {}_create",
+                        stringify!($name)
+                    ));
                     index.0.srs.get_lagrange_basis(index.0.as_ref().cs.domain.d1);
                     let prev: Vec<RecursionChallenge<$G>> = {
                         if prev_challenges.is_empty() {
@@ -697,17 +709,34 @@ macro_rules! impl_proof {
                     let index: &ProverIndex<FULL_ROUNDS, $G, <OpeningProof<$G, FULL_ROUNDS> as poly_commitment::OpenProof<$G, FULL_ROUNDS>>::SRS> = &index.0.as_ref();
 
                     let public_input = witness[0][0..index.cs.public].to_vec();
+                    log(&format!(
+                        "[o1js kimchi-wasm] prepared {}_create public_inputs={} witness_rows_col0={} runtime_tables={} prev={}",
+                        stringify!($name),
+                        index.cs.public,
+                        witness[0].len(),
+                        rust_runtime_tables.len(),
+                        prev.len()
+                    ));
 
                     // Release the runtime lock so that other threads can run using it while we generate the proof.
                     let group_map = GroupMap::<_>::setup();
+                    log(&format!(
+                        "[o1js kimchi-wasm] before create_recursive {}_create",
+                        stringify!($name)
+                    ));
                     let maybe_proof = ProverProof::create_recursive::<
                         DefaultFqSponge<_, PlonkSpongeConstantsKimchi, FULL_ROUNDS>,
                         DefaultFrSponge<_, PlonkSpongeConstantsKimchi, FULL_ROUNDS>,
                         _>(&group_map, witness, &rust_runtime_tables, index, prev, None,
                            &mut rand::rngs::OsRng
                     );
+                    log(&format!(
+                        "[o1js kimchi-wasm] after create_recursive {}_create ok={}",
+                        stringify!($name),
+                        maybe_proof.is_ok()
+                    ));
                     (maybe_proof, public_input)
-                });
+                };
 
                 return match maybe_proof {
                     Ok(proof) => Ok((proof, public_input).into()),
