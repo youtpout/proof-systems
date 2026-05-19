@@ -35,6 +35,48 @@ use serde_with::serde_as;
 use std::{cmp::min, iter::Iterator, ops::AddAssign};
 use zeroize::Zeroize;
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
+    fn wasm_console_error(message: &str);
+}
+
+fn ipa_profile_log(message: String) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_console_error(&message);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        eprintln!("{message}");
+    }
+}
+
+fn ipa_profile_now_ms() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+fn ipa_profile_phase(phase: &str, start_ms: f64) -> f64 {
+    let end_ms = ipa_profile_now_ms();
+    ipa_profile_log(format!(
+        "[o1js ipa-profile] phase={} elapsed_ms={:.2}",
+        phase,
+        end_ms - start_ms
+    ));
+    end_ms
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(bound = "G: CanonicalDeserialize + CanonicalSerialize")]
@@ -700,6 +742,7 @@ impl<G: CommitmentCurve> SRS<G> {
         G::BaseField: PrimeField,
         G: EndoCurve,
     {
+        let total_start_ms = ipa_profile_now_ms();
         let (endo_q, endo_r) = endos::<G>();
 
         let rounds = math::ceil_log2(self.g.len());
@@ -720,6 +763,7 @@ impl<G: CommitmentCurve> SRS<G> {
         // commitments are poly com blinders, so often `[G::ScalarField::one();
         // num_chunks]` or zeroes.
         let (p, blinding_factor) = combine_polys::<G, D>(plnms, polyscale, self.g.len());
+        let mut phase_start_ms = ipa_profile_phase("combine_polys", total_start_ms);
 
         // The initial evaluation vector for polynomial commitment b_init is not
         // just the powers of a single point as in the original IPA
@@ -750,6 +794,7 @@ impl<G: CommitmentCurve> SRS<G> {
             }
             res
         };
+        phase_start_ms = ipa_profile_phase("build_b_init", phase_start_ms);
 
         // Combined polynomial p(X) evaluated at the combined eval point b_init.
         let combined_inner_product = p
@@ -758,6 +803,7 @@ impl<G: CommitmentCurve> SRS<G> {
             .zip(b_init.iter())
             .map(|(a, b)| *a * b)
             .fold(G::ScalarField::zero(), |acc, x| acc + x);
+        phase_start_ms = ipa_profile_phase("combined_inner_product", phase_start_ms);
 
         // Usually, the prover sends `combined_inner_product`` to the verifier
         // So we should absorb `combined_inner_product``
@@ -775,6 +821,7 @@ impl<G: CommitmentCurve> SRS<G> {
             let (x, y) = group_map.to_group(t);
             G::of_coordinates(x, y)
         };
+        phase_start_ms = ipa_profile_phase("sample_u_base", phase_start_ms);
 
         let mut a = p.coeffs;
         assert!(padded_length >= a.len());
@@ -790,6 +837,7 @@ impl<G: CommitmentCurve> SRS<G> {
         let mut chal_invs = vec![];
 
         // The main IPA folding loop that has log iterations.
+        let fold_start_ms = ipa_profile_now_ms();
         for _ in 0..rounds {
             let n = g.len() / 2;
             // Pedersen bases
@@ -871,6 +919,7 @@ impl<G: CommitmentCurve> SRS<G> {
             // IPA-folding bases
             g = G::combine_one_endo(endo_r, endo_q, g_lo, g_hi, &u_pre);
         }
+        phase_start_ms = ipa_profile_phase("folding_rounds", fold_start_ms);
 
         assert!(
             g.len() == 1 && a.len() == 1 && b.len() == 1,
@@ -898,6 +947,7 @@ impl<G: CommitmentCurve> SRS<G> {
             .zip(chals.iter().zip(chal_invs.iter()))
             .map(|((rand_l, rand_r), (u, u_inv))| ((*rand_l) * u_inv) + (*rand_r * u))
             .fold(blinding_factor, |acc, x| acc + x);
+        phase_start_ms = ipa_profile_phase("finalize_blinders", phase_start_ms);
 
         let d = <G::ScalarField as UniformRand>::rand(rng);
         let r_delta = <G::ScalarField as UniformRand>::rand(rng);
@@ -916,6 +966,8 @@ impl<G: CommitmentCurve> SRS<G> {
         // (?) Schnorr-like responses showing the knowledge of r_prime and a0.
         let z1 = a0 * c + d;
         let z2 = r_prime * c + r_delta;
+        let _ = ipa_profile_phase("final_delta_and_responses", phase_start_ms);
+        let _ = ipa_profile_phase("open_total", total_start_ms);
 
         OpeningProof {
             delta,

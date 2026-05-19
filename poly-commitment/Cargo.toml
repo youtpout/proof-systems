@@ -32,6 +32,8 @@ groupmap.workspace = true
 mina-curves.workspace = true
 mina-poseidon.workspace = true
 o1-utils.workspace = true
+js-sys.workspace = true
+wasm-bindgen.workspace = true
 
 ocaml = { workspace = true, optional = true }
 ocaml-gen = { workspace = true, optional = true }
