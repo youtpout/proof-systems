@@ -52,6 +52,7 @@ use poly_commitment::{
 };
 use rand_core::{CryptoRng, RngCore};
 use rayon::prelude::*;
+use serde_json::json;
 use std::collections::HashMap;
 
 /// The result of a proof creation or verification.
@@ -110,6 +111,67 @@ where
     )
 }
 
+fn curve_name_for_commitment<G>() -> &'static str
+where
+    G: CommitmentCurve,
+{
+    let type_name = std::any::type_name::<G>().to_ascii_lowercase();
+    if type_name.contains("vesta") {
+        "vesta"
+    } else if type_name.contains("pallas") {
+        "pallas"
+    } else {
+        "unknown"
+    }
+}
+
+fn maybe_emit_gpu_msm_dataset<G, Srs>(
+    srs: &Srs,
+    domain: D<G::ScalarField>,
+    evals: &Evaluations<G::ScalarField, D<G::ScalarField>>,
+    msm_kind: &'static str,
+    hiding: &'static str,
+) where
+    G: CommitmentCurve,
+    G::ScalarField: FftField + PrimeField,
+    G::BaseField: PrimeField,
+    Srs: poly_commitment::SRS<G>,
+{
+    let curve = curve_name_for_commitment::<G>();
+    if curve == "unknown" {
+        return;
+    }
+
+    let basis = srs.get_lagrange_basis(domain);
+    let event = json!({
+        "kind": msm_kind,
+        "curve": curve,
+        "hiding": hiding,
+        "domainSize": domain.size(),
+        "evalCount": evals.evals.len(),
+        "scalars": evals
+            .evals
+            .iter()
+            .map(|scalar| scalar.into_bigint().to_string())
+            .collect::<Vec<_>>(),
+        "points": basis
+            .iter()
+            .map(|poly_comm| {
+                let point = poly_comm
+                    .chunks
+                    .first()
+                    .and_then(|chunk| chunk.to_coordinates())
+                    .expect("lagrange basis commitment chunk missing");
+                json!({
+                    "x": point.0.into_bigint().to_string(),
+                    "y": point.1.into_bigint().to_string(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
+    gpu_proving_log(format!("[o1js gpu-proving dataset] {event}"));
+}
+
 fn commit_evaluations_non_hiding_for_prover<G, Srs>(
     srs: &Srs,
     domain: D<G::ScalarField>,
@@ -118,7 +180,8 @@ fn commit_evaluations_non_hiding_for_prover<G, Srs>(
 ) -> PolyComm<G>
 where
     G: CommitmentCurve,
-    G::ScalarField: FftField,
+    G::ScalarField: FftField + PrimeField,
+    G::BaseField: PrimeField,
     Srs: poly_commitment::SRS<G>,
 {
     gpu_proving_log(format!(
@@ -127,6 +190,7 @@ where
         domain.size(),
         evals.evals.len()
     ));
+    maybe_emit_gpu_msm_dataset(srs, domain, evals, msm_kind, "non_hiding");
     // Central insertion point for an o1js gpuProving MSM override.
     let commitment = srs.commit_evaluations_non_hiding(domain, evals);
     gpu_proving_log(format!(
@@ -146,7 +210,8 @@ fn commit_evaluations_for_prover<G, Srs, RNG>(
 ) -> BlindedCommitment<G>
 where
     G: CommitmentCurve,
-    G::ScalarField: FftField,
+    G::ScalarField: FftField + PrimeField,
+    G::BaseField: PrimeField,
     Srs: poly_commitment::SRS<G>,
     RNG: RngCore + CryptoRng,
 {
@@ -156,6 +221,7 @@ where
         domain.size(),
         evals.evals.len()
     ));
+    maybe_emit_gpu_msm_dataset(srs, domain, evals, msm_kind, "blinded");
     // Central insertion point for an o1js gpuProving MSM override.
     let commitment = srs.commit_evaluations(domain, evals, rng);
     gpu_proving_log(format!(
