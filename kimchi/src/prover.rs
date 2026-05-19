@@ -63,6 +63,9 @@ type Result<T> = core::result::Result<T, ProverError>;
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
     fn wasm_console_error(message: &str);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = Date, js_name = now)]
+    fn wasm_date_now() -> f64;
 }
 
 fn gpu_proving_log(message: String) {
@@ -75,6 +78,29 @@ fn gpu_proving_log(message: String) {
     {
         eprintln!("{message}");
     }
+}
+
+fn proof_profile_now_ms() -> f64 {
+    #[cfg(feature = "wasm_types")]
+    {
+        wasm_date_now()
+    }
+
+    #[cfg(not(feature = "wasm_types"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+fn proof_profile_log(phase: &str, start_ms: f64) -> f64 {
+    let end_ms = proof_profile_now_ms();
+    gpu_proving_log(format!(
+        "[o1js proof-profile] phase={} elapsed_ms={:.2}",
+        phase,
+        end_ms - start_ms
+    ));
+    end_ms
 }
 
 fn poly_comm_summary<G>(commitment: &PolyComm<G>) -> String
@@ -362,6 +388,7 @@ where
         VerifierIndex<FULL_ROUNDS, G, OpeningProof::SRS>: Clone,
     {
         internal_tracing::checkpoint!(internal_traces; create_recursive);
+        let total_start_ms = proof_profile_now_ms();
         let d1_size = index.cs.domain.d1.size();
 
         let (_, endo_r) = G::endos();
@@ -425,6 +452,7 @@ where
                 *row = <G::ScalarField as UniformRand>::rand(rng);
             }
         }
+        let mut phase_start_ms = proof_profile_log("pad_witness", total_start_ms);
 
         //~ 1. Setup the Fq-Sponge.
         internal_tracing::checkpoint!(internal_traces; set_up_fq_sponge);
@@ -468,6 +496,7 @@ where
         //~    the prover also provides evaluations of the public polynomial to help the verifier circuit.
         //~    This is why we need to absorb the commitment to the public polynomial at this point.
         absorb_commitment(&mut fq_sponge, &public_comm);
+        phase_start_ms = proof_profile_log("setup_fq_sponge_and_public", phase_start_ms);
 
         //~ 1. Commit to the witness columns by creating `COLUMNS` hiding commitments.
         //~
@@ -526,6 +555,7 @@ where
         w_comm
             .iter()
             .for_each(|c| absorb_commitment(&mut fq_sponge, &c.commitment));
+        phase_start_ms = proof_profile_log("commit_witness_columns", phase_start_ms);
 
         //~ 1. Compute the witness polynomials by interpolating each `COLUMNS` of the witness.
         //~    As mentioned above, we commit using the evaluations form rather than the coefficients
@@ -543,6 +573,7 @@ where
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
+        phase_start_ms = proof_profile_log("interpolate_witness_columns", phase_start_ms);
 
         let mut lookup_context = LookupContext::default();
 
@@ -778,6 +809,7 @@ where
             lookup_context.joint_lookup_table_d8 = Some(joint_lookup_table_d8);
             lookup_context.joint_lookup_table = Some(joint_lookup_table);
         }
+        phase_start_ms = proof_profile_log("lookup_setup", phase_start_ms);
 
         //~ 1. Sample $\beta$ with the Fq-Sponge.
         let beta = fq_sponge.challenge();
@@ -828,6 +860,7 @@ where
             lookup_context.aggreg_coeffs = Some(aggreg_coeffs);
             lookup_context.aggreg8 = Some(aggreg8);
         }
+        phase_start_ms = proof_profile_log("lookup_aggregation", phase_start_ms);
 
         let column_evaluations = index.column_evaluations.get();
 
@@ -840,6 +873,7 @@ where
 
         //~ 1. Absorb the permutation aggregation polynomial $z$ with the Fq-Sponge.
         absorb_commitment(&mut fq_sponge, &z_comm.commitment);
+        phase_start_ms = proof_profile_log("permutation_aggregation", phase_start_ms);
 
         //~ 1. Sample $\alpha'$ with the Fq-Sponge.
         let alpha_chal = ScalarChallenge::new(fq_sponge.challenge());
@@ -1075,6 +1109,7 @@ where
             quotient += &bnd; // already divided by Z_H
             quotient
         };
+        phase_start_ms = proof_profile_log("compute_quotient_poly", phase_start_ms);
 
         //~ 1. commit (hiding) to the quotient polynomial $t$
         let t_comm = { index.srs.commit(&quotient_poly, 7 * num_chunks, rng) };
@@ -1351,6 +1386,7 @@ where
         //~ 1. Evaluate the ft polynomial at $\zeta\omega$ only.
         internal_tracing::checkpoint!(internal_traces; ft_eval_zeta_omega);
         let ft_eval1 = ft.evaluate(&zeta_omega);
+        phase_start_ms = proof_profile_log("evaluate_and_ft", phase_start_ms);
 
         //~ 1. Setup the Fr-Sponge
         let fq_sponge_before_evaluations = fq_sponge.clone();
@@ -1620,6 +1656,7 @@ where
                 ))
             }
         }
+        phase_start_ms = proof_profile_log("build_opening_polynomials", phase_start_ms);
 
         //~ 1. Create an aggregated evaluation proof for all of these polynomials at $\zeta$ and $\zeta\omega$ using $u$ and $v$.
         internal_tracing::checkpoint!(internal_traces; create_aggregated_ipa);
@@ -1633,6 +1670,7 @@ where
             fq_sponge_before_evaluations,
             rng,
         );
+        let _ = proof_profile_log("create_aggregated_ipa", phase_start_ms);
 
         let lookup = lookup_context
             .aggreg_comm
@@ -1657,6 +1695,7 @@ where
         };
 
         internal_tracing::checkpoint!(internal_traces; create_recursive_done);
+        let _ = proof_profile_log("create_recursive_total", total_start_ms);
 
         Ok(proof)
     }
