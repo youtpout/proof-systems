@@ -57,6 +57,25 @@ use std::collections::HashMap;
 /// The result of a proof creation or verification.
 type Result<T> = core::result::Result<T, ProverError>;
 
+#[cfg(feature = "wasm_types")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
+    fn wasm_console_error(message: &str);
+}
+
+fn gpu_proving_log(message: String) {
+    #[cfg(feature = "wasm_types")]
+    {
+        wasm_console_error(&message);
+    }
+
+    #[cfg(not(feature = "wasm_types"))]
+    {
+        eprintln!("{message}");
+    }
+}
+
 fn commit_evaluations_non_hiding_for_prover<G, Srs>(
     srs: &Srs,
     domain: D<G::ScalarField>,
@@ -68,12 +87,12 @@ where
     G::ScalarField: FftField,
     Srs: poly_commitment::SRS<G>,
 {
-    eprintln!(
+    gpu_proving_log(format!(
         "[o1js gpu-proving] msm kind={} hiding=non_hiding domain_size={} eval_count={}",
         msm_kind,
         domain.size(),
         evals.evals.len()
-    );
+    ));
     // Central insertion point for an o1js gpuProving MSM override.
     srs.commit_evaluations_non_hiding(domain, evals)
 }
@@ -91,12 +110,12 @@ where
     Srs: poly_commitment::SRS<G>,
     RNG: RngCore + CryptoRng,
 {
-    eprintln!(
+    gpu_proving_log(format!(
         "[o1js gpu-proving] msm kind={} hiding=blinded domain_size={} eval_count={}",
         msm_kind,
         domain.size(),
         evals.evals.len()
-    );
+    ));
     // Central insertion point for an o1js gpuProving MSM override.
     srs.commit_evaluations(domain, evals, rng)
 }
