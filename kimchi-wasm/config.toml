@@ -1,11 +1,11 @@
 [build]
 rustflags = [
   "-C",
-  "target-feature=+atomics,+bulk-memory",
+  "target-feature=+atomics,+bulk-memory,+simd128",
 ]
 
 [target.wasm32-unknown-unknown]
 rustflags = [
   "-C",
-  "target-feature=+atomics,+bulk-memory",
+  "target-feature=+atomics,+bulk-memory,+simd128",
 ]
