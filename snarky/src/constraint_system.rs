@@ -144,6 +144,8 @@ pub struct EndoscaleRound<A> {
     pub b2: A,
     pub b3: A,
     pub b4: A,
+    /// The inverse used by the EndoMul gate (column 2 of the row).
+    pub inv: A,
 }
 
 #[derive(Debug)]
@@ -1604,7 +1606,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     let vars = vec![
                         Some(self.reduce_to_var(labels, loc, round.xt)),
                         Some(self.reduce_to_var(labels, loc, round.yt)),
-                        None,
+                        Some(self.reduce_to_var(labels, loc, round.inv)),
                         None,
                         Some(self.reduce_to_var(labels, loc, round.xp)),
                         Some(self.reduce_to_var(labels, loc, round.yp)),

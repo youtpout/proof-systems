@@ -11,7 +11,10 @@
 //! types and lets the Rust side own reduction and gate layout.
 
 use kimchi::circuits::gate::caml::CamlCircuitGate;
-use snarky::constraint_system::{BasicSnarkyConstraint, SnarkyConstraintSystem, SnarkyCvar};
+use snarky::constraint_system::{
+    BasicInput, BasicSnarkyConstraint, EcAddCompleteInput, EcEndoscaleInput, EndoscaleRound,
+    EndoscaleScalarRound, KimchiConstraint, ScaleRound, SnarkyConstraintSystem, SnarkyCvar,
+};
 
 /// A circuit variable, as a flattened linear combination.
 #[derive(Clone, Debug)]
@@ -162,6 +165,180 @@ macro_rules! impl_snarky_cs {
                         .iter()
                         .map(Into::into)
                         .collect()
+                }
+
+                //
+                // kimchi custom constraints
+                //
+
+                fn conv_scaled((s, x): (CamlField, CamlLinCom)) -> (Field, LinComCvar<Field>) {
+                    (s.into(), conv(x))
+                }
+
+                fn conv_pair((x, y): (CamlLinCom, CamlLinCom)) -> (LinComCvar<Field>, LinComCvar<Field>) {
+                    (conv(x), conv(y))
+                }
+
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_basic>](
+                    mut cs: $cs_ptr,
+                    l: (CamlField, CamlLinCom),
+                    r: (CamlField, CamlLinCom),
+                    o: (CamlField, CamlLinCom),
+                    m: CamlField,
+                    c: CamlField,
+                ) {
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::Basic(BasicInput {
+                            l: conv_scaled(l),
+                            r: conv_scaled(r),
+                            o: conv_scaled(o),
+                            m: m.into(),
+                            c: c.into(),
+                        }),
+                    );
+                }
+
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_poseidon>](mut cs: $cs_ptr, state: Vec<Vec<CamlLinCom>>) {
+                    let state = state
+                        .into_iter()
+                        .map(|row| row.into_iter().map(conv).collect())
+                        .collect();
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::Poseidon(state),
+                    );
+                }
+
+                #[allow(clippy::too_many_arguments)]
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_ec_add_complete>](
+                    mut cs: $cs_ptr,
+                    p1: (CamlLinCom, CamlLinCom),
+                    p2: (CamlLinCom, CamlLinCom),
+                    p3: (CamlLinCom, CamlLinCom),
+                    inf: CamlLinCom,
+                    same_x: CamlLinCom,
+                    slope: CamlLinCom,
+                    inf_z: CamlLinCom,
+                    x21_inv: CamlLinCom,
+                ) {
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::EcAddComplete(EcAddCompleteInput {
+                            p1: conv_pair(p1),
+                            p2: conv_pair(p2),
+                            p3: conv_pair(p3),
+                            inf: conv(inf),
+                            same_x: conv(same_x),
+                            slope: conv(slope),
+                            inf_z: conv(inf_z),
+                            x21_inv: conv(x21_inv),
+                        }),
+                    );
+                }
+
+                /// Each round is `(accs, bits, ss, base, n_prev, n_next)`.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_ec_scale>](
+                    mut cs: $cs_ptr,
+                    state: Vec<(
+                        Vec<(CamlLinCom, CamlLinCom)>,
+                        Vec<CamlLinCom>,
+                        Vec<CamlLinCom>,
+                        (CamlLinCom, CamlLinCom),
+                        CamlLinCom,
+                        CamlLinCom,
+                    )>,
+                ) {
+                    let state = state
+                        .into_iter()
+                        .map(|(accs, bits, ss, base, n_prev, n_next)| ScaleRound {
+                            accs: accs.into_iter().map(conv_pair).collect(),
+                            bits: bits.into_iter().map(conv).collect(),
+                            ss: ss.into_iter().map(conv).collect(),
+                            base: conv_pair(base),
+                            n_prev: conv(n_prev),
+                            n_next: conv(n_next),
+                        })
+                        .collect();
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::EcScale(state),
+                    );
+                }
+
+                /// Each round is the 14 variables in declaration order:
+                /// `[xt, yt, xp, yp, n_acc, xr, yr, s1, s3, b1, b2, b3, b4, inv]`.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_ec_endoscale>](
+                    mut cs: $cs_ptr,
+                    state: Vec<Vec<CamlLinCom>>,
+                    xs: CamlLinCom,
+                    ys: CamlLinCom,
+                    n_acc: CamlLinCom,
+                ) {
+                    let state = state
+                        .into_iter()
+                        .map(|round| {
+                            let mut it = round.into_iter().map(conv);
+                            let mut n = || it.next().expect("endoscale round: 14 variables");
+                            EndoscaleRound {
+                                xt: n(), yt: n(), xp: n(), yp: n(), n_acc: n(),
+                                xr: n(), yr: n(), s1: n(), s3: n(),
+                                b1: n(), b2: n(), b3: n(), b4: n(), inv: n(),
+                            }
+                        })
+                        .collect();
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::EcEndoscale(EcEndoscaleInput {
+                            state,
+                            xs: conv(xs),
+                            ys: conv(ys),
+                            n_acc: conv(n_acc),
+                        }),
+                    );
+                }
+
+                /// Each round is the 14 variables in declaration order:
+                /// `[n0, n8, a0, b0, a8, b8, x0, x1, x2, x3, x4, x5, x6, x7]`.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_ec_endoscalar>](
+                    mut cs: $cs_ptr,
+                    state: Vec<Vec<CamlLinCom>>,
+                ) {
+                    let state = state
+                        .into_iter()
+                        .map(|round| {
+                            let mut it = round.into_iter().map(conv);
+                            let mut n = || it.next().expect("endoscalar round: 14 variables");
+                            EndoscaleScalarRound {
+                                n0: n(), n8: n(),
+                                a0: n(), b0: n(), a8: n(), b8: n(),
+                                x0: n(), x1: n(), x2: n(), x3: n(),
+                                x4: n(), x5: n(), x6: n(), x7: n(),
+                            }
+                        })
+                        .collect();
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::EcEndoscalar(state),
+                    );
                 }
 
                 #[ocaml_gen::func]
