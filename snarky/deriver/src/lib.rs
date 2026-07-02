@@ -1,6 +1,6 @@
 //! snarky-deriver adds a number of derives to make snarky easier to use.
 //! Refer to the
-//! [snarky](https://o1-labs.github.io/proof-systems/rustdoc/kimchi/snarky/index.html)
+//! [snarky](https://o1-labs.github.io/proof-systems/rustdoc/snarky/index.html)
 //! documentation.
 
 extern crate proc_macro;
@@ -16,14 +16,14 @@ use syn::{
 };
 
 /// The [SnarkyType] derive macro.
-/// It generates implementations of \[`kimchi::snarky::SnarkyType`\],
+/// It generates implementations of \[`snarky::SnarkyType`\],
 /// as long as your structure's fields implement that type as well.
 /// It works very similarly to \[`serde`\].
 ///
 /// For example:
 ///
 /// ```ignore
-/// #[derive(kimchi::SnarkyType)]
+/// #[derive(snarky::SnarkyType)]
 /// struct MyType<F> where F: PrimeField {
 ///   // ...
 /// }
@@ -34,7 +34,7 @@ use syn::{
 /// `F`:
 ///
 /// ```text
-/// #[derive(kimchi::SnarkyType)]
+/// #[derive(snarky::SnarkyType)]
 /// #[snarky(field = "G::ScalarField")]
 /// struct MyType<G> where G: KimchiCurve {
 /// ```
@@ -42,7 +42,7 @@ use syn::{
 /// You can skip a field in the serializer:
 ///
 /// ```text
-/// #[derive(kimchi::SnarkyType)]
+/// #[derive(snarky::SnarkyType)]
 /// struct MyType<F> where F: PrimeField {
 ///  #[snarky(skip)]
 /// field_to_skip: NotASnarkyType,
@@ -52,7 +52,7 @@ use syn::{
 /// as well as a custom auxiliary function and type:
 ///
 /// ```text
-/// #[derive(kimchi::SnarkyType)]
+/// #[derive(snarky::SnarkyType)]
 /// #[snarky(check_fn = "my_check_fn")]
 /// #[snarky(auxiliary_fn = "my_auxiliary_fn")]
 /// #[snarky(auxiliary_type = "MyAuxiliaryType")]
@@ -63,7 +63,7 @@ use syn::{
 /// You can specify it yourself by using the `value` helper attribute:
 ///
 /// ```text
-/// #[derive(kimchi::SnarkyType)]
+/// #[derive(snarky::SnarkyType)]
 /// #[snarky(value = "MyOutOfCircuitType")]
 /// struct MyType<F> where F: PrimeField {
 /// ```
@@ -207,12 +207,14 @@ pub fn derive_snarky_type(item: TokenStream) -> TokenStream {
         panic!("to use `#[derive(SnarkyType)]` your struct must at least have one field");
     }
 
-    // this deriver is used by both external users, and the kimchi crate itself,
-    // so we need to change the path to kimchi depending on the context
-    let lib_path = if std::env::var("CARGO_PKG_NAME").unwrap() == "kimchi" {
+    // this deriver is used by both external users, and the snarky crate itself,
+    // so we need to change the path to snarky depending on the context.
+    // CARGO_CRATE_NAME (rather than CARGO_PKG_NAME) distinguishes the snarky
+    // lib and its unit tests from snarky's own integration tests.
+    let lib_path = if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("snarky") {
         "crate"
     } else {
-        "::kimchi"
+        "::snarky"
     };
     let snarky_type_path_str = format!("{lib_path}::SnarkyType<{impl_field}>");
     let snarky_type_path: syn::Path = syn::parse_str(&snarky_type_path_str).unwrap();
@@ -267,6 +269,7 @@ pub fn derive_snarky_type(item: TokenStream) -> TokenStream {
             let aux_i = format_ident!("aux_{}", idx);
             to_cvars_calls.push(quote! {
                 let (#cvar_i, #aux_i) = self.#field.to_cvars();
+                cvars.extend(#cvar_i);
             });
         }
 
@@ -355,8 +358,12 @@ pub fn derive_snarky_type(item: TokenStream) -> TokenStream {
 
     let check = {
         quote! {
-            fn check(&self, cs: &mut RunState<#impl_field_path>) -> SnarkyResult<()> {
-                #( self.#field_names.check(cs)? );*
+            fn check(
+                &self,
+                cs: &mut RunState<#impl_field_path>,
+                loc: std::borrow::Cow<'static, str>,
+            ) -> SnarkyResult<()> {
+                #( self.#field_names.check(cs, loc.clone())?; )*
                 Ok(())
             }
         }

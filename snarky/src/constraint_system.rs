@@ -5,16 +5,14 @@
 //! as well as the logic that constructs the permutation,
 //! and the symbolic execution trace table (both for compilation and at runtime).
 
-use crate::{
-    circuits::{
-        gate::{CircuitGate, GateType},
-        polynomials::{
-            generic::GENERIC_COEFFS,
-            poseidon::{ROUNDS_PER_HASH, ROUNDS_PER_ROW, SPONGE_WIDTH},
-        },
-        wires::{Wire, COLUMNS, PERMUTS},
+use crate::{constants::Constants, cvar::FieldVar, runner::WitnessGeneration};
+use kimchi::circuits::{
+    gate::{CircuitGate, GateType},
+    polynomials::{
+        generic::GENERIC_COEFFS,
+        poseidon::{ROUNDS_PER_HASH, ROUNDS_PER_ROW, SPONGE_WIDTH},
     },
-    snarky::{constants::Constants, cvar::FieldVar, runner::WitnessGeneration},
+    wires::{Wire, COLUMNS, PERMUTS},
 };
 use ark_ff::PrimeField;
 use itertools::Itertools;
@@ -693,7 +691,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
 
         let digest = {
             use o1_utils::hasher::CryptoDigest as _;
-            let circuit = crate::circuits::gate::Circuit::new(public_input_size, &rust_gates);
+            let circuit = kimchi::circuits::gate::Circuit::new(public_input_size, &rust_gates);
             circuit.digest()
         };
 
@@ -1685,7 +1683,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             }
         }
     }
-    pub(crate) fn sponge_params(&self) -> mina_poseidon::poseidon::ArithmeticSpongeParams<Field> {
+    pub(crate) fn sponge_params(
+        &self,
+    ) -> mina_poseidon::poseidon::ArithmeticSpongeParams<Field, { crate::FULL_ROUNDS }> {
         self.constants.poseidon.clone()
     }
 }

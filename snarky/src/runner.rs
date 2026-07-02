@@ -12,16 +12,13 @@ use super::{
     range_checks::range_check,
 };
 use crate::{
-    circuits::gate::CircuitGate,
-    curve::KimchiCurve,
-    snarky::{
-        boolean::Boolean,
-        constraint_system::{BasicSnarkyConstraint, KimchiConstraint, SnarkyConstraintSystem},
-        cvar::FieldVar,
-        errors::SnarkyRuntimeError,
-        snarky_type::SnarkyType,
-    },
+    boolean::Boolean,
+    constraint_system::{BasicSnarkyConstraint, KimchiConstraint, SnarkyConstraintSystem},
+    cvar::FieldVar,
+    errors::SnarkyRuntimeError,
+    snarky_type::SnarkyType,
 };
+use kimchi::{circuits::gate::CircuitGate, curve::KimchiCurve};
 use ark_ff::PrimeField;
 
 impl<F> Constraint<F>
@@ -163,7 +160,7 @@ where
     /// and the size of the public output.
     /// If `with_system` is set it will create a [SnarkyConstraintSystem] in
     /// order to compile a new circuit.
-    pub fn new<Curve: KimchiCurve<ScalarField = F>>(
+    pub fn new<Curve: KimchiCurve<{ crate::FULL_ROUNDS }, ScalarField = F>>(
         public_input_size: usize,
         public_output_size: usize,
         with_system: bool,
@@ -653,7 +650,9 @@ where
         Witness(witness)
     }
 
-    pub(crate) fn poseidon_params(&self) -> mina_poseidon::poseidon::ArithmeticSpongeParams<F> {
+    pub(crate) fn poseidon_params(
+        &self,
+    ) -> mina_poseidon::poseidon::ArithmeticSpongeParams<F, { crate::FULL_ROUNDS }> {
         // TODO: do we really want to panic here?
         self.system.as_ref().map(|sys| sys.sponge_params()).unwrap()
     }

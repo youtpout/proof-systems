@@ -52,7 +52,7 @@ fn apply_mds_matrix<F: Field, SC: SpongeConstants>(
 /// - Add the round constants to the state.
 ///
 /// The function has side-effect and the parameter state is modified.
-pub(crate) fn full_round<F: Field, SC: SpongeConstants, const FULL_ROUNDS: usize>(
+pub fn full_round<F: Field, SC: SpongeConstants, const FULL_ROUNDS: usize>(
     params: &ArithmeticSpongeParams<F, FULL_ROUNDS>,
     state: &mut [F],
     r: usize,

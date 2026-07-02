@@ -1,0 +1,39 @@
+[package]
+name = "snarky"
+version.workspace = true
+description = "Rust port of the snarky circuit-writing DSL, targeting the kimchi proof system"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://o1-labs.github.io/proof-systems/rustdoc/snarky/index.html"
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+groupmap.workspace = true
+itertools.workspace = true
+kimchi.workspace = true
+log.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+num-bigint.workspace = true
+o1-utils.workspace = true
+ocaml = { workspace = true, optional = true }
+ocaml-gen = { workspace = true, optional = true }
+poly-commitment.workspace = true
+rand = { workspace = true, features = ["std", "std_rng"] }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+env_logger.workspace = true
+rand = { workspace = true, features = ["std_rng"] }
+snarky-deriver.workspace = true
+
+[features]
+default = []
+ocaml_types = ["ocaml", "ocaml-gen"]
