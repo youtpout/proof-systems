@@ -58,6 +58,9 @@ pub mod pasta_fq_poseidon;
 /// Linearization helpers
 pub mod linearization;
 
+/// The snarky constraint system (Rust snarky backend for OCaml front ends)
+pub mod snarky_constraint_system;
+
 /// Handy re-exports
 pub use {
     kimchi::circuits::{
