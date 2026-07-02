@@ -144,8 +144,8 @@ pub fn add_complete<F: PrimeField>(
     let (x1, y1) = (p1.x.clone(), p1.y.clone());
     let (x2, y2) = (p2.x.clone(), p2.y.clone());
     type Vars3<F> = (FieldVar<F>, FieldVar<F>, FieldVar<F>);
-    let ((x3, y3, inf), (same_x, slope, inf_z), x21_inv): (Vars3<F>, Vars3<F>, FieldVar<F>) = sys
-        .compute(loc.clone(), move |env| {
+    let ((x3, y3, inf), (same_x, slope, inf_z), x21_inv): (Vars3<F>, Vars3<F>, FieldVar<F>) =
+        sys.compute(loc.clone(), move |env| {
             let [x3, y3, inf, same_x, slope, inf_z, x21_inv] = complete_add_witness(
                 env.read_var(&x1),
                 env.read_var(&y1),
@@ -155,8 +155,8 @@ pub fn add_complete<F: PrimeField>(
             ((x3, y3, inf), (same_x, slope, inf_z), x21_inv)
         })?;
 
-    let constraint = Constraint::KimchiConstraint(KimchiConstraint::EcAddComplete(
-        EcAddCompleteInput {
+    let constraint =
+        Constraint::KimchiConstraint(KimchiConstraint::EcAddComplete(EcAddCompleteInput {
             p1: (p1.x.clone(), p1.y.clone()),
             p2: (p2.x.clone(), p2.y.clone()),
             p3: (x3.clone(), y3.clone()),
@@ -165,8 +165,7 @@ pub fn add_complete<F: PrimeField>(
             slope,
             inf_z,
             x21_inv,
-        },
-    ));
+        }));
     sys.add_constraint(constraint, Some("EC complete add".into()), loc)?;
 
     Ok(Point::new(x3, y3))
@@ -273,11 +272,7 @@ mod tests {
             let bits = crate::gadgets::bits::unpack(sys, loc!(), &k, SCALAR_BITS)?;
             let scaled = scale(sys, loc!(), &p1, &bits, self.shift)?;
 
-            Ok((
-                (sum.x, sum.y, doubled.x),
-                (doubled.y, scaled.x),
-                scaled.y,
-            ))
+            Ok(((sum.x, sum.y, doubled.x), (doubled.y, scaled.x), scaled.y))
         }
     }
 

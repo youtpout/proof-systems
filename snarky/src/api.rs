@@ -36,10 +36,8 @@ type ScalarField<C> = <C as AffineRepr>::ScalarField;
 type BaseField<C> = <C as AffineRepr>::BaseField;
 
 /// The SRS type associated to a circuit's proof.
-type SrsOf<C> = <<C as SnarkyCircuit>::Proof as OpenProof<
-    <C as SnarkyCircuit>::Curve,
-    FULL_ROUNDS,
->>::SRS;
+type SrsOf<C> =
+    <<C as SnarkyCircuit>::Proof as OpenProof<<C as SnarkyCircuit>::Curve, FULL_ROUNDS>>::SRS;
 
 /// A prover index.
 pub struct ProverIndexWrapper<Circuit>
@@ -50,8 +48,7 @@ where
     index: ProverIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
 }
 
-type Proof<C> =
-    ProverProof<<C as SnarkyCircuit>::Curve, <C as SnarkyCircuit>::Proof, FULL_ROUNDS>;
+type Proof<C> = ProverProof<<C as SnarkyCircuit>::Curve, <C as SnarkyCircuit>::Proof, FULL_ROUNDS>;
 type Output<C> = <<C as SnarkyCircuit>::PublicOutput as SnarkyType<
     ScalarField<<C as SnarkyCircuit>::Curve>,
 >>::OutOfCircuit;
@@ -88,8 +85,7 @@ where
                 FULL_ROUNDS,
             >,
         EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
-        EFrSponge:
-            From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
     {
         // create public input
         let public_input_without_output =
@@ -161,15 +157,14 @@ where
         let group_map = <Circuit::Curve as CommitmentCurve>::Map::setup();
 
         // TODO: return error instead of panicking
-        let proof: Proof<Circuit> =
-            ProverProof::create::<EFqSponge, EFrSponge, _>(
-                &group_map,
-                witness.0,
-                &[],
-                &self.index,
-                &mut rand::rngs::OsRng,
-            )
-            .unwrap();
+        let proof: Proof<Circuit> = ProverProof::create::<EFqSponge, EFrSponge, _>(
+            &group_map,
+            witness.0,
+            &[],
+            &self.index,
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
 
         // return proof + public output
         Ok((proof, Box::new(public_output)))
@@ -204,8 +199,7 @@ where
                 FULL_ROUNDS,
             >,
         EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
-        EFrSponge:
-            From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
     {
         let mut public_input = Circuit::PublicInput::value_to_field_elements(&public_input).0;
         public_input.extend(Circuit::PublicOutput::value_to_field_elements(&public_output).0);
@@ -350,11 +344,10 @@ pub trait SnarkyCircuit: Sized {
         let endo_q =
             <<Self as SnarkyCircuit>::Curve as KimchiCurve<FULL_ROUNDS>>::other_curve_endo();
 
-        let prover_index = kimchi::prover_index::ProverIndex::<
-            FULL_ROUNDS,
-            Self::Curve,
-            SrsOf<Self>,
-        >::create(cs, *endo_q, srs, false);
+        let prover_index =
+            kimchi::prover_index::ProverIndex::<FULL_ROUNDS, Self::Curve, SrsOf<Self>>::create(
+                cs, *endo_q, srs, false,
+            );
         let verifier_index = prover_index.verifier_index();
 
         let prover_index = ProverIndexWrapper {

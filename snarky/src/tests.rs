@@ -16,7 +16,8 @@ use poly_commitment::ipa::OpeningProof;
 
 use super::prelude::*;
 
-type BaseSponge = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
+type BaseSponge =
+    DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
 type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
 
 struct TestCircuit {}

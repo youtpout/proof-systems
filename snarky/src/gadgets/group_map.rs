@@ -62,7 +62,9 @@ pub fn sqrt_exn<F: PrimeField>(
 ) -> SnarkyResult<FieldVar<F>> {
     let x_clone = x.clone();
     let y: FieldVar<F> = sys.compute(loc.clone(), move |env| {
-        env.read_var(&x_clone).sqrt().expect("sqrt_exn: not a square")
+        env.read_var(&x_clone)
+            .sqrt()
+            .expect("sqrt_exn: not a square")
     })?;
     sys.assert_r1cs(
         Some("sqrt_exn".into()),
@@ -86,12 +88,7 @@ pub fn sqrt_flagged<F: PrimeField>(
         env.read_var(&x_clone).legendre().is_qr()
     })?;
     let m = non_residue::<F>();
-    let to_root = sys.if_(
-        loc.clone(),
-        is_square.clone(),
-        x.clone(),
-        x.scale(m),
-    )?;
+    let to_root = sys.if_(loc.clone(), is_square.clone(), x.clone(), x.scale(m))?;
     let y = sqrt_exn(sys, loc, &to_root)?;
     Ok((y, is_square))
 }
@@ -180,9 +177,8 @@ where
         .to_field_var();
 
     // x = x1_is_first * x1 + x2_is_first * x2 + x3_is_first * x3 (same for y)
-    let mut mul = |a: &FieldVar<F>, b: &FieldVar<F>, sys: &mut RunState<F>| {
-        a.mul(b, None, loc.clone(), sys)
-    };
+    let mul =
+        |a: &FieldVar<F>, b: &FieldVar<F>, sys: &mut RunState<F>| a.mul(b, None, loc.clone(), sys);
     let x = &(&mul(&x1_is_first, &x1, sys)? + &mul(&x2_is_first, &x2, sys)?)
         + &mul(&x3_is_first, &x3, sys)?;
     let y = &(&mul(&x1_is_first, &y1, sys)? + &mul(&x2_is_first, &y2, sys)?)

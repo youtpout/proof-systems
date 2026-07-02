@@ -18,8 +18,8 @@ use crate::{
     errors::SnarkyRuntimeError,
     snarky_type::SnarkyType,
 };
-use kimchi::{circuits::gate::CircuitGate, curve::KimchiCurve};
 use ark_ff::PrimeField;
+use kimchi::{circuits::gate::CircuitGate, curve::KimchiCurve};
 
 impl<F> Constraint<F>
 where

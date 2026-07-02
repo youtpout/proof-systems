@@ -1,8 +1,8 @@
 use super::{constraint_system::KimchiConstraint, runner::Constraint};
 use crate::{FieldVar, RunState, SnarkyResult};
-use kimchi::circuits::polynomial::COLUMNS;
 use ark_ff::{BigInteger, PrimeField};
 use itertools::Itertools;
+use kimchi::circuits::polynomial::COLUMNS;
 use std::borrow::Cow;
 
 ///creates a field elements from the next B bits
@@ -166,7 +166,8 @@ mod test {
     };
     use poly_commitment::ipa::OpeningProof;
 
-    type BaseSponge = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
     type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>;
     struct TestCircuit {}
 

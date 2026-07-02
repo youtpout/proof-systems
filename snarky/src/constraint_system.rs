@@ -6,6 +6,8 @@
 //! and the symbolic execution trace table (both for compilation and at runtime).
 
 use crate::{constants::Constants, cvar::FieldVar, runner::WitnessGeneration};
+use ark_ff::PrimeField;
+use itertools::Itertools;
 use kimchi::circuits::{
     gate::{CircuitGate, GateType},
     polynomials::{
@@ -14,8 +16,6 @@ use kimchi::circuits::{
     },
     wires::{Wire, COLUMNS, PERMUTS},
 };
-use ark_ff::PrimeField;
-use itertools::Itertools;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -966,7 +966,10 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 if s == Field::one() {
                     x
                 } else {
-                    let sx = self.create_internal(Some(s), vec![(s, x)]);
+                    // note: no constant here — the internal variable's witness
+                    // value must be exactly s * x (this used to pass Some(s),
+                    // which made the witness s + s * x and broke the constraint)
+                    let sx = self.create_internal(None, vec![(s, x)]);
                     // s * x - sx = 0
                     self.add_generic_constraint(
                         labels,
@@ -988,7 +991,10 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             (s, ConstantOrVar::Constant) => match self.cached_constants.get(&s) {
                 Some(x) => *x,
                 None => {
-                    let x = self.create_internal(None, vec![]);
+                    // note: the constant is required so that the witness value
+                    // of the internal variable evaluates to s (this used to
+                    // pass None, making the witness 0 and breaking the gate)
+                    let x = self.create_internal(Some(s), vec![]);
                     self.add_generic_constraint(
                         labels,
                         loc,

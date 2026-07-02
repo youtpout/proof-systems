@@ -4,12 +4,12 @@ use core::{fmt::Write, hash::Hash};
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 
+use ark_ff::PrimeField;
 use kimchi::circuits::{
     gate::{Circuit, CircuitGate, GateType},
     polynomials::generic::{GENERIC_COEFFS, GENERIC_REGISTERS},
     wires::Wire,
 };
-use ark_ff::PrimeField;
 
 use super::api::Witness;
 

@@ -5,9 +5,9 @@ use crate::{
     prelude::{FieldVar, RunState},
     runner::Constraint,
 };
-use kimchi::circuits::polynomials::poseidon::{ROUNDS_PER_HASH, ROUNDS_PER_ROW, SPONGE_WIDTH};
 use ark_ff::PrimeField;
 use itertools::Itertools;
+use kimchi::circuits::polynomials::poseidon::{ROUNDS_PER_HASH, ROUNDS_PER_ROW, SPONGE_WIDTH};
 use mina_poseidon::{
     constants::PlonkSpongeConstantsKimchi, permutation::full_round,
     poseidon::ArithmeticSpongeParams,

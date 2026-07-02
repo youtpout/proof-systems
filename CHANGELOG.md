@@ -9,6 +9,36 @@ and this project adheres to
 
 ## Unreleased
 
+### [snarky](./snarky)
+
+#### Added
+
+- New `snarky` crate: Rust port of the OCaml snarky circuit-writing DSL,
+  resurrecting the DSL removed from kimchi in `cb7484542c` and moving the
+  remaining dead `kimchi/src/snarky` backend files into the new crate.
+  Includes the `snarky-deriver` proc-macro crate (`#[derive(SnarkyType)]`,
+  moved from `kimchi/snarky-deriver`) and new gadget ports of the OCaml
+  libraries: bits/compare, `Number`, `Integer`, Poseidon duplex sponge,
+  complete EC operations, `group_map` hash-to-curve and Merkle membership,
+  plus a port of the `fermat.ml` example circuit. See `snarky/CLAUDE.md`
+  for the port status.
+
+#### Fixed
+
+- `SnarkyConstraintSystem::reduce_to_var`: crossed `constant`/`lincom`
+  arguments made internal-variable witness values inconsistent with the
+  generated generic gates (scaled variables evaluated to `s + s*x`, cached
+  constants to `0`).
+- In-circuit Poseidon applied an out-of-bounds 56th round through
+  `iter::successors`' eager successor computation.
+
+### [mina-poseidon](./poseidon)
+
+#### Changed
+
+- `permutation::full_round` is public again (used by snarky's round-by-round
+  Poseidon gadget).
+
 ### [kimchi-napi](./kimchi-napi)
 
 #### Fixed
