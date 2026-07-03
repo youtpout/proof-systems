@@ -14,6 +14,7 @@ crate-type = ["cdylib"] # to generate a dynamic library that is loadable by Node
 [dependencies]
 napi = { workspace = true, features = ["napi7"] }
 napi-derive.workspace = true
+snarky.workspace = true
 
 # arkworks
 ark-ec.workspace = true

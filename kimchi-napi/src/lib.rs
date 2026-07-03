@@ -8,6 +8,7 @@ mod plonk_verifier_index;
 mod poly_comm;
 mod poseidon;
 mod proof;
+mod snarky;
 mod srs;
 mod tables;
 mod vector;
@@ -67,6 +68,7 @@ pub use plonk_verifier_index::{
         NapiFqLookupVerifierIndex, NapiFqPlonkVerifierIndex,
     },
 };
+pub use snarky::*;
 
 pub use poly_comm::{
     pallas::NapiFqPolyComm as WasmFqPolyComm, vesta::NapiFpPolyComm as WasmFpPolyComm,
