@@ -453,3 +453,26 @@ impl_snarky_cs!(
     caml_fq_snarky_cs_finalize_gc,
     caml_fq_snarky_cs
 );
+
+// Hand the finalized gates to the existing index-creation path as a real
+// gate vector, without round-tripping every gate through OCaml.
+
+#[ocaml_gen::func]
+#[ocaml::func]
+pub fn caml_fp_snarky_cs_to_gate_vector(
+    mut cs: fp::CamlFpSnarkyConstraintSystemPtr,
+) -> crate::gate_vector::fp::CamlPastaFpPlonkGateVector {
+    crate::gate_vector::fp::CamlPastaFpPlonkGateVector(
+        cs.as_mut().0.finalize_and_get_gates().clone(),
+    )
+}
+
+#[ocaml_gen::func]
+#[ocaml::func]
+pub fn caml_fq_snarky_cs_to_gate_vector(
+    mut cs: fq::CamlFqSnarkyConstraintSystemPtr,
+) -> crate::gate_vector::fq::CamlPastaFqPlonkGateVector {
+    crate::gate_vector::fq::CamlPastaFqPlonkGateVector(
+        cs.as_mut().0.finalize_and_get_gates().clone(),
+    )
+}
