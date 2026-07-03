@@ -251,6 +251,14 @@ pub enum KimchiConstraint<Var, Field> {
     EcEndoscalar(Vec<EndoscaleScalarRound<Var>>),
     //[[Var; 15]; 4]
     RangeCheck(Vec<Vec<Var>>),
+    /// A single 88-bit range-check row: the 15 variables in column order
+    /// `[v, vp0..vp5, vc0..vc7]`, plus the `compact` coefficient (0 or 1).
+    RangeCheck0(Vec<Var>, Field),
+    /// The two rows of the RangeCheck1 gate: current row and next (Zero) row,
+    /// each 15 variables in column order.
+    RangeCheck1(Vec<Var>, Vec<Var>),
+    /// A lookup row: the 7 variables `[w0..w6]`.
+    Lookup(Vec<Var>),
 }
 
 /* TODO: This is a Unique_id in OCaml. */
@@ -1689,6 +1697,42 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 self.add_row(labels, loc, r2, GateType::RangeCheck1, vec![]);
                 self.add_row(labels, loc, r3, GateType::Zero, vec![]);
             }
+            KimchiConstraint::RangeCheck0(vars, compact) => {
+                assert_eq!(vars.len(), COLUMNS, "RangeCheck0 expects 15 variables");
+                let vars = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                // normalize the coefficient to 0 or 1, as the OCaml side does
+                let coeff = if compact == Field::one() {
+                    Field::one()
+                } else {
+                    Field::zero()
+                };
+                self.add_row(labels, loc, vars, GateType::RangeCheck0, vec![coeff]);
+            }
+            KimchiConstraint::RangeCheck1(curr, next) => {
+                assert_eq!(curr.len(), COLUMNS, "RangeCheck1 expects 15 variables");
+                assert_eq!(next.len(), COLUMNS, "RangeCheck1 expects 15 variables");
+                let reduce = |sys: &mut Self, row: Vec<Cvar>| {
+                    row.into_iter()
+                        .map(|x| Some(sys.reduce_to_var(labels, loc, x)))
+                        .collect()
+                };
+                let curr = reduce(self, curr);
+                let next = reduce(self, next);
+                self.add_row(labels, loc, curr, GateType::RangeCheck1, vec![]);
+                self.add_row(labels, loc, next, GateType::Zero, vec![]);
+            }
+            KimchiConstraint::Lookup(vars) => {
+                assert_eq!(vars.len(), 7, "Lookup expects 7 variables");
+                let vars = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .chain(std::iter::repeat_with(|| None).take(COLUMNS - 7))
+                    .collect();
+                self.add_row(labels, loc, vars, GateType::Lookup, vec![]);
+            }
         }
     }
     pub(crate) fn sponge_params(
@@ -1817,7 +1861,10 @@ where
             | KimchiConstraint::EcScale { .. }
             | KimchiConstraint::EcEndoscale { .. }
             | KimchiConstraint::EcEndoscalar { .. }
-            | KimchiConstraint::RangeCheck { .. } => (),
+            | KimchiConstraint::RangeCheck { .. }
+            | KimchiConstraint::RangeCheck0 { .. }
+            | KimchiConstraint::RangeCheck1 { .. }
+            | KimchiConstraint::Lookup { .. } => (),
         };
         Ok(())
     }

@@ -341,6 +341,53 @@ macro_rules! impl_snarky_cs {
                     );
                 }
 
+                /// The 15 variables in column order `[v, vp0..vp5, vc0..vc7]`.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_range_check0>](
+                    mut cs: $cs_ptr,
+                    vars: Vec<CamlLinCom>,
+                    compact: CamlField,
+                ) {
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::RangeCheck0(
+                            vars.into_iter().map(conv).collect(),
+                            compact.into(),
+                        ),
+                    );
+                }
+
+                /// Current and next rows, 15 variables each, in column order.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_range_check1>](
+                    mut cs: $cs_ptr,
+                    curr: Vec<CamlLinCom>,
+                    next: Vec<CamlLinCom>,
+                ) {
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::RangeCheck1(
+                            curr.into_iter().map(conv).collect(),
+                            next.into_iter().map(conv).collect(),
+                        ),
+                    );
+                }
+
+                /// The 7 variables `[w0..w6]`.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_lookup>](mut cs: $cs_ptr, vars: Vec<CamlLinCom>) {
+                    cs.as_mut().0.add_constraint(
+                        &[],
+                        &"ocaml".into(),
+                        KimchiConstraint::Lookup(vars.into_iter().map(conv).collect()),
+                    );
+                }
+
                 #[ocaml_gen::func]
                 #[ocaml::func]
                 pub fn [<$prefix _compute_witness>](
