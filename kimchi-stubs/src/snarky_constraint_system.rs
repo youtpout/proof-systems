@@ -388,6 +388,25 @@ macro_rules! impl_snarky_cs {
                     );
                 }
 
+                /// Escape hatch: a single row with an arbitrary gate type,
+                /// 15 optional variables and its coefficients.
+                #[ocaml_gen::func]
+                #[ocaml::func]
+                pub fn [<$prefix _add_row>](
+                    mut cs: $cs_ptr,
+                    gate: kimchi::circuits::gate::GateType,
+                    vars: Vec<Option<CamlLinCom>>,
+                    coeffs: Vec<CamlField>,
+                ) {
+                    cs.as_mut().0.add_kimchi_row(
+                        &[],
+                        &"ocaml".into(),
+                        gate,
+                        vars.into_iter().map(|v| v.map(conv)).collect(),
+                        coeffs.into_iter().map(Into::into).collect(),
+                    );
+                }
+
                 #[ocaml_gen::func]
                 #[ocaml::func]
                 pub fn [<$prefix _compute_witness>](

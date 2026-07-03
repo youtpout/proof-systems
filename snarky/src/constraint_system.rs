@@ -1026,6 +1026,26 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         }
     }
 
+    /// Adds a single row with an arbitrary gate type: the escape hatch used
+    /// by OCaml front ends for gates whose layout lives on the OCaml side
+    /// (Xor16, Rot64, foreign field operations, ...).
+    pub fn add_kimchi_row<Cvar>(
+        &mut self,
+        labels: &[Cow<'static, str>],
+        loc: &Cow<'static, str>,
+        gate: GateType,
+        vars: Vec<Option<Cvar>>,
+        coeffs: Vec<Field>,
+    ) where
+        Cvar: SnarkyCvar<Field = Field>,
+    {
+        let vars = vars
+            .into_iter()
+            .map(|x| x.map(|x| self.reduce_to_var(labels, loc, x)))
+            .collect();
+        self.add_row(labels, loc, vars, gate, coeffs);
+    }
+
     /// Applies the basic `SnarkyConstraint`.
     /// Simply, place the values of `selector`(`sl`, `sr`, `so` ...) and `input`(`l`, `r`, `o`, `m`).
     ///
