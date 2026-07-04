@@ -12,6 +12,7 @@
 //! See `pickles/CLAUDE.md` for the port map and status.
 
 pub mod common;
+pub mod composition_types;
 pub mod endo;
 pub mod opt_sponge;
 pub mod plonk_curve_ops;
