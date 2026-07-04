@@ -34,11 +34,78 @@ pub fn scale_fast_msb_bits<F: PrimeField>(
     base: &Point<F>,
     bits_msb: &[Boolean<F>],
 ) -> SnarkyResult<Point<F>> {
-    let num_bits = bits_msb.len();
+    let bit_vars: Vec<FieldVar<F>> = bits_msb.iter().map(|b| b.to_field_var()).collect();
+    let (acc, _n_acc) = scale_fast_core(sys, loc, base, &bit_vars)?;
+    Ok(acc)
+}
+
+/// Scalar multiplication by a packed `num_bits`-bit scalar, unpacking it on
+/// the fly: the bits are witnessed (MSB-first) and constrained boolean *by
+/// the VarBaseMul gate itself*, and the recomposition is asserted equal to
+/// `scalar`. Returns the product `(2·scalar + 2^num_bits + 1) · base` and
+/// the LSB-first bits. Port of pickles' `scale_fast_unpack`.
+pub fn scale_fast_unpack<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    base: &Point<F>,
+    scalar: &FieldVar<F>,
+    num_bits: usize,
+) -> SnarkyResult<(Point<F>, Vec<Boolean<F>>)> {
+    use ark_ff::BigInteger;
+
+    // witness the MSB-first bits of the scalar
+    let mut bit_vars = Vec::with_capacity(num_bits);
+    for i in 0..num_bits {
+        let scalar = scalar.clone();
+        let bit: FieldVar<F> =
+            sys.compute(loc.clone(), move |env: &dyn WitnessGeneration<F>| {
+                let bits = env.read_var(&scalar).into_bigint().to_bits_le();
+                if bits[num_bits - 1 - i] {
+                    F::one()
+                } else {
+                    F::zero()
+                }
+            })?;
+        bit_vars.push(bit);
+    }
+
+    let (acc, n_acc) = scale_fast_core(sys, loc.clone(), base, &bit_vars)?;
+    n_acc.assert_equals(sys, loc, scalar)?;
+
+    let bits_lsb = bit_vars
+        .into_iter()
+        .rev()
+        .map(Boolean::create_unsafe)
+        .collect();
+    Ok((acc, bits_lsb))
+}
+
+/// [scale_fast_unpack], discarding the bits.
+pub fn scale_fast<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    base: &Point<F>,
+    scalar: &FieldVar<F>,
+    num_bits: usize,
+) -> SnarkyResult<Point<F>> {
+    let (acc, _bits) = scale_fast_unpack(sys, loc, base, scalar, num_bits)?;
+    Ok(acc)
+}
+
+/// The shared VarBaseMul chunk loop; `bit_vars` are the MSB-first bits as
+/// field variables (0/1). Returns the accumulated point and the bit
+/// recomposition `n_acc`.
+fn scale_fast_core<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    base: &Point<F>,
+    bit_vars: &[FieldVar<F>],
+) -> SnarkyResult<(Point<F>, FieldVar<F>)> {
+    let num_bits = bit_vars.len();
     assert_eq!(
         num_bits % BITS_PER_CHUNK,
         0,
-        "scale_fast_msb_bits: num_bits must be a multiple of {BITS_PER_CHUNK}"
+        "scale_fast: num_bits must be a multiple of {BITS_PER_CHUNK}"
     );
     let chunks = num_bits / BITS_PER_CHUNK;
 
@@ -52,7 +119,7 @@ pub fn scale_fast_msb_bits<F: PrimeField>(
 
     for chunk in 0..chunks {
         let bs: Vec<FieldVar<F>> = (0..BITS_PER_CHUNK)
-            .map(|i| bits_msb[chunk * BITS_PER_CHUNK + i].to_field_var())
+            .map(|i| bit_vars[chunk * BITS_PER_CHUNK + i].clone())
             .collect();
 
         let n_acc_prev = n_acc.clone();
@@ -128,7 +195,7 @@ pub fn scale_fast_msb_bits<F: PrimeField>(
         loc,
     )?;
 
-    Ok(acc)
+    Ok((acc, n_acc))
 }
 
 #[cfg(test)]
@@ -202,6 +269,82 @@ mod tests {
                 .unwrap();
 
             assert_eq!(*public_output, (expected.x, expected.y));
+            verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
+        }
+    }
+}
+
+#[cfg(test)]
+mod unpack_tests {
+    use super::*;
+    use ark_ec::{AffineRepr, CurveGroup};
+    use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::ipa::OpeningProof;
+    use snarky::{api::SnarkyCircuit, loc};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    const NUM_BITS: usize = 10;
+
+    struct UnpackCircuit {}
+
+    impl SnarkyCircuit for UnpackCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+
+        /// (packed scalar, (g.x, g.y))
+        type PrivateInput = (Fp, (Fp, Fp));
+        type PublicInput = ();
+        /// (scale result, recomposed low bit as sanity)
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>, Boolean<Fp>);
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _public: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let n: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().0)?;
+            let gx: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .0)?;
+            let gy: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .1)?;
+
+            let g = Point::new(gx, gy);
+            let (res, bits_lsb) = scale_fast_unpack(sys, loc!(), &g, &n, NUM_BITS)?;
+            Ok((res.x, res.y, bits_lsb[0].clone()))
+        }
+    }
+
+    /// `scale_fast_unpack` scales like `scale_fast_msb_bits` and returns the
+    /// scalar's bits, all constrained in-circuit.
+    #[test]
+    fn scale_fast_unpack_matches_scalar_mul() {
+        let circuit = UnpackCircuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let mut rng = o1_utils::tests::make_test_rng(None);
+
+        for _ in 0..2 {
+            use ark_ff::UniformRand;
+            let n = u64::rand(&mut rng) % (1 << NUM_BITS);
+            let g = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+
+            let scalar = Fq::from(2 * n + (1 << NUM_BITS) + 1);
+            let expected = (g * scalar).into_affine();
+
+            let private_input = (Fp::from(n), (g.x, g.y));
+            let (proof, public_output) = prover_index
+                .prove::<BaseSponge, ScalarSponge>((), private_input, true)
+                .unwrap();
+
+            let (x, y, low_bit) = &*public_output;
+            assert_eq!((*x, *y), (expected.x, expected.y));
+            assert_eq!(*low_bit, (n & 1) == 1);
             verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
         }
     }

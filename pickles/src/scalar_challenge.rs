@@ -300,3 +300,133 @@ mod endo_tests {
         }
     }
 }
+
+/// Multiplies `g` by the *inverse* of the endo-interpretation of `chal`:
+/// witnesses `res = [to_field(chal)]⁻¹ · g` out of circuit, then constrains
+/// `endo(res, chal) = g`. Port of pickles' `Scalar_challenge.endo_inv`.
+pub fn endo_inv<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    g: &Point<F>,
+    chal: &FieldVar<F>,
+    num_bits: usize,
+    endo_base: F,
+    endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
+) -> SnarkyResult<Point<F>>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    use ark_ec::CurveGroup;
+    use ark_ff::Field;
+
+    let (gx, gy, chal_var) = (g.x.clone(), g.y.clone(), chal.clone());
+    let res: (FieldVar<F>, FieldVar<F>) = sys.compute(
+        loc.clone(),
+        move |env: &dyn snarky::runner::WitnessGeneration<F>| {
+            // read the challenge and reinterpret its low bits in the scalar field
+            let chal_bits = env.read_var(&chal_var).into_bigint().to_bits_le();
+            let one = C::ScalarField::from(1u64);
+            let mut s = C::ScalarField::from(0u64);
+            for i in (0..num_bits).rev() {
+                s += s;
+                if chal_bits[i] {
+                    s += one;
+                }
+            }
+            let x = ScalarChallenge(s).to_field(endo_scalar);
+            let g = ark_ec::short_weierstrass::Affine::<C>::new_unchecked(
+                env.read_var(&gx),
+                env.read_var(&gy),
+            );
+            let res = (g * x.inverse().unwrap()).into_affine();
+            (res.x, res.y)
+        },
+    )?;
+    let res = Point::new(res.0, res.1);
+
+    let mapped = endo(sys, loc.clone(), &res, chal, num_bits, endo_base)?;
+    mapped.x.assert_equals(sys, loc.clone(), &g.x)?;
+    mapped.y.assert_equals(sys, loc, &g.y)?;
+
+    Ok(res)
+}
+
+#[cfg(test)]
+mod endo_inv_tests {
+    use super::*;
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ff::Field;
+    use kimchi::curve::KimchiCurve;
+    use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::ipa::OpeningProof;
+    use snarky::{api::SnarkyCircuit, loc};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    struct EndoInvCircuit {}
+
+    impl SnarkyCircuit for EndoInvCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+
+        type PrivateInput = (Fp, (Fp, Fp));
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>);
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _public: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let chal: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().0)?;
+            let gx: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .0)?;
+            let gy: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .1)?;
+
+            let (_, endo_scalar) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+            let g = Point::new(gx, gy);
+            let res = endo_inv::<Fp, PallasParameters>(
+                sys,
+                loc!(),
+                &g,
+                &chal,
+                SCALAR_CHALLENGE_BITS,
+                crate::endo::tick::base(),
+                *endo_scalar,
+            )?;
+            Ok((res.x, res.y))
+        }
+    }
+
+    /// `endo_inv(g, chal)` == `[to_field(chal)]⁻¹ · g`.
+    #[test]
+    fn endo_inv_matches_scalar_mul() {
+        let circuit = EndoInvCircuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let (_, endo_scalar) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+
+        use ark_ff::UniformRand;
+        let chal_u128 = u128::rand(&mut rng);
+        let g = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+
+        let x = ScalarChallenge(Fq::from(chal_u128)).to_field(*endo_scalar);
+        let expected = (g * x.inverse().unwrap()).into_affine();
+
+        let private_input = (Fp::from(chal_u128), (g.x, g.y));
+        let (proof, public_output) = prover_index
+            .prove::<BaseSponge, ScalarSponge>((), private_input, true)
+            .unwrap();
+
+        assert_eq!(*public_output, (expected.x, expected.y));
+        verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
+    }
+}
