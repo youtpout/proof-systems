@@ -13,6 +13,7 @@
 
 pub mod common;
 pub mod endo;
+pub mod plonk_curve_ops;
 pub mod scalar_challenge;
 pub mod sponge;
 
