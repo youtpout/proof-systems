@@ -349,3 +349,113 @@ mod unpack_tests {
         }
     }
 }
+
+/// Number of VarBaseMul chunks needed to scale by a `num_bits`-bit scalar.
+pub fn chunks_needed(num_bits: usize) -> usize {
+    num_bits.div_ceil(BITS_PER_CHUNK)
+}
+
+/// Scalar multiplication in the `Shifted_value.Type2` convention: the scalar
+/// is given as `(s_div_2, s_odd)` with `s = 2·s_div_2 + s_odd`, and the
+/// result is `(s + 2^actual_bits) · g`, where `actual_bits` is `num_bits - 1`
+/// rounded up to a whole number of VarBaseMul chunks.
+/// Port of pickles' `scale_fast2`.
+pub fn scale_fast2<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    g: &Point<F>,
+    s_div_2: &FieldVar<F>,
+    s_odd: &Boolean<F>,
+    num_bits: usize,
+) -> SnarkyResult<Point<F>> {
+    let s_div_2_bits = num_bits - 1;
+    let actual_bits_used = chunks_needed(s_div_2_bits) * BITS_PER_CHUNK;
+
+    let (h, bits_lsb) = scale_fast_unpack(sys, loc.clone(), g, s_div_2, actual_bits_used)?;
+
+    // constrain the top bits of s_div_2 to be 0
+    for bit in &bits_lsb[s_div_2_bits..] {
+        bit.to_field_var()
+            .assert_equals(sys, loc.clone(), &FieldVar::zero())?;
+    }
+
+    // if s_odd { h } else { h - g }
+    let h_minus_g = add_fast(sys, loc.clone(), &h, &g.negate())?;
+    Point::select(sys, loc, s_odd, &h, &h_minus_g)
+}
+
+#[cfg(test)]
+mod scale_fast2_tests {
+    use super::*;
+    use ark_ec::{AffineRepr, CurveGroup};
+    use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::ipa::OpeningProof;
+    use snarky::{api::SnarkyCircuit, loc, Boolean};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    const NUM_BITS: usize = 11;
+
+    struct Scale2Circuit {}
+
+    impl SnarkyCircuit for Scale2Circuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+
+        /// ((s_div_2, s_odd), (g.x, g.y))
+        type PrivateInput = ((Fp, bool), (Fp, Fp));
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>);
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _public: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let s_div_2: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().0 .0)?;
+            let s_odd: Boolean<Fp> = sys.compute(loc!(), |_| private.unwrap().0 .1)?;
+            let gx: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .0)?;
+            let gy: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .1)?;
+
+            let g = Point::new(gx, gy);
+            let res = scale_fast2(sys, loc!(), &g, &s_div_2, &s_odd, NUM_BITS)?;
+            Ok((res.x, res.y))
+        }
+    }
+
+    /// `scale_fast2(g, (s_div_2, s_odd))` == `(s + 2^actual_bits) · g`
+    /// with `s = 2·s_div_2 + s_odd`.
+    #[test]
+    fn scale_fast2_matches_scalar_mul() {
+        let circuit = Scale2Circuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let actual_bits = chunks_needed(NUM_BITS - 1) * BITS_PER_CHUNK;
+
+        for s_odd in [false, true] {
+            use ark_ff::UniformRand;
+            let s_div_2 = u64::rand(&mut rng) % (1 << (NUM_BITS - 1));
+            let g = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+
+            let s = 2 * s_div_2 + u64::from(s_odd);
+            let scalar = Fq::from(s + (1 << actual_bits));
+            let expected = (g * scalar).into_affine();
+
+            let private_input = ((Fp::from(s_div_2), s_odd), (g.x, g.y));
+            let (proof, public_output) = prover_index
+                .prove::<BaseSponge, ScalarSponge>((), private_input, true)
+                .unwrap();
+
+            assert_eq!(*public_output, (expected.x, expected.y), "s_odd = {s_odd}");
+            verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
+        }
+    }
+}
