@@ -161,21 +161,12 @@ where
 
                 let self_clone = self.clone();
                 let other_clone = other.clone();
+                // the value is not boolean-checked (compute_unsafe): the xor
+                // constraint below guarantees booleanity given boolean inputs
                 let res: Boolean<F> = state.compute_unsafe(loc.clone(), move |env| {
-                    let _b1: bool = self_clone.read(env);
-                    let _b2: bool = other_clone.read(env);
-
-                    /*
-                    let%bind res =
-                      exists typ_unchecked
-                        ~compute:
-                          As_prover.(
-                            map2 ~f:Bool.( <> ) (read typ_unchecked b1)
-                              (read typ_unchecked b2))
-                    in
-                     */
-
-                    todo!()
+                    let b1: bool = self_clone.read(env);
+                    let b2: bool = other_clone.read(env);
+                    b1 != b2
                 })?;
 
                 let x = &self.0 + &self.0;

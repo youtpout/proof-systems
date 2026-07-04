@@ -21,8 +21,18 @@ pub fn poseidon<F: PrimeField>(
     loc: Cow<'static, str>,
     preimage: (FieldVar<F>, FieldVar<F>),
 ) -> (FieldVar<F>, FieldVar<F>) {
-    let initial_state = [preimage.0, preimage.1, FieldVar::zero()];
-    let (constraint, hash) = {
+    let [a, b, _] = permute(runner, loc, [preimage.0, preimage.1, FieldVar::zero()]);
+    (a, b)
+}
+
+/// Applies the full in-circuit Poseidon permutation to an arbitrary state
+/// (the building block of [poseidon] and of pickles' optional sponge).
+pub fn permute<F: PrimeField>(
+    runner: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    initial_state: [FieldVar<F>; SPONGE_WIDTH],
+) -> [FieldVar<F>; SPONGE_WIDTH] {
+    let (constraint, out) = {
         let params = runner.poseidon_params();
 
         // all the intermediate states: the initial state followed by the
@@ -52,22 +62,19 @@ pub fn poseidon<F: PrimeField>(
             })
             .collect_vec();
         let last = iter.next().unwrap();
-        let hash = {
-            let [a, b, _] = last.clone();
-            (a, b)
-        };
+        let out = last.clone();
         let constraint = Constraint::KimchiConstraint(KimchiConstraint::Poseidon2(PoseidonInput {
             states: states.into_iter().map(|s| s.to_vec()).collect(),
             last: last.to_vec(),
         }));
-        (constraint, hash)
+        (constraint, out)
     };
 
     runner
         .add_constraint(constraint, Some("Poseidon".into()), loc)
         .expect("compiler bug");
 
-    hash
+    out
 }
 
 fn round<F: PrimeField>(
