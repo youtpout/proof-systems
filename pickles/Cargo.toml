@@ -1,0 +1,24 @@
+[package]
+name = "pickles"
+version.workspace = true
+description = "Rust port of Mina's Pickles recursive proof system (step/wrap over Pasta)"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://o1-labs.github.io/proof-systems/rustdoc/pickles/index.html"
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+groupmap.workspace = true
+kimchi.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+o1-utils.workspace = true
+poly-commitment.workspace = true
+snarky.workspace = true
+
+[dev-dependencies]
+rand = { workspace = true, features = ["std_rng"] }

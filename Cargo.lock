@@ -2451,6 +2451,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
+name = "pickles"
+version = "0.7.0"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "groupmap",
+ "kimchi",
+ "mina-curves",
+ "mina-poseidon",
+ "o1-utils",
+ "poly-commitment",
+ "rand 0.8.5",
+ "snarky",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

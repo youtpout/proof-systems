@@ -14,6 +14,7 @@ members = [
   "msm",
   "mvpoly",
   "o1vm",
+  "pickles",
   "poly-commitment",
   "poseidon",
   "poseidon/export_test_vectors",
