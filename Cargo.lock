@@ -2456,6 +2456,7 @@ version = "0.7.0"
 dependencies = [
  "ark-ec",
  "ark-ff",
+ "ark-poly",
  "groupmap",
  "kimchi",
  "mina-curves",

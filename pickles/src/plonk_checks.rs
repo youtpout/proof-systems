@@ -13,7 +13,6 @@
 use ark_ff::PrimeField;
 
 use crate::composition_types::plonk::Minimal;
-use crate::scalar_challenge::ScalarChallenge;
 
 /// Index of the first permutation-argument power of alpha in kimchi's
 /// linearization (`perm_alpha0` in the OCaml).
@@ -77,17 +76,13 @@ impl<F: PrimeField> ScalarsEnv<F> {
 /// Builds the scalars environment from the minimal challenges
 /// (`scalars_env`, with `zk_rows = 3`). `alpha` and `zeta` in `minimal` are
 /// scalar challenges; `endo_scalar` interprets them into full field elements.
-pub fn scalars_env<F: PrimeField, Chal, Bool>(
+pub fn scalars_env<F: PrimeField, Bool>(
     domain: &Domain<F>,
     srs_length_log2: u32,
-    endo_scalar: F,
-    minimal: &Minimal<F, ScalarChallenge<F>, Bool>,
-) -> ScalarsEnv<F>
-where
-    Chal: Clone,
-{
-    let alpha = minimal.alpha.to_field(endo_scalar);
-    let zeta = minimal.zeta.to_field(endo_scalar);
+    minimal: &Minimal<F, F, Bool>,
+) -> ScalarsEnv<F> {
+    let alpha = minimal.alpha;
+    let zeta = minimal.zeta;
 
     let mut alpha_pows = vec![F::one(); NUM_ALPHA_POWS];
     alpha_pows[1] = alpha;
@@ -197,6 +192,7 @@ pub fn ft_eval0<F: PrimeField>(
 mod tests {
     use super::*;
     use crate::composition_types::Features;
+    use crate::scalar_challenge::ScalarChallenge;
     use ark_ff::Field;
     use mina_curves::pasta::Fp;
 
@@ -211,18 +207,17 @@ mod tests {
         let (_, endo) = <mina_curves::pasta::Vesta as kimchi::curve::KimchiCurve<
             { snarky::FULL_ROUNDS },
         >>::endos();
-        let minimal = Minimal::<Fp, _, bool> {
-            alpha: ScalarChallenge(Fp::from(u128::rand(&mut rng))),
+        let alpha = ScalarChallenge(Fp::from(u128::rand(&mut rng))).to_field(*endo);
+        let zeta = ScalarChallenge(Fp::from(u128::rand(&mut rng))).to_field(*endo);
+        let minimal = Minimal::<Fp, Fp, bool> {
+            alpha,
             beta: Fp::rand(&mut rng),
             gamma: Fp::rand(&mut rng),
-            zeta: ScalarChallenge(Fp::from(u128::rand(&mut rng))),
+            zeta,
             joint_combiner: None,
             feature_flags: Features::none(),
         };
-        let env = scalars_env::<Fp, Fp, bool>(&domain, 16, *endo, &minimal);
-
-        // alpha_pows[i] = alpha^i
-        let alpha = minimal.alpha.to_field(*endo);
+        let env = scalars_env::<Fp, bool>(&domain, 16, &minimal);
         assert_eq!(env.alpha_pows[3], alpha * alpha * alpha);
 
         // zk_polynomial vanishes on the last three rows
@@ -239,5 +234,147 @@ mod tests {
             env.zeta_to_n_minus_1,
             env.zeta.pow([domain.size()]) - Fp::from(1u64)
         );
+    }
+}
+
+#[cfg(test)]
+mod oracles_parity_tests {
+    use super::*;
+    use crate::composition_types::Features;
+    use ark_ff::{One, Zero};
+    use ark_poly::Polynomial;
+    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
+    use kimchi::circuits::expr::{Constants, PolishToken};
+    use kimchi::curve::KimchiCurve;
+    use mina_curves::pasta::{Fp, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::commitment::PolyComm;
+    use poly_commitment::ipa::OpeningProof;
+    use poly_commitment::SRS;
+    use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    struct SmallCircuit {}
+
+    impl SnarkyCircuit for SmallCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+
+        type PrivateInput = Fp;
+        type PublicInput = FieldVar<Fp>;
+        type PublicOutput = ();
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            // x * x = z, plus a poseidon row to exercise more alphas
+            let x: FieldVar<Fp> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let _ = sys.poseidon(loc!(), (x, z));
+            Ok(())
+        }
+    }
+
+    /// Our scalars_env + ft_eval0 recompute exactly kimchi's
+    /// OraclesResult.ft_eval0 on a real proof.
+    #[test]
+    fn ft_eval0_matches_kimchi_oracles() {
+        let circuit = SmallCircuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let x = Fp::from(7u64);
+        let z = x * x;
+        let (proof, _) = prover_index
+            .prove::<BaseSponge, ScalarSponge>(z, x, true)
+            .unwrap();
+
+        let vi = &verifier_index.index;
+        let public_input = vec![z];
+
+        // public commitment, as the kimchi verifier builds it
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let public_comm = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(public_comm.clone(), &public_comm.map(|_| Fp::one()))
+            .unwrap()
+            .commitment;
+
+        let o = proof
+            .oracles::<BaseSponge, ScalarSponge, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+
+        // ==== recompute ft_eval0 with our port ====
+        let oracles = &o.oracles;
+        let domain = Domain::<Fp> {
+            log2_size: vi.domain.log_size_of_group,
+            generator: vi.domain.group_gen,
+        };
+        let srs_length_log2 = u64::BITS - 1 - (vi.max_poly_size as u64).leading_zeros();
+        assert_eq!(1usize << srs_length_log2, vi.max_poly_size);
+
+        let minimal = Minimal::<Fp, Fp, bool> {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            zeta: oracles.zeta,
+            joint_combiner: None,
+            feature_flags: Features::none(),
+        };
+        let env = scalars_env::<Fp, bool>(&domain, srs_length_log2, &minimal);
+
+        // sanity: our env matches kimchi's intermediate values
+        assert_eq!(env.zeta_to_n_minus_1, o.zeta1 - Fp::one());
+        assert_eq!(
+            env.zk_polynomial,
+            vi.permutation_vanishing_polynomial_m()
+                .evaluate(&oracles.zeta)
+        );
+
+        // combined evaluations at (zeta, zeta * omega)
+        let evals = proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+        let e = Evals {
+            w: evals.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            s: evals.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            z: (evals.z.zeta, evals.z.zeta_omega),
+        };
+
+        // the linearization constant term, straight from kimchi
+        let constants = Constants {
+            endo_coefficient: vi.endo,
+            mds: &Vesta::sponge_params().mds,
+            zk_rows: ZK_ROWS as u64,
+        };
+        let challenges = BerkeleyChallenges {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            joint_combiner: Fp::zero(),
+        };
+        let constant_term = PolishToken::evaluate(
+            &vi.linearization.constant_term,
+            vi.domain,
+            oracles.zeta,
+            &evals,
+            &constants,
+            &challenges,
+        )
+        .unwrap();
+
+        let ours = ft_eval0(&env, &vi.shift, &e, &o.public_evals[0], constant_term);
+
+        assert_eq!(ours, o.ft_eval0, "ft_eval0 parity with kimchi's verifier");
     }
 }

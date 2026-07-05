@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 ark-ec.workspace = true
 ark-ff.workspace = true
+ark-poly.workspace = true
 groupmap.workspace = true
 kimchi.workspace = true
 mina-curves.workspace = true

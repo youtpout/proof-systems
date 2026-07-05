@@ -45,7 +45,8 @@ where
     Circuit: SnarkyCircuit,
 {
     compiled_circuit: CompiledCircuit<Circuit>,
-    index: ProverIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
+    /// The underlying kimchi prover index.
+    pub index: ProverIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
 }
 
 type Proof<C> = ProverProof<<C as SnarkyCircuit>::Curve, <C as SnarkyCircuit>::Proof, FULL_ROUNDS>;
@@ -176,7 +177,8 @@ pub struct VerifierIndexWrapper<Circuit>
 where
     Circuit: SnarkyCircuit,
 {
-    index: VerifierIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
+    /// The underlying kimchi verifier index.
+    pub index: VerifierIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
 }
 
 impl<Circuit> VerifierIndexWrapper<Circuit>
