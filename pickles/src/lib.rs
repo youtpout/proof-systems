@@ -16,6 +16,7 @@ pub mod composition_types;
 pub mod endo;
 pub mod ipa;
 pub mod opt_sponge;
+pub mod plonk_checks;
 pub mod plonk_curve_ops;
 pub mod scalar_challenge;
 pub mod sponge;
