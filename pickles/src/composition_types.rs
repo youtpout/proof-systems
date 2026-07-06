@@ -145,6 +145,77 @@ pub mod wrap {
         pub proof_state: ProofState,
         pub messages_for_next_step_proof: MessagesForNextStep,
     }
+
+    /// The accumulator threaded to the next wrap proof
+    /// (`Messages_for_next_wrap_proof`).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct MessagesForNextWrapProof<G1, BpChals> {
+        /// The commitment to the previous challenge polynomial (`sg`).
+        pub challenge_polynomial_commitment: G1,
+        /// The bulletproof challenges of the previous proof.
+        pub old_bulletproof_challenges: BpChals,
+    }
+
+    impl<G1, F: Clone> MessagesForNextWrapProof<G1, Vec<Vec<F>>> {
+        /// Serialises to field elements for hashing (`to_field_elements`):
+        /// the flattened old challenges, then the commitment coordinates.
+        pub fn to_field_elements(&self, g1_to_field_elements: impl Fn(&G1) -> Vec<F>) -> Vec<F> {
+            let mut out: Vec<F> = self
+                .old_bulletproof_challenges
+                .iter()
+                .flat_map(|c| c.iter().cloned())
+                .collect();
+            out.extend(g1_to_field_elements(&self.challenge_polynomial_commitment));
+            out
+        }
+    }
+}
+
+/// The verification-key commitments threaded through the recursion
+/// (`Plonk_verification_key_evals`): the wrap-circuit VK the step circuits
+/// verify proofs against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlonkVerificationKeyEvals<Comm> {
+    /// The `PERMUTS` permutation commitments.
+    pub sigma_comm: Vec<Comm>,
+    /// The `COLUMNS` coefficient commitments.
+    pub coefficients_comm: Vec<Comm>,
+    pub generic_comm: Comm,
+    pub psm_comm: Comm,
+    pub complete_add_comm: Comm,
+    pub mul_comm: Comm,
+    pub emul_comm: Comm,
+    pub endomul_scalar_comm: Comm,
+}
+
+impl<Comm> PlonkVerificationKeyEvals<Comm> {
+    /// The commitments in the canonical `index_to_field_elements` order:
+    /// sigma, coefficients, then the six named selectors.
+    pub fn to_list(&self) -> Vec<&Comm> {
+        let mut v: Vec<&Comm> = self.sigma_comm.iter().collect();
+        v.extend(self.coefficients_comm.iter());
+        v.push(&self.generic_comm);
+        v.push(&self.psm_comm);
+        v.push(&self.complete_add_comm);
+        v.push(&self.mul_comm);
+        v.push(&self.emul_comm);
+        v.push(&self.endomul_scalar_comm);
+        v
+    }
+}
+
+/// The accumulator threaded to the next step proof
+/// (`Messages_for_next_step_proof`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessagesForNextStepProof<Comm, S, Comms, BpChals> {
+    /// The application-level state.
+    pub app_state: S,
+    /// The wrap-circuit verification key.
+    pub dlog_plonk_index: PlonkVerificationKeyEvals<Comm>,
+    /// The previous challenge-polynomial commitments.
+    pub challenge_polynomial_commitments: Comms,
+    /// The previous bulletproof challenges.
+    pub old_bulletproof_challenges: BpChals,
 }
 
 #[cfg(test)]
@@ -186,5 +257,51 @@ mod tests {
         };
         assert_eq!(dv.bulletproof_challenges.len(), crate::common::TOCK_ROUNDS);
         assert_eq!(dv.plonk.feature_flags, Features::none());
+    }
+
+    #[test]
+    fn messages_for_next_wrap_to_field_elements() {
+        // commitment represented by its two coordinates
+        let msg = wrap::MessagesForNextWrapProof {
+            challenge_polynomial_commitment: (Fq::from(10u64), Fq::from(11u64)),
+            old_bulletproof_challenges: vec![
+                vec![Fq::from(1u64), Fq::from(2u64)],
+                vec![Fq::from(3u64), Fq::from(4u64)],
+            ],
+        };
+        let fe = msg.to_field_elements(|(x, y)| vec![*x, *y]);
+        // flattened challenges first, then the commitment coordinates
+        assert_eq!(
+            fe,
+            vec![
+                Fq::from(1u64),
+                Fq::from(2u64),
+                Fq::from(3u64),
+                Fq::from(4u64),
+                Fq::from(10u64),
+                Fq::from(11u64),
+            ]
+        );
+    }
+
+    #[test]
+    fn vk_evals_to_list_order() {
+        use kimchi::circuits::wires::{COLUMNS, PERMUTS};
+        let vk = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|i| i as u32).collect(),
+            coefficients_comm: (0..COLUMNS).map(|i| 100 + i as u32).collect(),
+            generic_comm: 200,
+            psm_comm: 201,
+            complete_add_comm: 202,
+            mul_comm: 203,
+            emul_comm: 204,
+            endomul_scalar_comm: 205,
+        };
+        let list: Vec<u32> = vk.to_list().into_iter().copied().collect();
+        assert_eq!(list.len(), PERMUTS + COLUMNS + 6);
+        assert_eq!(list[0], 0); // first sigma
+        assert_eq!(list[PERMUTS], 100); // first coefficient
+        assert_eq!(list[PERMUTS + COLUMNS], 200); // generic
+        assert_eq!(*list.last().unwrap(), 205); // endomul_scalar
     }
 }
