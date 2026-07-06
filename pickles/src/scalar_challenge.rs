@@ -73,9 +73,9 @@ mod tests {
 use std::borrow::Cow;
 
 use snarky::{
-    constraint_system::{EcEndoscaleInput, EndoscaleRound, KimchiConstraint},
+    constraint_system::{EcEndoscaleInput, EndoscaleRound, EndoscaleScalarRound, KimchiConstraint},
     gadgets::curve::{add_complete, double, Point},
-    runner::Constraint,
+    runner::{Constraint, WitnessGeneration},
     FieldVar, RunState, SnarkyResult,
 };
 
@@ -223,6 +223,213 @@ pub fn endo<F: PrimeField>(
     n_acc.assert_equals(sys, loc, scalar)?;
 
     Ok(acc)
+}
+
+/// Number of bits in a scalar challenge (pickles `Scalar_challenge.num_bits`).
+pub const NUM_BITS: usize = 128;
+
+/// `a` contribution of a 2-bit nybble in the endo-scalar fold (OCaml
+/// `a_func`): `0,1 -> 0`, `2 -> -1`, `3 -> 1`.
+fn a_func<F: PrimeField>(nybble: u64) -> F {
+    match nybble {
+        0 | 1 => F::zero(),
+        2 => -F::one(),
+        3 => F::one(),
+        _ => unreachable!("nybble out of range"),
+    }
+}
+
+/// `b` contribution of a 2-bit nybble (OCaml `b_func`): `0 -> -1`, `1 -> 1`,
+/// `2,3 -> 0`.
+fn b_func<F: PrimeField>(nybble: u64) -> F {
+    match nybble {
+        0 => -F::one(),
+        1 => F::one(),
+        2 | 3 => F::zero(),
+        _ => unreachable!("nybble out of range"),
+    }
+}
+
+/// In-circuit interpretation of a 128-bit scalar challenge as a full field
+/// element via the endomorphism, using the `EndoMulScalar` gate — the port of
+/// pickles' `Scalar_challenge.to_field_checked`. Returns `a * endo + b` and
+/// constrains the recomposed challenge `n` to equal `scalar`.
+///
+/// Out of circuit this equals [`ScalarChallenge::to_field`] /
+/// kimchi's `ScalarChallenge::to_field`.
+pub fn scalar_to_field<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    scalar: &FieldVar<F>,
+    endo: F,
+) -> SnarkyResult<FieldVar<F>> {
+    const NYBBLES_PER_ROW: usize = 8;
+    const BITS_PER_ROW: usize = 2 * NYBBLES_PER_ROW;
+    assert_eq!(NUM_BITS % BITS_PER_ROW, 0);
+    let rows = NUM_BITS / BITS_PER_ROW;
+
+    // MSB-first bit `k` of the challenge witness (`bits_msb.(k)`).
+    let scalar_msb = scalar.clone();
+    let msb = move |env: &dyn WitnessGeneration<F>, k: usize| -> bool {
+        let le = env.read_var(&scalar_msb).into_bigint().to_bits_le();
+        le.get(NUM_BITS - 1 - k).copied().unwrap_or(false)
+    };
+
+    let two = F::from(2u64);
+    let mut a = FieldVar::constant(two);
+    let mut b = FieldVar::constant(two);
+    let mut n = FieldVar::zero();
+    let mut state = Vec::with_capacity(rows);
+
+    for i in 0..rows {
+        let n0 = n.clone();
+        let a0 = a.clone();
+        let b0 = b.clone();
+
+        // the 8 nybbles of this row, each in [0, 3]
+        let mut xs = Vec::with_capacity(NYBBLES_PER_ROW);
+        for j in 0..NYBBLES_PER_ROW {
+            let msb = msb.clone();
+            let xj: FieldVar<F> = sys.compute(loc.clone(), move |env| {
+                let bit = BITS_PER_ROW * i + 2 * j;
+                let b1 = u64::from(msb(env, bit)); // high bit of the nybble
+                let b0 = u64::from(msb(env, bit + 1)); // low bit
+                F::from(b0 + 2 * b1)
+            })?;
+            xs.push(xj);
+        }
+
+        // n8 = fold_j (4 * acc + nybble), starting from n0
+        let n8: FieldVar<F> = {
+            let (msb, n0c) = (msb.clone(), n0.clone());
+            sys.compute(loc.clone(), move |env| {
+                let mut acc = env.read_var(&n0c);
+                for j in 0..NYBBLES_PER_ROW {
+                    let bit = BITS_PER_ROW * i + 2 * j;
+                    let nyb = u64::from(msb(env, bit + 1)) + 2 * u64::from(msb(env, bit));
+                    acc = acc.double().double() + F::from(nyb);
+                }
+                acc
+            })?
+        };
+        // a8 = fold_j (2 * acc + a_func(nybble)), starting from a0
+        let a8: FieldVar<F> = {
+            let (msb, a0c) = (msb.clone(), a0.clone());
+            sys.compute(loc.clone(), move |env| {
+                let mut acc = env.read_var(&a0c);
+                for j in 0..NYBBLES_PER_ROW {
+                    let bit = BITS_PER_ROW * i + 2 * j;
+                    let nyb = u64::from(msb(env, bit + 1)) + 2 * u64::from(msb(env, bit));
+                    acc = acc.double() + a_func::<F>(nyb);
+                }
+                acc
+            })?
+        };
+        // b8 = fold_j (2 * acc + b_func(nybble)), starting from b0
+        let b8: FieldVar<F> = {
+            let (msb, b0c) = (msb.clone(), b0.clone());
+            sys.compute(loc.clone(), move |env| {
+                let mut acc = env.read_var(&b0c);
+                for j in 0..NYBBLES_PER_ROW {
+                    let bit = BITS_PER_ROW * i + 2 * j;
+                    let nyb = u64::from(msb(env, bit + 1)) + 2 * u64::from(msb(env, bit));
+                    acc = acc.double() + b_func::<F>(nyb);
+                }
+                acc
+            })?
+        };
+
+        state.push(EndoscaleScalarRound {
+            n0,
+            n8: n8.clone(),
+            a0,
+            b0,
+            a8: a8.clone(),
+            b8: b8.clone(),
+            x0: xs[0].clone(),
+            x1: xs[1].clone(),
+            x2: xs[2].clone(),
+            x3: xs[3].clone(),
+            x4: xs[4].clone(),
+            x5: xs[5].clone(),
+            x6: xs[6].clone(),
+            x7: xs[7].clone(),
+        });
+
+        n = n8;
+        a = a8;
+        b = b8;
+    }
+
+    sys.add_constraint(
+        Constraint::KimchiConstraint(KimchiConstraint::EcEndoscalar(state)),
+        Some("scalar_to_field".into()),
+        loc.clone(),
+    )?;
+    n.assert_equals(sys, loc.clone(), scalar)?;
+
+    Ok(&a.scale(endo) + &b)
+}
+
+#[cfg(test)]
+mod scalar_to_field_tests {
+    use super::*;
+    use kimchi::curve::KimchiCurve;
+    use mina_curves::pasta::{Fp, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::ipa::OpeningProof;
+    use snarky::{api::SnarkyCircuit, loc};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    struct S2FCircuit {
+        challenge: Fp,
+        endo: Fp,
+    }
+    impl SnarkyCircuit for S2FCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<FieldVar<Fp>> {
+            let c: FieldVar<Fp> = sys.compute(loc!(), |_| self.challenge)?;
+            scalar_to_field(sys, loc!(), &c, self.endo)
+        }
+    }
+
+    /// In-circuit scalar_to_field equals the out-of-circuit to_field / kimchi.
+    #[test]
+    fn scalar_to_field_matches_kimchi() {
+        use ark_ff::UniformRand;
+        let (_, endo_r) = Vesta::endos();
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        for _ in 0..3 {
+            let c = Fp::from(u128::rand(&mut rng));
+            let expected = ScalarChallenge(c).to_field(*endo_r);
+            let kimchi = mina_poseidon::sponge::ScalarChallenge::new(c).to_field(endo_r);
+            assert_eq!(expected, kimchi);
+
+            let circ = S2FCircuit {
+                challenge: c,
+                endo: *endo_r,
+            };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected, "in-circuit scalar_to_field matches to_field");
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+        }
+    }
 }
 
 #[cfg(test)]
