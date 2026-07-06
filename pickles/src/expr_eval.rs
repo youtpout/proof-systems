@@ -84,7 +84,7 @@ fn unnormalized_lagrange_basis<F: FftField + PrimeField>(
 }
 
 /// `base^exp` in circuit, by square-and-multiply.
-fn pow_circuit<F: PrimeField>(
+pub fn pow_circuit<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     base: &FieldVar<F>,
