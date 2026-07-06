@@ -89,6 +89,37 @@ pub struct EvalsVar<F: PrimeField> {
     pub z: (FieldVar<F>, FieldVar<F>),
 }
 
+/// In-circuit permutation scalar (mirror of
+/// [crate::plonk_checks::perm_scalar] / the `perm` of pickles' `derive_plonk`):
+/// `- z(zeta omega) * beta * alpha^21 * zkp * prod_i (gamma + beta s_i + w_i)`.
+///
+/// This is the only scalar checked by `Plonk_checks.checked`
+/// (`plonk_checks_passed`): the caller compares it to the claimed `perm` of the
+/// deferred statement.
+pub fn perm_scalar_circuit<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    env: &ScalarsEnvVar<F>,
+    e: &EvalsVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    use crate::plonk_checks::PERM_ALPHA0;
+
+    let a21 = env.alpha_pow(PERM_ALPHA0);
+    // acc = z(zeta*omega) * beta * alpha^21 * zkp
+    let t1 = e.z.1.mul(&env.beta, None, loc.clone(), sys)?;
+    let t2 = t1.mul(&a21, None, loc.clone(), sys)?;
+    let mut acc = t2.mul(&env.zk_polynomial, None, loc.clone(), sys)?;
+    for (i, (s, _)) in e.s.iter().enumerate() {
+        // factor = gamma + beta * s_i + w_i(zeta)
+        let bs = env.beta.mul(s, None, loc.clone(), sys)?;
+        let factor = &(&env.gamma + &bs) + &e.w[i].0;
+        acc = acc.mul(&factor, None, loc.clone(), sys)?;
+    }
+    // seal so the (negated) result is a direct variable, safe to wire as a
+    // public output alongside others
+    acc.scale(-F::one()).seal(sys, loc)
+}
+
 /// In-circuit `ft_eval0` (mirror of [crate::plonk_checks::ft_eval0]).
 /// `constant_term` comes from [crate::expr_eval::eval_polish].
 pub fn ft_eval0_circuit<F: PrimeField>(
@@ -243,14 +274,15 @@ mod tests {
         type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
         type PrivateInput = ();
         type PublicInput = ();
-        type PublicOutput = FieldVar<Fp>;
+        // (ft_eval0, perm) — perm shares env/evals with ft_eval0
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>);
 
         fn circuit(
             &self,
             sys: &mut RunState<Fp>,
             _public: Self::PublicInput,
             _private: Option<&Self::PrivateInput>,
-        ) -> SnarkyResult<FieldVar<Fp>> {
+        ) -> SnarkyResult<(FieldVar<Fp>, FieldVar<Fp>)> {
             let w = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
             let zeta = w(sys, self.zeta)?;
             let alpha = w(sys, self.alpha)?;
@@ -324,7 +356,7 @@ mod tests {
             };
             let constant_term = eval_polish(sys, loc!(), &self.tokens, &penv)?;
 
-            ft_eval0_circuit(
+            let ft0 = ft_eval0_circuit(
                 sys,
                 loc!(),
                 &env,
@@ -332,7 +364,9 @@ mod tests {
                 &evals,
                 &p_eval0,
                 &constant_term,
-            )
+            )?;
+            let perm = perm_scalar_circuit(sys, loc!(), &env, &evals)?;
+            Ok((ft0, perm))
         }
     }
 
@@ -387,9 +421,36 @@ mod tests {
             public_evals0: o.public_evals[0].clone(),
             col_vals,
         };
+        // out-of-circuit perm_scalar reference (the only scalar
+        // `Plonk_checks.checked` verifies)
+        let perm_ref = {
+            use crate::plonk_checks::{perm_scalar, scalars_env, Domain, Evals};
+            let domain = Domain::<Fp> {
+                log2_size: vi.domain.log_size_of_group,
+                generator: vi.domain.group_gen,
+            };
+            let minimal = crate::composition_types::plonk::Minimal::<Fp, Fp, bool> {
+                alpha: oracles.alpha,
+                beta: oracles.beta,
+                gamma: oracles.gamma,
+                zeta: oracles.zeta,
+                joint_combiner: None,
+                feature_flags: crate::composition_types::Features::none(),
+            };
+            let env = scalars_env::<Fp, bool>(&domain, srs_log2, &minimal);
+            let e = Evals {
+                w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+                s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+                z: (combined.z.zeta, combined.z.zeta_omega),
+            };
+            perm_scalar(&env, &e)
+        };
+
         let (mut fpi, fverifier) = circ.compile_to_indexes().unwrap();
         let (fproof, out) = fpi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
-        assert_eq!(*out, o.ft_eval0, "in-circuit ft_eval0 matches kimchi");
-        fverifier.verify::<BaseSponge, ScalarSponge>(fproof, (), *out);
+        assert_eq!(out.0, o.ft_eval0, "in-circuit ft_eval0 matches kimchi");
+        assert_eq!(out.1, perm_ref, "in-circuit perm_scalar matches reference");
+        fverifier.verify::<BaseSponge, ScalarSponge>(fproof, (), (out.0, out.1));
     }
+
 }
