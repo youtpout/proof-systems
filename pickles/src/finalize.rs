@@ -24,7 +24,7 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{FieldVar, RunState, SnarkyResult};
+use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::fr_sponge::{FrSpongeInputs, squeeze_xi_r};
 use crate::ipa::{challenge_polynomial_circuit, combined_inner_product_circuit};
@@ -40,7 +40,7 @@ pub struct FinalizeCore<F: PrimeField> {
     /// The reconstructed combined inner product.
     pub combined_inner_product: FieldVar<F>,
     /// Whether the squeezed `xi` matched the claimed one (raw 128-bit compare).
-    pub xi_correct: FieldVar<F>,
+    pub xi_correct: Boolean<F>,
 }
 
 /// Runs the finalize arithmetic core.
@@ -64,9 +64,7 @@ pub fn finalize_core<F: PrimeField>(
     let (xi_actual, r_actual) = squeeze_xi_r(sys, loc.clone(), sponge_inputs)?;
 
     // xi_correct: the squeezed xi matches the claimed one (raw 128-bit compare)
-    let xi_correct = xi_actual
-        .equal(sys, loc.clone(), claimed_xi)?
-        .to_field_var();
+    let xi_correct = xi_actual.equal(sys, loc.clone(), claimed_xi)?;
 
     // convert the (claimed) xi and r to field elements via the endomorphism
     let xi_field = scalar_to_field(sys, loc.clone(), claimed_xi, endo)?;
@@ -104,6 +102,59 @@ pub fn b_actual<F: PrimeField>(
     let h_zetaw = challenge_polynomial_circuit(sys, loc.clone(), chals, &zetaw)?;
     let r_h_zetaw = r.mul(&h_zetaw, None, loc, sys)?;
     Ok(&h_zeta + &r_h_zetaw)
+}
+
+/// The `Shifted_value.Type2` shift constant `2^{MODULUS_BIT_SIZE}` (mod p).
+/// Deferred values (`combined_inner_product`, `b`, `perm`) are stored in the
+/// statement as `Shifted_value(repr)` with `repr = field - shift`; recovering
+/// the field is `to_field(repr) = repr + shift`.
+pub fn type2_shift<F: PrimeField>() -> F {
+    // 2^{size_in_bits}, matching OCaml `Shifted_value.Type2.Shift.create`
+    let mut acc = F::one();
+    for _ in 0..F::MODULUS_BIT_SIZE {
+        acc.double_in_place();
+    }
+    acc
+}
+
+/// Recovers a field element from its `Shifted_value.Type2` representation:
+/// `to_field(repr) = repr + 2^{size_in_bits}`.
+pub fn type2_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
+    repr + &FieldVar::constant(type2_shift::<F>())
+}
+
+/// Combines the four `finalize_other_proof` conjuncts into the single boolean
+/// `Boolean.all [xi_correct; combined_inner_product_correct; b_correct;
+/// plonk_checks_passed]`.
+///
+/// `xi_correct` is the (already-computed) 128-bit challenge comparison; the
+/// other three compare an in-circuit *derived* value against the *claimed*
+/// value recovered from the statement (`Shifted_value.Type2.to_field`).
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_all<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    xi_correct: &Boolean<F>,
+    cip_derived: &FieldVar<F>,
+    cip_claimed: &FieldVar<F>,
+    b_derived: &FieldVar<F>,
+    b_claimed: &FieldVar<F>,
+    perm_derived: &FieldVar<F>,
+    perm_claimed: &FieldVar<F>,
+) -> SnarkyResult<Boolean<F>> {
+    let cip_correct = cip_derived.equal(sys, loc.clone(), cip_claimed)?;
+    let b_correct = b_derived.equal(sys, loc.clone(), b_claimed)?;
+    let perm_correct = perm_derived.equal(sys, loc.clone(), perm_claimed)?;
+    Boolean::all(
+        &[
+            xi_correct.clone(),
+            cip_correct,
+            b_correct,
+            perm_correct,
+        ],
+        sys,
+        loc,
+    )
 }
 
 #[cfg(test)]
@@ -352,7 +403,7 @@ mod tests {
             )?;
             Ok((
                 (core.xi_field, core.r_field),
-                (core.combined_inner_product, core.xi_correct),
+                (core.combined_inner_product, core.xi_correct.to_field_var()),
             ))
         }
     }
@@ -540,5 +591,103 @@ mod tests {
         assert_eq!(xi_correct, Fp::one(), "xi_correct is true");
 
         fver.verify::<BaseSponge, ScalarSponge>(fproof, (), *out);
+    }
+
+    /// Exercises the `finalize_all` combiner: the four derived values are
+    /// compared to the claimed ones and AND-ed together. Witnesses the pairs
+    /// directly so the test isolates the combiner (each derivation is validated
+    /// in its own module).
+    struct CombineCircuit {
+        xi_actual: Fp,
+        xi_claimed: Fp,
+        cip_derived: Fp,
+        cip_claimed: Fp,
+        b_derived: Fp,
+        b_claimed: Fp,
+        perm_derived: Fp,
+        perm_claimed: Fp,
+    }
+    impl SnarkyCircuit for CombineCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<FieldVar<Fp>> {
+            let w = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
+            let xi_a: FieldVar<Fp> = w(sys, self.xi_actual)?;
+            let xi_c: FieldVar<Fp> = w(sys, self.xi_claimed)?;
+            let xi_correct = xi_a.equal(sys, loc!(), &xi_c)?;
+            let cip_d: FieldVar<Fp> = w(sys, self.cip_derived)?;
+            let cip_c: FieldVar<Fp> = w(sys, self.cip_claimed)?;
+            let b_d: FieldVar<Fp> = w(sys, self.b_derived)?;
+            let b_c: FieldVar<Fp> = w(sys, self.b_claimed)?;
+            let perm_d: FieldVar<Fp> = w(sys, self.perm_derived)?;
+            let perm_c: FieldVar<Fp> = w(sys, self.perm_claimed)?;
+            let all = finalize_all(
+                sys,
+                loc!(),
+                &xi_correct,
+                &cip_d,
+                &cip_c,
+                &b_d,
+                &b_c,
+                &perm_d,
+                &perm_c,
+            )?;
+            all.to_field_var().seal(sys, loc!())
+        }
+    }
+
+    /// finalize_all yields 1 iff all four conjuncts match, 0 otherwise.
+    #[test]
+    fn finalize_all_accepts_and_rejects() {
+        let base = CombineCircuit {
+            xi_actual: Fp::from(11u64),
+            xi_claimed: Fp::from(11u64),
+            cip_derived: Fp::from(22u64),
+            cip_claimed: Fp::from(22u64),
+            b_derived: Fp::from(33u64),
+            b_claimed: Fp::from(33u64),
+            perm_derived: Fp::from(44u64),
+            perm_claimed: Fp::from(44u64),
+        };
+        let run = |c: CombineCircuit| {
+            let (mut pi, ver) = c.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+            *out
+        };
+
+        // all match -> true
+        assert_eq!(run(base_clone(&base)), Fp::one());
+
+        // tamper each conjunct in turn -> false
+        let mut c = CombineCircuit { xi_claimed: Fp::from(99u64), ..base_clone(&base) };
+        assert_eq!(run(c), Fp::zero(), "xi mismatch rejects");
+        c = CombineCircuit { cip_claimed: Fp::from(99u64), ..base_clone(&base) };
+        assert_eq!(run(c), Fp::zero(), "cip mismatch rejects");
+        c = CombineCircuit { b_claimed: Fp::from(99u64), ..base_clone(&base) };
+        assert_eq!(run(c), Fp::zero(), "b mismatch rejects");
+        c = CombineCircuit { perm_claimed: Fp::from(99u64), ..base_clone(&base) };
+        assert_eq!(run(c), Fp::zero(), "perm mismatch rejects");
+    }
+
+    fn base_clone(b: &CombineCircuit) -> CombineCircuit {
+        CombineCircuit {
+            xi_actual: b.xi_actual,
+            xi_claimed: b.xi_claimed,
+            cip_derived: b.cip_derived,
+            cip_claimed: b.cip_claimed,
+            b_derived: b.b_derived,
+            b_claimed: b.b_claimed,
+            perm_derived: b.perm_derived,
+            perm_claimed: b.perm_claimed,
+        }
     }
 }
