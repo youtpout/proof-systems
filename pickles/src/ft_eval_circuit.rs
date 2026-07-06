@@ -89,6 +89,25 @@ pub struct EvalsVar<F: PrimeField> {
     pub z: (FieldVar<F>, FieldVar<F>),
 }
 
+/// Combines a polynomial's chunked evaluations into a single value by Horner's
+/// rule (pickles' `actual_evaluation`): for chunks `[e_0, .., e_{k-1}]` and
+/// `pt_to_n = pt^n`, returns `e_0 + pt_to_n·e_1 + .. + pt_to_n^{k-1}·e_{k-1}`.
+/// For a single chunk it is the identity.
+pub fn actual_evaluation_circuit<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    chunks: &[FieldVar<F>],
+    pt_to_n: &FieldVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    let mut it = chunks.iter().rev();
+    let mut acc = it.next().expect("empty evaluation chunks").clone();
+    for y in it {
+        let pt_acc = pt_to_n.mul(&acc, None, loc.clone(), sys)?;
+        acc = y + &pt_acc;
+    }
+    Ok(acc)
+}
+
 /// In-circuit permutation scalar (mirror of
 /// [crate::plonk_checks::perm_scalar] / the `perm` of pickles' `derive_plonk`):
 /// `- z(zeta omega) * beta * alpha^21 * zkp * prod_i (gamma + beta s_i + w_i)`.
@@ -453,4 +472,62 @@ mod tests {
         fverifier.verify::<BaseSponge, ScalarSponge>(fproof, (), (out.0, out.1));
     }
 
+    struct ActualEvalCircuit {
+        chunks: Vec<Fp>,
+        pt_to_n: Fp,
+    }
+    impl SnarkyCircuit for ActualEvalCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<FieldVar<Fp>> {
+            let mut chunks = vec![];
+            for &c in &self.chunks {
+                chunks.push(sys.compute(loc!(), move |_| c)?);
+            }
+            let pt: FieldVar<Fp> = sys.compute(loc!(), |_| self.pt_to_n)?;
+            actual_evaluation_circuit(sys, loc!(), &chunks, &pt)
+        }
+    }
+
+    fn actual_evaluation_ref(chunks: &[Fp], pt_to_n: Fp) -> Fp {
+        let mut it = chunks.iter().rev();
+        let mut acc = *it.next().unwrap();
+        for &y in it {
+            acc = y + pt_to_n * acc;
+        }
+        acc
+    }
+
+    /// In-circuit chunk combination equals the out-of-circuit Horner reference
+    /// (and is the identity on a single chunk).
+    #[test]
+    fn actual_evaluation_circuit_matches_reference() {
+        use ark_ff::UniformRand;
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        // single chunk is the identity (no constraints, so checked at the
+        // reference level only)
+        let one = [Fp::rand(&mut rng)];
+        assert_eq!(actual_evaluation_ref(&one, Fp::rand(&mut rng)), one[0]);
+        for k in [2usize, 3, 5] {
+            let chunks: Vec<Fp> = (0..k).map(|_| Fp::rand(&mut rng)).collect();
+            let pt_to_n = Fp::rand(&mut rng);
+            let expected = actual_evaluation_ref(&chunks, pt_to_n);
+            let circ = ActualEvalCircuit {
+                chunks,
+                pt_to_n,
+            };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected);
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+        }
+    }
 }
