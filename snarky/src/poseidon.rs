@@ -99,37 +99,39 @@ fn round<F: PrimeField>(
 // Duplex API
 //
 
-/// A duplex construction allows one to absorb and squeeze data alternatively.
+/// The sponge rate (`m - capacity = 3 - 1`).
+const RATE_SIZE: usize = 2;
+
+#[derive(Clone, Copy, Debug)]
+enum SpongeMode {
+    Absorbed(usize),
+    Squeezed(usize),
+}
+
+/// An in-circuit Poseidon sponge (duplex construction: absorb and squeeze
+/// alternately). It maintains the full 3-element state — including the
+/// capacity — across permutations, mirroring
+/// [`mina_poseidon::poseidon::ArithmeticSponge`] exactly.
 pub struct DuplexState<F>
 where
     F: PrimeField,
 {
-    rev_queue: Vec<FieldVar<F>>,
-    absorbing: bool,
-    squeezed: Option<FieldVar<F>>,
     state: [FieldVar<F>; 3],
+    mode: SpongeMode,
 }
 
-impl<F: Default> Default for DuplexState<F>
+impl<F> Default for DuplexState<F>
 where
     F: PrimeField,
 {
     fn default() -> Self {
         let zero = FieldVar::zero();
-        let state = [zero.clone(), zero.clone(), zero];
         DuplexState {
-            rev_queue: vec![],
-            absorbing: true,
-            squeezed: None,
-            state,
+            state: [zero.clone(), zero.clone(), zero],
+            mode: SpongeMode::Absorbed(0),
         }
     }
 }
-
-/// The rate of the sponge.
-/// The part that is modified when absorbing, and released when squeezing.
-/// Unlike the capacity that must not be touched.
-const RATE_SIZE: usize = 2;
 
 impl<F> DuplexState<F>
 where
@@ -140,72 +142,56 @@ where
         Default::default()
     }
 
-    /// Absorb.
+    fn permute_state(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) {
+        self.state = permute(sys, loc, self.state.clone());
+    }
+
+    /// Absorbs field elements (mirrors `ArithmeticSponge::absorb`).
     pub fn absorb(
         &mut self,
         sys: &mut RunState<F>,
         loc: Cow<'static, str>,
         inputs: &[FieldVar<F>],
     ) {
-        // no need to permute to switch to absorbing
-        if !self.absorbing {
-            assert!(self.rev_queue.is_empty());
-            self.squeezed = None;
-            self.absorbing = true;
-        }
-
-        // absorb
-        for input in inputs {
-            // we only permute when we try to absorb too much (we lazy)
-            if self.rev_queue.len() == RATE_SIZE {
-                let left = self.rev_queue.pop().unwrap();
-                let right = self.rev_queue.pop().unwrap();
-                self.state[0] = &self.state[0] + left;
-                self.state[1] = &self.state[1] + right;
-                self.permute(sys, loc.clone());
+        for x in inputs {
+            match self.mode {
+                SpongeMode::Absorbed(n) => {
+                    if n == RATE_SIZE {
+                        self.permute_state(sys, loc.clone());
+                        self.state[0] = &self.state[0] + x;
+                        self.mode = SpongeMode::Absorbed(1);
+                    } else {
+                        self.state[n] = &self.state[n] + x;
+                        self.mode = SpongeMode::Absorbed(n + 1);
+                    }
+                }
+                SpongeMode::Squeezed(_) => {
+                    self.state[0] = &self.state[0] + x;
+                    self.mode = SpongeMode::Absorbed(1);
+                }
             }
-
-            self.rev_queue.insert(0, input.clone());
         }
     }
 
-    /// Permute. You should most likely not use this function directly,
-    /// and use [Self::absorb] and [Self::squeeze] instead.
-    fn permute(
-        &mut self,
-        sys: &mut RunState<F>,
-        loc: Cow<'static, str>,
-    ) -> (FieldVar<F>, FieldVar<F>) {
-        let left = self.state[0].clone();
-        let right = self.state[1].clone();
-        sys.poseidon(loc, (left, right))
-    }
-
-    /// Squeeze.
+    /// Squeezes a field element (mirrors `ArithmeticSponge::squeeze`).
     pub fn squeeze(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) -> FieldVar<F> {
-        // if we're switching to squeezing, don't forget about the queue
-        if self.absorbing {
-            assert!(self.squeezed.is_none());
-            if let Some(left) = self.rev_queue.pop() {
-                self.state[0] = &self.state[0] + left;
+        match self.mode {
+            SpongeMode::Squeezed(n) => {
+                if n == RATE_SIZE {
+                    self.permute_state(sys, loc);
+                    self.mode = SpongeMode::Squeezed(1);
+                    self.state[0].clone()
+                } else {
+                    self.mode = SpongeMode::Squeezed(n + 1);
+                    self.state[n].clone()
+                }
             }
-            if let Some(right) = self.rev_queue.pop() {
-                self.state[1] = &self.state[1] + right;
+            SpongeMode::Absorbed(_) => {
+                self.permute_state(sys, loc);
+                self.mode = SpongeMode::Squeezed(1);
+                self.state[0].clone()
             }
-            self.absorbing = false;
         }
-
-        // if we still have some left over, release that
-        if let Some(squeezed) = self.squeezed.take() {
-            return squeezed;
-        }
-
-        // otherwise permute and squeeze
-        let (left, right) = self.permute(sys, loc);
-
-        // cache the right, release the left
-        self.squeezed = Some(right);
-        left
     }
 }
 

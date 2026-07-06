@@ -129,6 +129,62 @@ mod tests {
         }
     }
 
+    struct DuplexRefCircuit {
+        inputs: Vec<Fp>,
+    }
+    impl SnarkyCircuit for DuplexRefCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { crate::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>, FieldVar<Fp>);
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mut duplex = DuplexState::new();
+            let mut vars = vec![];
+            for &v in &self.inputs {
+                vars.push(sys.compute(loc!(), move |_| v)?);
+            }
+            duplex.absorb(sys, loc!(), &vars);
+            let a = duplex.squeeze(sys, loc!());
+            let b = duplex.squeeze(sys, loc!());
+            let c = duplex.squeeze(sys, loc!());
+            Ok((a, b, c))
+        }
+    }
+
+    /// DuplexState matches mina_poseidon's ArithmeticSponge across input
+    /// lengths and multiple squeezes (exercising cross-permute capacity carry).
+    #[test]
+    fn duplex_matches_arithmetic_sponge() {
+        use kimchi::curve::KimchiCurve;
+        use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
+        for n_inputs in [1usize, 2, 3, 5, 8] {
+            let inputs: Vec<Fp> = (0..n_inputs).map(|i| Fp::from(i as u64 + 1)).collect();
+            let mut reference =
+                ArithmeticSponge::<Fp, PlonkSpongeConstantsKimchi, { crate::FULL_ROUNDS }>::new(
+                    Vesta::sponge_params(),
+                );
+            reference.absorb(&inputs);
+            let expected = (
+                reference.squeeze(),
+                reference.squeeze(),
+                reference.squeeze(),
+            );
+            let circ = DuplexRefCircuit {
+                inputs: inputs.clone(),
+            };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected, "n_inputs = {n_inputs}");
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+        }
+    }
+
     #[test]
     fn snarky_duplex_deterministic() {
         let test_circuit = DuplexCircuit {};
