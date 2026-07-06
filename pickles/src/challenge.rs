@@ -58,7 +58,7 @@ pub fn lowest_128_bits<F: PrimeField>(
 pub fn squeeze_challenge<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    sponge: &mut snarky::gadgets::sponge::DuplexState<F>,
+    sponge: &mut crate::sponge::PoseidonSponge<F>,
 ) -> SnarkyResult<FieldVar<F>> {
     let squeezed = sponge.squeeze(sys, loc.clone());
     lowest_128_bits(sys, loc, &squeezed, true)
@@ -130,7 +130,7 @@ mod tests {
             _p: Self::PublicInput,
             _pr: Option<&Self::PrivateInput>,
         ) -> SnarkyResult<FieldVar<Fp>> {
-            let mut sponge = snarky::gadgets::sponge::DuplexState::new();
+            let mut sponge = crate::sponge::PoseidonSponge::new();
             let mut vars = vec![];
             for &v in &self.inputs {
                 vars.push(sys.compute(loc!(), move |_| v)?);
@@ -140,28 +140,30 @@ mod tests {
         }
     }
 
-    /// squeeze_challenge produces a 128-bit value and is deterministic.
-    /// (NOTE: the exact parity of snarky's DuplexState absorption convention
-    /// with mina_poseidon's ArithmeticSponge is a separate finalize_other_proof
-    /// concern — the two use different rate/state management. Tracked in
-    /// pickles/CLAUDE.md.)
+    /// squeeze_challenge equals the lowest 128 bits of the out-of-circuit
+    /// ArithmeticSponge squeeze on the same inputs (now that the in-circuit
+    /// sponge is faithful).
     #[test]
-    fn squeeze_challenge_is_128_bits_and_deterministic() {
+    fn squeeze_challenge_matches_reference() {
+        use kimchi::curve::KimchiCurve;
+        use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
         let inputs = vec![Fp::from(3u64), Fp::from(5u64), Fp::from(7u64)];
-        let circuit = SqueezeCircuit {
-            inputs: inputs.clone(),
-        };
+
+        let mut reference =
+            ArithmeticSponge::<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>::new(
+                Vesta::sponge_params(),
+            );
+        reference.absorb(&inputs);
+        let expected = lowest_128_ref(reference.squeeze());
+
+        let circuit = SqueezeCircuit { inputs };
         let (mut pi, ver) = circuit.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
-        // the challenge fits in 128 bits
+        assert_eq!(*out, expected);
+        // and it fits in 128 bits
         let bits = out.into_bigint().to_bits_le();
-        assert!(bits[128..].iter().all(|b| !b), "challenge exceeds 128 bits");
+        assert!(bits[128..].iter().all(|b| !b));
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
-
-        // determinism: a second run yields the same challenge
-        let (mut pi2, _) = SqueezeCircuit { inputs }.compile_to_indexes().unwrap();
-        let (_, out2) = pi2.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
-        assert_eq!(*out, *out2);
     }
 
     #[test]
