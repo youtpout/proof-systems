@@ -145,3 +145,197 @@ mod tests {
         verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
     }
 }
+
+//
+// combined_inner_product (the core of finalize_other_proof step 11)
+//
+
+use kimchi::circuits::berkeley_columns::Column;
+use kimchi::circuits::gate::GateType;
+use kimchi::circuits::wires::{COLUMNS, PERMUTS};
+use kimchi::proof::ProofEvaluations;
+
+/// The mandatory columns combined by the inner product, in kimchi's exact
+/// order (the no-optional-gate, no-lookup subset used by a base step
+/// circuit). Matches the `for col in [...]` iterator of the kimchi verifier.
+fn mandatory_columns() -> Vec<Column> {
+    let mut cols = vec![
+        Column::Z,
+        Column::Index(GateType::Generic),
+        Column::Index(GateType::Poseidon),
+        Column::Index(GateType::CompleteAdd),
+        Column::Index(GateType::VarBaseMul),
+        Column::Index(GateType::EndoMul),
+        Column::Index(GateType::EndoMulScalar),
+    ];
+    cols.extend((0..COLUMNS).map(Column::Witness));
+    cols.extend((0..COLUMNS).map(Column::Coefficient));
+    cols.extend((0..PERMUTS - 1).map(Column::Permutation));
+    cols
+}
+
+/// Reconstructs the combined inner product exactly as the pickles verifier
+/// does in `finalize_other_proof` (step 11), for the no-optional-gate case:
+/// `es = [public_evals, [ft_eval0, ft_eval1], mandatory columns...]`,
+/// each entry being `[eval_at_zeta, eval_at_zetaw]`, folded by
+/// `combined_inner_product(xi, r, es)`.
+///
+/// `sg_olds` are the previous-challenge polynomial evaluations (empty for a
+/// base proof), which come first in the list.
+pub fn combined_inner_product<F: ark_ff::PrimeField>(
+    xi: F,
+    r: F,
+    sg_olds: &[(F, F)],
+    public_evals: &[Vec<F>; 2],
+    ft_eval0: F,
+    ft_eval1: F,
+    column_evals: &ProofEvaluations<kimchi::proof::PointEvaluations<Vec<F>>>,
+) -> F {
+    let mut es: Vec<Vec<Vec<F>>> = sg_olds
+        .iter()
+        .map(|(z, zw)| vec![vec![*z], vec![*zw]])
+        .collect();
+    es.push(public_evals.to_vec());
+    es.push(vec![vec![ft_eval0], vec![ft_eval1]]);
+    for col in mandatory_columns() {
+        let e = column_evals
+            .get_column(col)
+            .expect("missing mandatory column evaluation");
+        es.push(vec![e.zeta.clone(), e.zeta_omega.clone()]);
+    }
+    poly_commitment::commitment::combined_inner_product(&xi, &r, &es)
+}
+
+#[cfg(test)]
+mod cip_tests {
+    use super::*;
+    use crate::plonk_checks::{ft_eval0, scalars_env, Domain, Evals, ZK_ROWS};
+    use ark_ff::{One, Zero};
+    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
+    use kimchi::circuits::expr::{Constants, PolishToken};
+    use kimchi::curve::KimchiCurve;
+    use mina_curves::pasta::{Fp, Vesta, VestaParameters};
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use poly_commitment::commitment::PolyComm;
+    use poly_commitment::ipa::OpeningProof;
+    use poly_commitment::SRS;
+    use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+
+    type BaseSponge =
+        DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    struct SmallCircuit {}
+
+    impl SnarkyCircuit for SmallCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = Fp;
+        type PublicInput = FieldVar<Fp>;
+        type PublicOutput = ();
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let x: FieldVar<Fp> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let _ = sys.poseidon(loc!(), (x, z));
+            Ok(())
+        }
+    }
+
+    /// Our combined_inner_product (fed with our own ft_eval0) equals kimchi's
+    /// OraclesResult.combined_inner_product on a real proof.
+    #[test]
+    fn combined_inner_product_matches_kimchi() {
+        let circuit = SmallCircuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let x = Fp::from(9u64);
+        let z = x * x;
+        let (proof, _) = prover_index
+            .prove::<BaseSponge, ScalarSponge>(z, x, true)
+            .unwrap();
+
+        let vi = &verifier_index.index;
+        let public_input = vec![z];
+
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let public_comm = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(public_comm.clone(), &public_comm.map(|_| Fp::one()))
+            .unwrap()
+            .commitment;
+
+        let o = proof
+            .oracles::<BaseSponge, ScalarSponge, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+        let oracles = &o.oracles;
+
+        // recompute ft_eval0 with our port
+        let domain = Domain::<Fp> {
+            log2_size: vi.domain.log_size_of_group,
+            generator: vi.domain.group_gen,
+        };
+        let srs_length_log2 = u64::BITS - 1 - (vi.max_poly_size as u64).leading_zeros();
+        let minimal = crate::composition_types::plonk::Minimal::<Fp, Fp, bool> {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            zeta: oracles.zeta,
+            joint_combiner: None,
+            feature_flags: crate::composition_types::Features::none(),
+        };
+        let env = scalars_env::<Fp, bool>(&domain, srs_length_log2, &minimal);
+        let combined = proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+        let e = Evals {
+            w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            z: (combined.z.zeta, combined.z.zeta_omega),
+        };
+        let constants = Constants {
+            endo_coefficient: vi.endo,
+            mds: &Vesta::sponge_params().mds,
+            zk_rows: ZK_ROWS as u64,
+        };
+        let challenges = BerkeleyChallenges {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            joint_combiner: Fp::zero(),
+        };
+        let constant_term = PolishToken::evaluate(
+            &vi.linearization.constant_term,
+            vi.domain,
+            oracles.zeta,
+            &combined,
+            &constants,
+            &challenges,
+        )
+        .unwrap();
+        let my_ft_eval0 = ft_eval0(&env, &vi.shift, &e, &o.public_evals[0], constant_term);
+
+        // reconstruct combined_inner_product (base proof: no sg_olds)
+        let ours = combined_inner_product(
+            oracles.v, // xi (polyscale)
+            oracles.u, // r (evalscale)
+            &[],
+            &o.public_evals,
+            my_ft_eval0,
+            proof.ft_eval1,
+            &proof.evals,
+        );
+
+        assert_eq!(ours, o.combined_inner_product);
+    }
+}
