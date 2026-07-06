@@ -14,6 +14,22 @@ use snarky::{
 /// Bits handled by one VarBaseMul row.
 pub const BITS_PER_CHUNK: usize = 5;
 
+/// Field division `a / b`: witnesses `q = a / b` and constrains `q * b = a`.
+pub fn div_var<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    a: &FieldVar<F>,
+    b: &FieldVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    use snarky::runner::WitnessGeneration;
+    let (a2, b2) = (a.clone(), b.clone());
+    let q: FieldVar<F> = sys.compute(loc.clone(), move |env: &dyn WitnessGeneration<F>| {
+        env.read_var(&a2) * env.read_var(&b2).inverse().unwrap()
+    })?;
+    sys.assert_r1cs(Some("div_var".into()), loc, q.clone(), b.clone(), a.clone())?;
+    Ok(q)
+}
+
 /// Complete addition (one `CompleteAdd` row); pickles' `add_fast`.
 pub fn add_fast<F: PrimeField>(
     sys: &mut RunState<F>,
