@@ -11,6 +11,7 @@
 //! (the DSL and constraint system, already at gate parity with the OCaml).
 //! See `pickles/CLAUDE.md` for the port map and status.
 
+pub mod challenge;
 pub mod common;
 pub mod composition_types;
 pub mod endo;
