@@ -16,6 +16,7 @@ pub mod common;
 pub mod composition_types;
 pub mod endo;
 pub mod expr_eval;
+pub mod finalize;
 pub mod fr_sponge;
 pub mod ft_eval_circuit;
 pub mod ipa;

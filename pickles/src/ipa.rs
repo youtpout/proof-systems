@@ -158,7 +158,7 @@ use kimchi::proof::ProofEvaluations;
 /// The mandatory columns combined by the inner product, in kimchi's exact
 /// order (the no-optional-gate, no-lookup subset used by a base step
 /// circuit). Matches the `for col in [...]` iterator of the kimchi verifier.
-fn mandatory_columns() -> Vec<Column> {
+pub fn mandatory_columns() -> Vec<Column> {
     let mut cols = vec![
         Column::Z,
         Column::Index(GateType::Generic),
