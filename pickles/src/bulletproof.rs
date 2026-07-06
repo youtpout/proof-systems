@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
 
-use crate::scalar_challenge::endo;
+use crate::scalar_challenge::{endo, endo_inv};
 
 /// Combines commitments by the polyscale challenge `xi`
 /// (`Split_commitments.combine`): returns `Σ_i xi_field^i · C_i`, computed by
@@ -41,6 +41,52 @@ pub fn combine_commitments<F: PrimeField>(
         acc = add_fast(sys, loc.clone(), c, &scaled)?;
     }
     Ok(acc)
+}
+
+/// The bulletproof reduction term sum (pickles' `bullet_reduce`, EC part):
+/// given the per-round `(L, R)` points and the round prechallenges `pre`
+/// (128-bit), returns `Σ_round (endo_inv(L, pre) + endo(R, pre))`
+/// = `Σ_round (pre_field⁻¹·L + pre_field·R)`.
+///
+/// The sponge-driven derivation of the prechallenges is handled by the caller;
+/// this is the pure elliptic-curve fold.
+pub fn bullet_reduce_terms<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    lr: &[(Point<F>, Point<F>)],
+    prechallenges: &[FieldVar<F>],
+    endo_base: F,
+    endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
+) -> SnarkyResult<Point<F>>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    use crate::common::SCALAR_CHALLENGE_BITS;
+    use crate::plonk_curve_ops::add_fast;
+
+    assert_eq!(lr.len(), prechallenges.len());
+    assert!(!lr.is_empty(), "bullet_reduce_terms: no rounds");
+
+    let mut acc: Option<Point<F>> = None;
+    for ((l, r), pre) in lr.iter().zip(prechallenges) {
+        let left = endo_inv::<F, C>(
+            sys,
+            loc.clone(),
+            l,
+            pre,
+            SCALAR_CHALLENGE_BITS,
+            endo_base,
+            endo_scalar,
+        )?;
+        let right = endo(sys, loc.clone(), r, pre, SCALAR_CHALLENGE_BITS, endo_base)?;
+        let term = add_fast(sys, loc.clone(), &left, &right)?;
+        acc = Some(match acc {
+            None => term,
+            Some(a) => add_fast(sys, loc.clone(), &a, &term)?,
+        });
+    }
+    Ok(acc.unwrap())
 }
 
 #[cfg(test)]
@@ -121,5 +167,85 @@ mod tests {
             assert_eq!(*out, (expected.x, expected.y), "n = {n}");
             ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
         }
+    }
+
+    struct BulletReduceCircuit {
+        prechallenges: Vec<u128>,
+        lr: Vec<((Fp, Fp), (Fp, Fp))>,
+    }
+    impl SnarkyCircuit for BulletReduceCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>);
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                Ok(Point::new(
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
+            let mut lr = vec![];
+            for &(l, r) in &self.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let mut pres = vec![];
+            for &c in &self.prechallenges {
+                pres.push(sys.compute(loc!(), move |_| Fp::from(c))?);
+            }
+            let acc = bullet_reduce_terms::<Fp, mina_curves::pasta::PallasParameters>(
+                sys,
+                loc!(),
+                &lr,
+                &pres,
+                crate::endo::tick::base(),
+                <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
+            )?;
+            Ok((acc.x, acc.y))
+        }
+    }
+
+    /// bullet_reduce_terms equals Σ (pre_field⁻¹·L + pre_field·R).
+    #[test]
+    fn bullet_reduce_matches_reference() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let (_, endo_scalar) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+        let rounds = 3;
+        let lr_pts: Vec<(Pallas, Pallas)> = (0..rounds)
+            .map(|_| {
+                (
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                )
+            })
+            .collect();
+        let pres: Vec<u128> = (0..rounds).map(|_| u128::rand(&mut rng)).collect();
+
+        // reference
+        use ark_ff::Field;
+        let mut acc = Pallas::zero().into_group();
+        for (&(l, r), &pre) in lr_pts.iter().zip(&pres) {
+            let pf = crate::scalar_challenge::ScalarChallenge(Fq::from(pre)).to_field(*endo_scalar);
+            acc += l.into_group() * pf.inverse().unwrap() + r.into_group() * pf;
+        }
+        let expected = acc.into_affine();
+
+        let circ = BulletReduceCircuit {
+            prechallenges: pres,
+            lr: lr_pts
+                .iter()
+                .map(|(l, r)| ((l.x, l.y), (r.x, r.y)))
+                .collect(),
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        assert_eq!(*out, (expected.x, expected.y));
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 }
