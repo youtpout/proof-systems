@@ -22,6 +22,7 @@ pub mod fr_sponge;
 pub mod ft_eval_circuit;
 pub mod ipa;
 pub mod opt_sponge;
+pub mod oracles;
 pub mod plonk_checks;
 pub mod plonk_curve_ops;
 pub mod scalar_challenge;
