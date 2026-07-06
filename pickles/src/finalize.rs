@@ -27,7 +27,7 @@ use ark_ff::PrimeField;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
 use crate::fr_sponge::{FrSpongeInputs, squeeze_xi_r};
-use crate::ipa::combined_inner_product_circuit;
+use crate::ipa::{challenge_polynomial_circuit, combined_inner_product_circuit};
 use crate::scalar_challenge::scalar_to_field;
 
 /// The result of the finalize arithmetic core: the derived field challenges and
@@ -82,6 +82,28 @@ pub fn finalize_core<F: PrimeField>(
         combined_inner_product,
         xi_correct,
     })
+}
+
+/// The bulletproof `b` value, reconstructed from the *new* bulletproof
+/// challenges (step 9 of `finalize_other_proof`):
+/// `b = h(zeta) + r * h(zetaw)` where `h(X) = prod_i (1 + chals[i] X^{2^{k-1-i}})`
+/// is the challenge polynomial and `zetaw = domain_generator * zeta`.
+///
+/// `chals` are the challenges already in field form (via
+/// [`crate::ipa::compute_challenges`] / [`scalar_to_field`]).
+pub fn b_actual<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    chals: &[FieldVar<F>],
+    zeta: &FieldVar<F>,
+    domain_generator: F,
+    r: &FieldVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    let zetaw = zeta.scale(domain_generator);
+    let h_zeta = challenge_polynomial_circuit(sys, loc.clone(), chals, zeta)?;
+    let h_zetaw = challenge_polynomial_circuit(sys, loc.clone(), chals, &zetaw)?;
+    let r_h_zetaw = r.mul(&h_zetaw, None, loc, sys)?;
+    Ok(&h_zeta + &r_h_zetaw)
 }
 
 #[cfg(test)]
@@ -333,6 +355,76 @@ mod tests {
                 (core.combined_inner_product, core.xi_correct),
             ))
         }
+    }
+
+    /// captured (field-form) bulletproof challenges + points, replayed to check
+    /// the in-circuit `b_actual` against the out-of-circuit reference.
+    struct BActualCircuit {
+        chals: Vec<Fp>,
+        zeta: Fp,
+        gen: Fp,
+        r: Fp,
+    }
+    impl SnarkyCircuit for BActualCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<FieldVar<Fp>> {
+            let mut chals = vec![];
+            for &c in &self.chals {
+                chals.push(sys.compute(loc!(), move |_| c)?);
+            }
+            let zeta: FieldVar<Fp> = sys.compute(loc!(), |_| self.zeta)?;
+            let r: FieldVar<Fp> = sys.compute(loc!(), |_| self.r)?;
+            b_actual(sys, loc!(), &chals, &zeta, self.gen, &r)
+        }
+    }
+
+    /// In-circuit `b_actual` = h(zeta) + r*h(zetaw) equals the out-of-circuit
+    /// reference on challenges derived from real prechallenges.
+    #[test]
+    fn b_actual_matches_reference() {
+        use crate::common::TOCK_ROUNDS;
+        use crate::ipa::{challenge_polynomial, compute_challenges};
+        use crate::scalar_challenge::ScalarChallenge;
+        use ark_ff::UniformRand;
+
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+
+        let prechallenges: Vec<_> = (0..TOCK_ROUNDS)
+            .map(|_| crate::composition_types::BulletproofChallenge {
+                prechallenge: ScalarChallenge(Fp::from(u128::rand(&mut rng))),
+            })
+            .collect();
+        let chals = compute_challenges(&prechallenges, *endo_r);
+
+        let domain_gen = {
+            use ark_poly::EvaluationDomain;
+            D::<Fp>::new(1 << 5).unwrap().group_gen
+        };
+        let zeta = Fp::rand(&mut rng);
+        let r = Fp::rand(&mut rng);
+        let zetaw = domain_gen * zeta;
+        let expected = challenge_polynomial(&chals, zeta) + r * challenge_polynomial(&chals, zetaw);
+
+        let circ = BActualCircuit {
+            chals,
+            zeta,
+            gen: domain_gen,
+            r,
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        assert_eq!(*out, expected, "in-circuit b_actual matches reference");
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 
     /// The full finalize arithmetic core (sponge -> scalar_to_field -> cip, with
