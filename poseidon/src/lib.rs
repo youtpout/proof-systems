@@ -37,5 +37,6 @@ pub mod pasta;
 pub mod permutation;
 pub mod poseidon;
 pub mod sponge;
+pub mod sponge_machine;
 
 pub use sponge::FqSponge; // Commonly used so reexported for convenience

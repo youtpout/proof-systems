@@ -105,44 +105,35 @@ impl<F: Field, SC: SpongeConstants, const FULL_ROUNDS: usize> Sponge<F, F, FULL_
     /// in trailing zeros until reaching an even length input. Therefore, **use
     /// only with inputs of fixed-length**.
     fn absorb(&mut self, x: &[F]) {
-        for elem in x {
-            match self.sponge_state {
-                SpongeState::Absorbed(n) => {
-                    if n == self.rate {
-                        self.poseidon_block_cipher();
-                        self.sponge_state = SpongeState::Absorbed(1);
-                        self.state[0].add_assign(elem);
-                    } else {
-                        self.sponge_state = SpongeState::Absorbed(n + 1);
-                        self.state[n].add_assign(elem);
-                    }
-                }
-                SpongeState::Squeezed(_n) => {
-                    self.state[0].add_assign(elem);
-                    self.sponge_state = SpongeState::Absorbed(1);
-                }
-            }
-        }
+        // delegate to the shared sponge state machine (see sponge_machine.rs)
+        let mut machine = crate::sponge_machine::SpongeMachine {
+            state: core::mem::take(&mut self.state),
+            rate: self.rate,
+            mode: self.sponge_state.clone(),
+        };
+        machine.absorb(
+            x,
+            |a: &F, b: &F| *a + *b,
+            |state: &mut Vec<F>| {
+                poseidon_block_cipher::<F, SC, FULL_ROUNDS>(self.params, state);
+            },
+        );
+        self.state = machine.state;
+        self.sponge_state = machine.mode;
     }
 
     fn squeeze(&mut self) -> F {
-        match self.sponge_state {
-            SpongeState::Squeezed(n) => {
-                if n == self.rate {
-                    self.poseidon_block_cipher();
-                    self.sponge_state = SpongeState::Squeezed(1);
-                    self.state[0]
-                } else {
-                    self.sponge_state = SpongeState::Squeezed(n + 1);
-                    self.state[n]
-                }
-            }
-            SpongeState::Absorbed(_n) => {
-                self.poseidon_block_cipher();
-                self.sponge_state = SpongeState::Squeezed(1);
-                self.state[0]
-            }
-        }
+        let mut machine = crate::sponge_machine::SpongeMachine {
+            state: core::mem::take(&mut self.state),
+            rate: self.rate,
+            mode: self.sponge_state.clone(),
+        };
+        let out = machine.squeeze(|state: &mut Vec<F>| {
+            poseidon_block_cipher::<F, SC, FULL_ROUNDS>(self.params, state);
+        });
+        self.state = machine.state;
+        self.sponge_state = machine.mode;
+        out
     }
 
     fn reset(&mut self) {

@@ -8,6 +8,8 @@ use crate::{
 use ark_ff::PrimeField;
 use itertools::Itertools;
 use kimchi::circuits::polynomials::poseidon::{ROUNDS_PER_HASH, ROUNDS_PER_ROW, SPONGE_WIDTH};
+use mina_poseidon::poseidon::SpongeState as SpongeMode;
+use mina_poseidon::sponge_machine::SpongeMachine;
 use mina_poseidon::{
     constants::PlonkSpongeConstantsKimchi, permutation::full_round,
     poseidon::ArithmeticSpongeParams,
@@ -102,16 +104,11 @@ fn round<F: PrimeField>(
 /// The sponge rate (`m - capacity = 3 - 1`).
 const RATE_SIZE: usize = 2;
 
-#[derive(Clone, Copy, Debug)]
-enum SpongeMode {
-    Absorbed(usize),
-    Squeezed(usize),
-}
-
 /// An in-circuit Poseidon sponge (duplex construction: absorb and squeeze
-/// alternately). It maintains the full 3-element state — including the
-/// capacity — across permutations, mirroring
-/// [`mina_poseidon::poseidon::ArithmeticSponge`] exactly.
+/// alternately). It runs the shared [`SpongeMachine`] protocol over circuit
+/// variables, so it matches `mina_poseidon::poseidon::ArithmeticSponge`
+/// exactly (same absorb/squeeze state machine, capacity threaded across
+/// permutations).
 pub struct DuplexState<F>
 where
     F: PrimeField,
@@ -142,56 +139,53 @@ where
         Default::default()
     }
 
-    fn permute_state(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) {
-        self.state = permute(sys, loc, self.state.clone());
+    /// The in-circuit permutation, as the [`SpongeMachine`] permute closure.
+    fn permute_closure<'a>(
+        sys: &'a mut RunState<F>,
+        loc: Cow<'static, str>,
+    ) -> impl FnMut(&mut Vec<FieldVar<F>>) + 'a {
+        move |state: &mut Vec<FieldVar<F>>| {
+            let arr: [FieldVar<F>; 3] = core::array::from_fn(|i| state[i].clone());
+            *state = permute(sys, loc.clone(), arr).to_vec();
+        }
     }
 
-    /// Absorbs field elements (mirrors `ArithmeticSponge::absorb`).
+    fn take_machine(&mut self) -> SpongeMachine<FieldVar<F>> {
+        SpongeMachine {
+            state: self.state.to_vec(),
+            rate: RATE_SIZE,
+            mode: self.mode.clone(),
+        }
+    }
+
+    fn restore(&mut self, machine: SpongeMachine<FieldVar<F>>) {
+        self.state = core::array::from_fn(|i| machine.state[i].clone());
+        self.mode = machine.mode;
+    }
+
+    /// Absorbs field elements (shares the [`SpongeMachine`] protocol with
+    /// `mina_poseidon::ArithmeticSponge`).
     pub fn absorb(
         &mut self,
         sys: &mut RunState<F>,
         loc: Cow<'static, str>,
         inputs: &[FieldVar<F>],
     ) {
-        for x in inputs {
-            match self.mode {
-                SpongeMode::Absorbed(n) => {
-                    if n == RATE_SIZE {
-                        self.permute_state(sys, loc.clone());
-                        self.state[0] = &self.state[0] + x;
-                        self.mode = SpongeMode::Absorbed(1);
-                    } else {
-                        self.state[n] = &self.state[n] + x;
-                        self.mode = SpongeMode::Absorbed(n + 1);
-                    }
-                }
-                SpongeMode::Squeezed(_) => {
-                    self.state[0] = &self.state[0] + x;
-                    self.mode = SpongeMode::Absorbed(1);
-                }
-            }
-        }
+        let mut machine = self.take_machine();
+        machine.absorb(
+            inputs,
+            |a: &FieldVar<F>, b: &FieldVar<F>| a + b,
+            Self::permute_closure(sys, loc),
+        );
+        self.restore(machine);
     }
 
-    /// Squeezes a field element (mirrors `ArithmeticSponge::squeeze`).
+    /// Squeezes a field element.
     pub fn squeeze(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) -> FieldVar<F> {
-        match self.mode {
-            SpongeMode::Squeezed(n) => {
-                if n == RATE_SIZE {
-                    self.permute_state(sys, loc);
-                    self.mode = SpongeMode::Squeezed(1);
-                    self.state[0].clone()
-                } else {
-                    self.mode = SpongeMode::Squeezed(n + 1);
-                    self.state[n].clone()
-                }
-            }
-            SpongeMode::Absorbed(_) => {
-                self.permute_state(sys, loc);
-                self.mode = SpongeMode::Squeezed(1);
-                self.state[0].clone()
-            }
-        }
+        let mut machine = self.take_machine();
+        let out = machine.squeeze(Self::permute_closure(sys, loc));
+        self.restore(machine);
+        out
     }
 }
 
