@@ -89,6 +89,30 @@ where
     Ok(acc.unwrap())
 }
 
+/// The sponge-driven prechallenge derivation of pickles' `bullet_reduce`
+/// (`wrap_verifier.ml`, lines ~168–174): for each IPA round, absorb the round's
+/// `L` then `R` commitment into the (base-field) transcript sponge and squeeze a
+/// raw 128-bit challenge. These prechallenges are then fed to
+/// [`bullet_reduce_terms`] (as the endomorphism scalars) and recorded as the
+/// deferred bulletproof challenges.
+pub fn bullet_reduce_challenges<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge: &mut crate::sponge::PoseidonSponge<F>,
+    lr: &[(crate::oracles::PointVar<F>, crate::oracles::PointVar<F>)],
+) -> SnarkyResult<Vec<FieldVar<F>>> {
+    use crate::challenge::squeeze_challenge;
+    use crate::oracles::absorb_commitment;
+
+    let mut prechallenges = Vec::with_capacity(lr.len());
+    for (l, r) in lr {
+        absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(l));
+        absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(r));
+        prechallenges.push(squeeze_challenge(sys, loc.clone(), sponge)?);
+    }
+    Ok(prechallenges)
+}
+
 /// The final inner-product-argument equation of pickles' `check_bulletproof`
 /// (`wrap_verifier.ml`, lines ~603–622):
 ///
@@ -309,6 +333,97 @@ mod tests {
         let (mut pi, ver) = circ.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         assert_eq!(*out, (expected.x, expected.y));
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
+    type RefSponge = ArithmeticSponge<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    fn lowest_128(x: Fp) -> Fp {
+        use ark_ff::{AdditiveGroup, BigInteger, One, Zero};
+        let bits = x.into_bigint().to_bits_le();
+        let mut acc = Fp::zero();
+        for &b in bits[..128].iter().rev() {
+            acc.double_in_place();
+            if b {
+                acc += Fp::one();
+            }
+        }
+        acc
+    }
+
+    struct BulletChalCircuit {
+        lr: Vec<((Fp, Fp), (Fp, Fp))>,
+    }
+    impl SnarkyCircuit for BulletChalCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>, FieldVar<Fp>);
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mkpt =
+                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<crate::oracles::PointVar<Fp>> {
+                    Ok((
+                        sys.compute(loc!(), move |_| p.0)?,
+                        sys.compute(loc!(), move |_| p.1)?,
+                    ))
+                };
+            let mut lr = vec![];
+            for &(l, r) in &self.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let mut sponge = crate::sponge::PoseidonSponge::new();
+            let chals = bullet_reduce_challenges(sys, loc!(), &mut sponge, &lr)?;
+            Ok((chals[0].clone(), chals[1].clone(), chals[2].clone()))
+        }
+    }
+
+    /// `bullet_reduce_challenges` reproduces the out-of-circuit transcript:
+    /// absorb `L`, `R` per round, squeeze a raw 128-bit challenge.
+    #[test]
+    fn bullet_reduce_challenges_match_reference() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let rounds = 3;
+        let lr_pts: Vec<(Pallas, Pallas)> = (0..rounds)
+            .map(|_| {
+                (
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                )
+            })
+            .collect();
+
+        // reference: ArithmeticSponge<Fp>, absorb l.x,l.y,r.x,r.y then squeeze
+        let mut s = RefSponge::new(Vesta::sponge_params());
+        let expected: Vec<Fp> = lr_pts
+            .iter()
+            .map(|(l, r)| {
+                s.absorb(&[l.x]);
+                s.absorb(&[l.y]);
+                s.absorb(&[r.x]);
+                s.absorb(&[r.y]);
+                lowest_128(s.squeeze())
+            })
+            .collect();
+
+        let circ = BulletChalCircuit {
+            lr: lr_pts
+                .iter()
+                .map(|(l, r)| ((l.x, l.y), (r.x, r.y)))
+                .collect(),
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        let (c0, c1, c2) = *out.clone();
+        assert_eq!(c0, expected[0], "round 0");
+        assert_eq!(c1, expected[1], "round 1");
+        assert_eq!(c2, expected[2], "round 2");
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 

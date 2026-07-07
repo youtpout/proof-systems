@@ -48,7 +48,7 @@ pub struct FqOracles<F: PrimeField> {
 
 /// Absorbs a commitment's chunks (each an affine point) into the sponge,
 /// coordinate by coordinate — the in-circuit `absorb_commitment` / `absorb_g`.
-fn absorb_commitment<F: PrimeField>(
+pub(crate) fn absorb_commitment<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     sponge: &mut PoseidonSponge<F>,
