@@ -109,6 +109,7 @@ const RATE_SIZE: usize = 2;
 /// variables, so it matches `mina_poseidon::poseidon::ArithmeticSponge`
 /// exactly (same absorb/squeeze state machine, capacity threaded across
 /// permutations).
+#[derive(Clone)]
 pub struct DuplexState<F>
 where
     F: PrimeField,
