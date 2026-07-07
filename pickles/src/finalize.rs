@@ -151,6 +151,50 @@ pub fn finalize_all<F: PrimeField>(
     )
 }
 
+/// The complete in-circuit `finalize_other_proof` (`step_verifier.ml`):
+/// re-derives the deferred values (`xi`, `combined_inner_product`, `b`) and
+/// combines the four conjuncts into the single `Boolean.all`.
+///
+/// `perm_derived` is the permutation scalar computed by the caller (via
+/// [`crate::ft_eval_circuit::perm_scalar_circuit`], sharing the same
+/// `scalars_env`/evals as `ft_eval0`). The claimed values
+/// (`*_claimed_repr`) are the statement's `Shifted_value.Type1` representatives,
+/// recovered with [`type1_to_field`]. `b_chals` are the *new* bulletproof
+/// challenges in field form; `domain_generator` gives `zetaw = domain_generator·zeta`.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_other_proof<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge_inputs: &FrSpongeInputs<F>,
+    claimed_xi: &FieldVar<F>,
+    cip_entries: &[(FieldVar<F>, FieldVar<F>)],
+    cip_claimed_repr: &FieldVar<F>,
+    b_chals: &[FieldVar<F>],
+    zeta: &FieldVar<F>,
+    domain_generator: F,
+    b_claimed_repr: &FieldVar<F>,
+    perm_derived: &FieldVar<F>,
+    perm_claimed_repr: &FieldVar<F>,
+    endo: F,
+) -> SnarkyResult<Boolean<F>> {
+    let core = finalize_core(sys, loc.clone(), sponge_inputs, claimed_xi, cip_entries, endo)?;
+    let b_derived = b_actual(sys, loc.clone(), b_chals, zeta, domain_generator, &core.r_field)?;
+    let cip_claimed = type1_to_field(cip_claimed_repr);
+    let b_claimed = type1_to_field(b_claimed_repr);
+    let perm_claimed = type1_to_field(perm_claimed_repr);
+    finalize_all(
+        sys,
+        loc,
+        &core.xi_correct,
+        &core.combined_inner_product,
+        &cip_claimed,
+        &b_derived,
+        &b_claimed,
+        perm_derived,
+        &perm_claimed,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +281,13 @@ mod tests {
         // claimed challenge (raw 128-bit)
         claimed_xi: Fp,
         endo_r: Fp,
+        // finalize_other_proof extras: new bulletproof challenges (field form),
+        // domain generator, and the Type1-shifted claimed deferred values
+        bp_chals: Vec<Fp>,
+        domain_gen: Fp,
+        cip_claimed_repr: Fp,
+        b_claimed_repr: Fp,
+        perm_claimed_repr: Fp,
     }
 
     impl SnarkyCircuit for FinalizeCircuit {
@@ -244,11 +295,13 @@ mod tests {
         type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
         type PrivateInput = ();
         type PublicInput = ();
-        // ((xi_field, r_field), (combined_inner_product, xi_correct))
+        // (((xi_field, r_field), (combined_inner_product, xi_correct)),
+        //  finalize_other_proof_result)
         // (nested because SnarkyType tuples top out at arity 3)
+        #[allow(clippy::type_complexity)]
         type PublicOutput = (
-            (FieldVar<Fp>, FieldVar<Fp>),
-            (FieldVar<Fp>, FieldVar<Fp>),
+            ((FieldVar<Fp>, FieldVar<Fp>), (FieldVar<Fp>, FieldVar<Fp>)),
+            FieldVar<Fp>,
         );
 
         fn circuit(
@@ -395,9 +448,34 @@ mod tests {
                 &cip_entries,
                 self.endo_r,
             )?;
+
+            // ---- full finalize_other_proof: derive b and perm, recover the
+            //      Type1-shifted claimed values, and AND the four conjuncts ----
+            let perm_derived =
+                crate::ft_eval_circuit::perm_scalar_circuit(sys, loc!(), &env, &ft_evals)?;
+            let b_chals = wvec(sys, &self.bp_chals)?;
+            let b_derived = b_actual(sys, loc!(), &b_chals, &zeta, self.domain_gen, &core.r_field)?;
+            let cip_claimed = type1_to_field(&w1(sys, self.cip_claimed_repr)?);
+            let b_claimed = type1_to_field(&w1(sys, self.b_claimed_repr)?);
+            let perm_claimed = type1_to_field(&w1(sys, self.perm_claimed_repr)?);
+            let finalized = finalize_all(
+                sys,
+                loc!(),
+                &core.xi_correct,
+                &core.combined_inner_product,
+                &cip_claimed,
+                &b_derived,
+                &b_claimed,
+                &perm_derived,
+                &perm_claimed,
+            )?;
+
             Ok((
-                (core.xi_field, core.r_field),
-                (core.combined_inner_product, core.xi_correct.to_field_var()),
+                (
+                    (core.xi_field, core.r_field),
+                    (core.combined_inner_product, core.xi_correct.to_field_var()),
+                ),
+                finalized.to_field_var(),
             ))
         }
     }
@@ -525,6 +603,80 @@ mod tests {
 
         let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
 
+        // ---- prover-side deferred values (expand_deferred) for the claimed
+        //      Type1-shifted cip/b/perm and the new bulletproof challenges ----
+        let domain = crate::plonk_checks::Domain::<Fp> {
+            log2_size: vi.domain.log_size_of_group,
+            generator: vi.domain.group_gen,
+        };
+        let minimal = crate::composition_types::plonk::Minimal::<Fp, Fp, bool> {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            zeta: oracles.zeta,
+            joint_combiner: None,
+            feature_flags: crate::composition_types::Features::none(),
+        };
+        let env_ooc = crate::plonk_checks::scalars_env::<Fp, bool>(&domain, srs_log2, &minimal);
+        let evals_ooc = crate::plonk_checks::Evals {
+            w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            z: (combined.z.zeta, combined.z.zeta_omega),
+        };
+        let ft_eval0_ooc = {
+            use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
+            use kimchi::circuits::expr::Constants;
+            let constants = Constants {
+                endo_coefficient: vi.endo,
+                mds: &Vesta::sponge_params().mds,
+                zk_rows: ZK_ROWS as u64,
+            };
+            let challenges = BerkeleyChallenges {
+                alpha: oracles.alpha,
+                beta: oracles.beta,
+                gamma: oracles.gamma,
+                joint_combiner: Fp::zero(),
+            };
+            let ct = PolishToken::evaluate(
+                &vi.linearization.constant_term,
+                vi.domain,
+                oracles.zeta,
+                &combined,
+                &constants,
+                &challenges,
+            )
+            .unwrap();
+            crate::plonk_checks::ft_eval0(&env_ooc, &vi.shift, &evals_ooc, &o.public_evals[0], ct)
+        };
+        let zeta_v = oracles.zeta;
+        let zetaw_v = zeta_v * vi.domain.group_gen;
+        use ark_ff::UniformRand;
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let prechallenges: Vec<crate::composition_types::BulletproofChallenge<crate::scalar_challenge::ScalarChallenge<Fp>>> =
+            (0..16)
+                .map(|_| crate::composition_types::BulletproofChallenge {
+                    prechallenge: crate::scalar_challenge::ScalarChallenge(Fp::from(
+                        u128::rand(&mut rng),
+                    )),
+                })
+                .collect();
+        let dv = crate::wrap_deferred_values::expand_deferred(
+            oracles.v,
+            oracles.u,
+            &[],
+            &o.public_evals,
+            ft_eval0_ooc,
+            proof.ft_eval1,
+            &proof.evals,
+            zeta_v,
+            zetaw_v,
+            &prechallenges,
+            *endo_r,
+            &env_ooc,
+            &evals_ooc,
+        );
+        let bp_chals_field = crate::ipa::compute_challenges(&prechallenges, *endo_r);
+
         // the raw 128-bit `v_chal` (opaque in RandomOracles) — replay the
         // Fr-sponge out of circuit via the public `squeeze` API, exactly as
         // `challenge()` does (`squeeze(CHALLENGE_LENGTH_IN_LIMBS)`).
@@ -573,16 +725,24 @@ mod tests {
             cip_cols,
             claimed_xi,
             endo_r: *endo_r,
+            bp_chals: bp_chals_field,
+            domain_gen: vi.domain.group_gen,
+            cip_claimed_repr: dv.combined_inner_product,
+            b_claimed_repr: dv.b,
+            perm_claimed_repr: dv.perm,
         };
 
         let (mut fpi, fver) = circ.compile_to_indexes().unwrap();
         let (fproof, out) = fpi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
-        let ((xi_field, r_field), (cip, xi_correct)) = *out.clone();
+        let (((xi_field, r_field), (cip, xi_correct)), finalized) = *out.clone();
 
         assert_eq!(xi_field, oracles.v, "xi (field) matches kimchi");
         assert_eq!(r_field, oracles.u, "r (field) matches kimchi");
         assert_eq!(cip, o.combined_inner_product, "combined inner product matches");
         assert_eq!(xi_correct, Fp::one(), "xi_correct is true");
+        // full finalize_other_proof accepts: derived == claimed for all four
+        // conjuncts (cip/b/perm recovered from expand_deferred's Type1 reprs)
+        assert_eq!(finalized, Fp::one(), "finalize_other_proof accepts a real proof");
 
         fver.verify::<BaseSponge, ScalarSponge>(fproof, (), *out);
     }

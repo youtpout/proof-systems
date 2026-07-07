@@ -28,8 +28,8 @@ pub struct DeferredValues<F> {
     pub combined_inner_product: F,
     /// `Shifted_value.Type1` of `b = h(ζ) + r·h(ζω)`.
     pub b: F,
-    /// The permutation scalar `perm` (the only scalar `Plonk_checks.checked`
-    /// defers as a commitment-side value).
+    /// `Shifted_value.Type1` of the permutation scalar `perm` (the only scalar
+    /// `Plonk_checks.checked` defers, recovered in `finalize` via `shift1`).
     pub perm: F,
     /// The bulletproof challenges as field images (`Ipa.Step.compute_challenges`).
     pub bulletproof_challenges: Vec<F>,
@@ -72,13 +72,13 @@ pub fn expand_deferred<F: PrimeField>(
     let b_actual = challenge_polynomial(&bulletproof_challenges, zeta)
         + r * challenge_polynomial(&bulletproof_challenges, zetaw);
 
-    // the deferred permutation scalar
+    // the deferred permutation scalar (stored shifted, like cip and b)
     let perm = perm_scalar(env, evals);
 
     DeferredValues {
         combined_inner_product: type1_of_field(cip_actual),
         b: type1_of_field(b_actual),
-        perm,
+        perm: type1_of_field(perm),
         bulletproof_challenges,
     }
 }
