@@ -269,6 +269,80 @@ pub mod wrap {
     }
 }
 
+pub mod step {
+    use super::{plonk, BulletproofChallenge};
+    use crate::scalar_challenge::ScalarChallenge;
+    use ark_ff::PrimeField;
+
+    /// Flattens one unfinalized per-proof state to field elements in the
+    /// `Step.Proof_state.Per_proof.In_circuit.to_data` order
+    /// (`composition_types.ml:1223`): `fq[5]` (combined_inner_product, b,
+    /// zeta_to_srs_length, zeta_to_domain_size, perm), `digest[1]`
+    /// (sponge_digest_before_evaluations), `challenge[2]` (beta, gamma),
+    /// `scalar_challenge[3]` (alpha, zeta, xi),
+    /// `bulletproof_challenges[TOCK_ROUNDS]`, `bool[1]` (should_finalize).
+    ///
+    /// Note the digest comes *second* here, unlike the wrap statement where the
+    /// digests come after the scalar challenges. The step side's `Plonk` has no
+    /// feature flags or joint combiner in its layout (they are wrap-only), so
+    /// those fields of [`plonk::InCircuit`] are ignored.
+    #[allow(clippy::too_many_arguments)]
+    pub fn unfinalized_to_field_elements<F: PrimeField>(
+        plonk: &plonk::InCircuit<F, ScalarChallenge<F>, bool>,
+        combined_inner_product: F,
+        b: F,
+        xi: &ScalarChallenge<F>,
+        bulletproof_challenges: &[BulletproofChallenge<ScalarChallenge<F>>],
+        sponge_digest_before_evaluations: F,
+        should_finalize: bool,
+    ) -> Vec<F> {
+        let mut out = Vec::with_capacity(5 + 1 + 2 + 3 + bulletproof_challenges.len() + 1);
+        // fq (5)
+        out.push(combined_inner_product);
+        out.push(b);
+        out.push(plonk.zeta_to_srs_length);
+        out.push(plonk.zeta_to_domain_size);
+        out.push(plonk.perm);
+        // digest (1)
+        out.push(sponge_digest_before_evaluations);
+        // challenge (2)
+        out.push(plonk.beta);
+        out.push(plonk.gamma);
+        // scalar_challenge (3): alpha, zeta, xi
+        out.push(plonk.alpha.0);
+        out.push(plonk.zeta.0);
+        out.push(xi.0);
+        // bulletproof_challenges (TOCK_ROUNDS = 15)
+        for c in bulletproof_challenges {
+            out.push(c.prechallenge.0);
+        }
+        // bool (1)
+        out.push(if should_finalize { F::one() } else { F::zero() });
+        out
+    }
+
+    /// Flattens the step statement to field elements in the
+    /// `Step.Statement.to_data` order (`composition_types.ml:1355`): each
+    /// unfinalized proof (already flattened by
+    /// [`unfinalized_to_field_elements`]), then the
+    /// `messages_for_next_step_proof` digest, then one
+    /// `messages_for_next_wrap_proof` digest per (max) proof verified.
+    /// This is the public input the step circuit commits to.
+    pub fn step_statement_to_field_elements<F: PrimeField>(
+        unfinalized_proofs: &[Vec<F>],
+        messages_for_next_step_proof_digest: F,
+        messages_for_next_wrap_proof_digests: &[F],
+    ) -> Vec<F> {
+        let mut out = Vec::new();
+        for u in unfinalized_proofs {
+            out.extend(u.iter().copied());
+        }
+        out.push(messages_for_next_step_proof_digest);
+        out.extend(messages_for_next_wrap_proof_digests.iter().copied());
+        out
+    }
+}
+
 /// The verification-key commitments threaded through the recursion
 /// (`Plonk_verification_key_evals`): the wrap-circuit VK the step circuits
 /// verify proofs against.
@@ -430,6 +504,61 @@ mod tests {
         expected.extend(std::iter::repeat_n(Fq::from(0u64), 8)); // feature_flags
         assert_eq!(fe, expected);
         assert_eq!(fe.len(), 5 + 2 + 3 + 3 + 16 + 1 + 8);
+    }
+
+    #[test]
+    fn step_statement_to_field_elements_order() {
+        let plonk = plonk::InCircuit {
+            alpha: ScalarChallenge(Fq::from(108u64)),
+            beta: Fq::from(106u64),
+            gamma: Fq::from(107u64),
+            zeta: ScalarChallenge(Fq::from(109u64)),
+            zeta_to_srs_length: Fq::from(102u64),
+            zeta_to_domain_size: Fq::from(103u64),
+            perm: Fq::from(104u64),
+            feature_flags: Features::none(),
+            joint_combiner: None,
+        };
+        let bp: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = (0..crate::common::TOCK_ROUNDS)
+            .map(|i| BulletproofChallenge {
+                prechallenge: ScalarChallenge(Fq::from(200u64 + i as u64)),
+            })
+            .collect();
+        let unfinalized = step::unfinalized_to_field_elements(
+            &plonk,
+            Fq::from(100u64),                   // combined_inner_product
+            Fq::from(101u64),                   // b
+            &ScalarChallenge(Fq::from(110u64)), // xi
+            &bp,
+            Fq::from(105u64), // sponge digest
+            true,             // should_finalize
+        );
+
+        // fq[5], digest[1] (before the challenges — unlike wrap),
+        // challenge[2], scalar_challenge[3], bp[15], bool[1]
+        let mut expected: Vec<Fq> = vec![
+            100, 101, 102, 103, 104, // fq
+            105, // digest
+            106, 107, // challenge
+            108, 109, 110, // scalar_challenge
+        ]
+        .into_iter()
+        .map(Fq::from)
+        .collect();
+        expected.extend((200..200 + crate::common::TOCK_ROUNDS as u64).map(Fq::from));
+        expected.push(Fq::from(1u64)); // should_finalize
+        assert_eq!(unfinalized, expected);
+        assert_eq!(unfinalized.len(), 5 + 1 + 2 + 3 + crate::common::TOCK_ROUNDS + 1);
+
+        // statement = unfinalized[N] ++ msgs_next_step ++ msgs_next_wrap[N]
+        let stmt = step::step_statement_to_field_elements(
+            &[unfinalized.clone(), unfinalized.clone()],
+            Fq::from(300u64),
+            &[Fq::from(301u64), Fq::from(302u64)],
+        );
+        assert_eq!(stmt.len(), 2 * unfinalized.len() + 1 + 2);
+        assert_eq!(stmt[2 * unfinalized.len()], Fq::from(300u64));
+        assert_eq!(*stmt.last().unwrap(), Fq::from(302u64));
     }
 
     #[test]
