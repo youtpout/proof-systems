@@ -2457,6 +2457,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-poly",
+ "blake2",
  "groupmap",
  "kimchi",
  "mina-curves",

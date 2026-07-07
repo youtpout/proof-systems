@@ -13,6 +13,7 @@ license.workspace = true
 ark-ec.workspace = true
 ark-ff.workspace = true
 ark-poly.workspace = true
+blake2.workspace = true
 groupmap.workspace = true
 kimchi.workspace = true
 mina-curves.workspace = true
