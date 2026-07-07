@@ -45,6 +45,7 @@ pub type PointEvalVar<F> = (Vec<FieldVar<F>>, Vec<FieldVar<F>>);
 /// The proof column evaluations absorbed by the Fr-sponge, in kimchi's exact
 /// `absorb_evaluations` order (mandatory columns only — the no-optional-gate,
 /// no-lookup subset used by a base step circuit).
+#[derive(Clone)]
 pub struct AbsorbEvalsVar<F: PrimeField> {
     pub z: PointEvalVar<F>,
     pub generic_selector: PointEvalVar<F>,

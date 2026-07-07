@@ -195,18 +195,270 @@ pub fn finalize_other_proof<F: PrimeField>(
     )
 }
 
+/// Compile-time data for [`finalize_deferred`]: the linearization
+/// constant-term tokens, the step domain, and the field constants.
+pub struct FinalizeParams<'a, F: PrimeField> {
+    /// The linearization constant-term (from the step verifier index).
+    pub tokens: &'a [kimchi::circuits::expr::PolishToken<
+        F,
+        kimchi::circuits::berkeley_columns::Column,
+        kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm,
+    >],
+    /// The step proof's evaluation domain.
+    pub domain: ark_poly::Radix2EvaluationDomain<F>,
+    /// log2 of the SRS length.
+    pub srs_log2: u32,
+    /// The expression-evaluation endo coefficient (`index.endo`).
+    pub endo: F,
+    /// The permutation shifts of the verifier index.
+    pub shifts: &'a [F],
+    /// The scalar endomorphism for challenge-to-field conversion.
+    pub endo_r: F,
+    /// The Poseidon MDS matrix of the proof curve's sponge (for `Mds` tokens
+    /// in the linearization).
+    pub mds: &'a [Vec<F>],
+}
+
+/// The witness [`finalize_deferred`] consumes: the statement's deferred values
+/// and the previous proof's evaluations, all as circuit variables.
+///
+/// `alpha`/`zeta` are already converted to field form (the raw scalar
+/// challenges go through [`scalar_to_field`] in the caller — OCaml's
+/// `map_plonk_to_field`); `beta`/`gamma` are the raw 128-bit challenges used
+/// directly as field elements. The bulletproof prechallenges are *raw* and
+/// converted in here (`compute_challenges ~scalar`).
+pub struct FinalizeWitness<F: PrimeField> {
+    // plonk challenges (field form for alpha/zeta, raw for beta/gamma)
+    pub alpha: FieldVar<F>,
+    pub beta: FieldVar<F>,
+    pub gamma: FieldVar<F>,
+    pub zeta: FieldVar<F>,
+    // claimed deferred values
+    /// Claimed `xi`, raw 128-bit.
+    pub xi: FieldVar<F>,
+    /// `Shifted_value.Type1` representative of the claimed combined inner product.
+    pub cip_repr: FieldVar<F>,
+    /// `Shifted_value.Type1` representative of the claimed `b`.
+    pub b_repr: FieldVar<F>,
+    /// `Shifted_value.Type1` representative of the claimed `perm` scalar.
+    pub perm_repr: FieldVar<F>,
+    /// The new bulletproof prechallenges, raw 128-bit.
+    pub bulletproof_challenges: Vec<FieldVar<F>>,
+    // proof evaluations
+    /// `sponge_digest_before_evaluations` (seeds the Fr-sponge).
+    pub digest: FieldVar<F>,
+    /// Previous challenge digests (empty in the base case).
+    pub prev_challenges: Vec<Vec<FieldVar<F>>>,
+    pub ft_eval1: FieldVar<F>,
+    pub public_evals: [Vec<FieldVar<F>>; 2],
+    /// All column evaluations, chunked (`AbsorbEvalsVar`); single-chunk in the
+    /// base case.
+    pub evals: crate::fr_sponge::AbsorbEvalsVar<F>,
+}
+
+/// The output of [`finalize_deferred`]: the conjunction boolean and the new
+/// bulletproof challenges in field form (threaded into the statement by
+/// `verify_one`), plus the intermediate values for white-box testing.
+pub struct FinalizedDeferred<F: PrimeField> {
+    pub finalized: Boolean<F>,
+    /// The bulletproof challenges converted to field form
+    /// (`compute_challenges`).
+    pub challenges: Vec<FieldVar<F>>,
+    /// `xi` as a field element (from the claimed raw challenge).
+    pub xi_field: FieldVar<F>,
+    /// `r` as a field element (squeezed from the Fr-sponge).
+    pub r_field: FieldVar<F>,
+    /// The re-derived combined inner product.
+    pub combined_inner_product: FieldVar<F>,
+    /// The raw 128-bit `xi` comparison conjunct.
+    pub xi_correct: Boolean<F>,
+}
+
+/// Resolves a linearization column to its `(zeta, zeta_omega)` evaluation
+/// chunk-0 variables (the in-circuit `combined.evaluate(col)` for the
+/// single-chunk case).
+fn column_eval<'a, F: PrimeField>(
+    evals: &'a crate::fr_sponge::AbsorbEvalsVar<F>,
+    col: &kimchi::circuits::berkeley_columns::Column,
+) -> &'a crate::fr_sponge::PointEvalVar<F> {
+    use kimchi::circuits::berkeley_columns::Column;
+    use kimchi::circuits::gate::GateType;
+    match col {
+        Column::Witness(i) => &evals.w[*i],
+        Column::Z => &evals.z,
+        Column::Index(GateType::Generic) => &evals.generic_selector,
+        Column::Index(GateType::Poseidon) => &evals.poseidon_selector,
+        Column::Index(GateType::CompleteAdd) => &evals.complete_add_selector,
+        Column::Index(GateType::VarBaseMul) => &evals.mul_selector,
+        Column::Index(GateType::EndoMul) => &evals.emul_selector,
+        Column::Index(GateType::EndoMulScalar) => &evals.endomul_scalar_selector,
+        Column::Coefficient(i) => &evals.coefficients[*i],
+        Column::Permutation(i) => &evals.s[*i],
+        c => panic!("finalize_deferred: unsupported column {c:?}"),
+    }
+}
+
+/// The full deferred-value finalization from statement witness data (the body
+/// of OCaml's `finalize_other_proof` including its steps 1–3, which the
+/// [`finalize_other_proof`] entry point above leaves to the caller):
+/// builds the in-circuit scalars environment from the plonk challenges,
+/// evaluates the linearization constant term and `ft_eval0`, derives the
+/// permutation scalar, converts the bulletproof prechallenges to field form,
+/// assembles the inner-product entries (public, `[ft0, ft1]`, mandatory
+/// columns) and runs the four-conjunct check.
+///
+/// Base subset: single-chunk evaluations, no lookups.
+pub fn finalize_deferred<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    params: &FinalizeParams<'_, F>,
+    witness: &FinalizeWitness<F>,
+) -> SnarkyResult<FinalizedDeferred<F>> {
+    use crate::expr_eval::{eval_polish, PolishEnv};
+    use crate::ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar};
+    use crate::plonk_checks::ZK_ROWS;
+    use kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm;
+    use kimchi::circuits::gate::CurrOrNext;
+
+    let evals = &witness.evals;
+
+    // scalars environment from the (field-form) challenges
+    let env = scalars_env_circuit(
+        sys,
+        loc.clone(),
+        &params.domain,
+        params.srs_log2,
+        &witness.alpha,
+        witness.beta.clone(),
+        witness.gamma.clone(),
+        &witness.zeta,
+    )?;
+
+    // single-chunk combined evaluations for ft_eval0 / perm
+    let chunk0 = |pe: &crate::fr_sponge::PointEvalVar<F>| -> (FieldVar<F>, FieldVar<F>) {
+        assert_eq!(pe.0.len(), 1, "finalize_deferred: single-chunk only");
+        (pe.0[0].clone(), pe.1[0].clone())
+    };
+    let ft_evals = EvalsVar {
+        w: evals.w.iter().map(&chunk0).collect(),
+        s: evals.s.iter().map(&chunk0).collect(),
+        z: chunk0(&evals.z),
+    };
+
+    // linearization constant term, evaluated on the same witness columns
+    let challenge = |t: BerkeleyChallengeTerm| match t {
+        BerkeleyChallengeTerm::Alpha => witness.alpha.clone(),
+        BerkeleyChallengeTerm::Beta => witness.beta.clone(),
+        BerkeleyChallengeTerm::Gamma => witness.gamma.clone(),
+        BerkeleyChallengeTerm::JointCombiner => FieldVar::constant(F::zero()),
+    };
+    let column = |col: kimchi::circuits::berkeley_columns::Column, row: CurrOrNext| {
+        let pe = column_eval(evals, &col);
+        match row {
+            CurrOrNext::Curr => pe.0[0].clone(),
+            CurrOrNext::Next => pe.1[0].clone(),
+        }
+    };
+    let penv = PolishEnv {
+        domain: params.domain,
+        endo_coefficient: params.endo,
+        mds: params.mds,
+        zk_rows: ZK_ROWS as u64,
+        pt: witness.zeta.clone(),
+        challenge: &challenge,
+        column: &column,
+    };
+    let constant_term = eval_polish(sys, loc.clone(), params.tokens, &penv)?;
+    let ft_eval0 = ft_eval0_circuit(
+        sys,
+        loc.clone(),
+        &env,
+        params.shifts,
+        &ft_evals,
+        &witness.public_evals[0],
+        &constant_term,
+    )?;
+
+    // the deferred permutation scalar
+    let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
+
+    // compute_challenges ~scalar: prechallenges -> field form
+    let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
+    for pre in &witness.bulletproof_challenges {
+        challenges.push(scalar_to_field(sys, loc.clone(), pre, params.endo_r)?);
+    }
+
+    // inner-product entries: public, [ft0, ft1], mandatory columns
+    let mut cip_entries = vec![
+        (
+            witness.public_evals[0][0].clone(),
+            witness.public_evals[1][0].clone(),
+        ),
+        (ft_eval0, witness.ft_eval1.clone()),
+    ];
+    for col in crate::ipa::mandatory_columns() {
+        cip_entries.push(chunk0(column_eval(evals, &col)));
+    }
+
+    // Fr-sponge inputs, then the four-conjunct finalization (inlined
+    // `finalize_other_proof` so the intermediate values are exposed)
+    let sponge_inputs = FrSpongeInputs {
+        digest: witness.digest.clone(),
+        prev_challenges: witness.prev_challenges.clone(),
+        ft_eval1: witness.ft_eval1.clone(),
+        public_evals: witness.public_evals.clone(),
+        evals: evals.clone(),
+    };
+    let core = finalize_core(
+        sys,
+        loc.clone(),
+        &sponge_inputs,
+        &witness.xi,
+        &cip_entries,
+        params.endo_r,
+    )?;
+    let b_derived = b_actual(
+        sys,
+        loc.clone(),
+        &challenges,
+        &witness.zeta,
+        params.domain.group_gen,
+        &core.r_field,
+    )?;
+    let cip_claimed = type1_to_field(&witness.cip_repr);
+    let b_claimed = type1_to_field(&witness.b_repr);
+    let perm_claimed = type1_to_field(&witness.perm_repr);
+    let finalized = finalize_all(
+        sys,
+        loc,
+        &core.xi_correct,
+        &core.combined_inner_product,
+        &cip_claimed,
+        &b_derived,
+        &b_claimed,
+        &perm_derived,
+        &perm_claimed,
+    )?;
+
+    Ok(FinalizedDeferred {
+        finalized,
+        challenges,
+        xi_field: core.xi_field,
+        r_field: core.r_field,
+        combined_inner_product: core.combined_inner_product,
+        xi_correct: core.xi_correct,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr_eval::{eval_polish, PolishEnv};
     use crate::fr_sponge::{AbsorbEvalsVar, PointEvalVar};
-    use crate::ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar};
     use crate::plonk_checks::ZK_ROWS;
     use ark_ff::{One, Zero};
     use ark_poly::Radix2EvaluationDomain as D;
     use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
-    use kimchi::circuits::expr::{ColumnEvaluations, PolishToken};
-    use kimchi::circuits::gate::CurrOrNext;
+    use kimchi::circuits::expr::PolishToken;
     use kimchi::curve::KimchiCurve;
     use kimchi::proof::PointEvaluations;
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
@@ -218,7 +470,6 @@ mod tests {
     use poly_commitment::ipa::OpeningProof;
     use poly_commitment::SRS;
     use snarky::{api::SnarkyCircuit, loc};
-    use std::collections::HashMap;
 
     type BaseSponge =
         DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
@@ -245,24 +496,21 @@ mod tests {
         }
     }
 
-    /// Everything the finalize core needs, captured from a real proof.
+    /// Everything `finalize_deferred` needs, captured from a real proof.
     struct FinalizeCircuit {
-        // ft_eval0 inputs
+        // compile-time params
         tokens: Vec<PolishToken<Fp, Column, BerkeleyChallengeTerm>>,
         domain: D<Fp>,
         srs_log2: u32,
         endo: Fp,
         shifts: Vec<Fp>,
+        endo_r: Fp,
+        // plonk challenges (field form for alpha/zeta)
         alpha: Fp,
         beta: Fp,
         gamma: Fp,
         zeta: Fp,
-        w: Vec<(Fp, Fp)>,
-        s: Vec<(Fp, Fp)>,
-        zperm: (Fp, Fp),
-        public_evals0: Vec<Fp>,
-        col_vals: HashMap<(Column, bool), Fp>,
-        // fr-sponge inputs
+        // fr-sponge / evaluation inputs
         digest: Fp,
         ft_eval1: Fp,
         public_evals: [Vec<Fp>; 2],
@@ -276,15 +524,10 @@ mod tests {
         e_w: Vec<(Vec<Fp>, Vec<Fp>)>,
         coefficients: Vec<(Vec<Fp>, Vec<Fp>)>,
         e_s: Vec<(Vec<Fp>, Vec<Fp>)>,
-        // cip column order (mandatory columns, single-chunk)
-        cip_cols: Vec<(Fp, Fp)>,
-        // claimed challenge (raw 128-bit)
+        // claimed deferred values: raw xi, raw bulletproof prechallenges, and
+        // the Type1-shifted cip/b/perm
         claimed_xi: Fp,
-        endo_r: Fp,
-        // finalize_other_proof extras: new bulletproof challenges (field form),
-        // domain generator, and the Type1-shifted claimed deferred values
-        bp_chals: Vec<Fp>,
-        domain_gen: Fp,
+        bp_prechals: Vec<Fp>,
         cip_claimed_repr: Fp,
         b_claimed_repr: Fp,
         perm_claimed_repr: Fp,
@@ -318,164 +561,83 @@ mod tests {
                 }
                 Ok(out)
             };
-            let wpair =
-                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<(FieldVar<Fp>, FieldVar<Fp>)> {
-                    Ok((sys.compute(loc!(), move |_| p.0)?, sys.compute(loc!(), move |_| p.1)?))
-                };
             let wvpair = |sys: &mut RunState<Fp>,
                           p: &(Vec<Fp>, Vec<Fp>)|
              -> SnarkyResult<PointEvalVar<Fp>> {
                 Ok((wvec(sys, &p.0)?, wvec(sys, &p.1)?))
             };
 
-            // ---- in-circuit ft_eval0 ----
-            let zeta = w1(sys, self.zeta)?;
-            let alpha = w1(sys, self.alpha)?;
-            let beta = w1(sys, self.beta)?;
-            let gamma = w1(sys, self.gamma)?;
-            let env = scalars_env_circuit(
-                sys,
-                loc!(),
-                &self.domain,
-                self.srs_log2,
-                &alpha,
-                beta.clone(),
-                gamma.clone(),
-                &zeta,
-            )?;
-            let mut ew = vec![];
-            for &p in &self.w {
-                ew.push(wpair(sys, p)?);
-            }
-            let mut es = vec![];
-            for &p in &self.s {
-                es.push(wpair(sys, p)?);
-            }
-            let ez = wpair(sys, self.zperm)?;
-            let ft_evals = EvalsVar { w: ew, s: es, z: ez };
-            let mut p_eval0 = vec![];
-            for &v in &self.public_evals0 {
-                p_eval0.push(w1(sys, v)?);
-            }
-            let mds = &Vesta::sponge_params().mds;
-            let mds: Vec<Vec<Fp>> = mds.iter().map(|r| r.to_vec()).collect();
-            let mut col_map: HashMap<(Column, bool), FieldVar<Fp>> = HashMap::new();
-            for (&(col, is_next), &v) in &self.col_vals {
-                col_map.insert((col, is_next), w1(sys, v)?);
-            }
-            let challenge = |t: BerkeleyChallengeTerm| match t {
-                BerkeleyChallengeTerm::Alpha => alpha.clone(),
-                BerkeleyChallengeTerm::Beta => beta.clone(),
-                BerkeleyChallengeTerm::Gamma => gamma.clone(),
-                BerkeleyChallengeTerm::JointCombiner => FieldVar::constant(Fp::zero()),
-            };
-            let column = |col: Column, row: CurrOrNext| {
-                col_map[&(col, matches!(row, CurrOrNext::Next))].clone()
-            };
-            let penv = PolishEnv {
+            let mds: Vec<Vec<Fp>> = Vesta::sponge_params()
+                .mds
+                .iter()
+                .map(|r| r.to_vec())
+                .collect();
+            let params = FinalizeParams {
+                tokens: &self.tokens,
                 domain: self.domain,
-                endo_coefficient: self.endo,
+                srs_log2: self.srs_log2,
+                endo: self.endo,
+                shifts: &self.shifts,
+                endo_r: self.endo_r,
                 mds: &mds,
-                zk_rows: ZK_ROWS as u64,
-                pt: zeta.clone(),
-                challenge: &challenge,
-                column: &column,
             };
-            let constant_term = eval_polish(sys, loc!(), &self.tokens, &penv)?;
-            let ft_eval0 =
-                ft_eval0_circuit(sys, loc!(), &env, &self.shifts, &ft_evals, &p_eval0, &constant_term)?;
-
-            // ---- fr-sponge inputs ----
-            let digest = w1(sys, self.digest)?;
-            let ft_eval1 = w1(sys, self.ft_eval1)?;
-            let public_evals = [wvec(sys, &self.public_evals[0])?, wvec(sys, &self.public_evals[1])?];
-            let evals = AbsorbEvalsVar {
-                z: wvpair(sys, &self.e_z)?,
-                generic_selector: wvpair(sys, &self.generic)?,
-                poseidon_selector: wvpair(sys, &self.poseidon)?,
-                complete_add_selector: wvpair(sys, &self.complete_add)?,
-                mul_selector: wvpair(sys, &self.mul)?,
-                emul_selector: wvpair(sys, &self.emul)?,
-                endomul_scalar_selector: wvpair(sys, &self.endomul_scalar)?,
-                w: {
-                    let mut v = vec![];
-                    for p in &self.e_w {
-                        v.push(wvpair(sys, p)?);
-                    }
-                    v
-                },
-                coefficients: {
-                    let mut v = vec![];
-                    for p in &self.coefficients {
-                        v.push(wvpair(sys, p)?);
-                    }
-                    v
-                },
-                s: {
-                    let mut v = vec![];
-                    for p in &self.e_s {
-                        v.push(wvpair(sys, p)?);
-                    }
-                    v
-                },
-            };
-            let sponge_inputs = FrSpongeInputs {
-                digest,
+            let witness = FinalizeWitness {
+                alpha: w1(sys, self.alpha)?,
+                beta: w1(sys, self.beta)?,
+                gamma: w1(sys, self.gamma)?,
+                zeta: w1(sys, self.zeta)?,
+                xi: w1(sys, self.claimed_xi)?,
+                cip_repr: w1(sys, self.cip_claimed_repr)?,
+                b_repr: w1(sys, self.b_claimed_repr)?,
+                perm_repr: w1(sys, self.perm_claimed_repr)?,
+                bulletproof_challenges: wvec(sys, &self.bp_prechals)?,
+                digest: w1(sys, self.digest)?,
                 prev_challenges: vec![],
-                ft_eval1: ft_eval1.clone(),
-                public_evals,
-                evals,
+                ft_eval1: w1(sys, self.ft_eval1)?,
+                public_evals: [
+                    wvec(sys, &self.public_evals[0])?,
+                    wvec(sys, &self.public_evals[1])?,
+                ],
+                evals: AbsorbEvalsVar {
+                    z: wvpair(sys, &self.e_z)?,
+                    generic_selector: wvpair(sys, &self.generic)?,
+                    poseidon_selector: wvpair(sys, &self.poseidon)?,
+                    complete_add_selector: wvpair(sys, &self.complete_add)?,
+                    mul_selector: wvpair(sys, &self.mul)?,
+                    emul_selector: wvpair(sys, &self.emul)?,
+                    endomul_scalar_selector: wvpair(sys, &self.endomul_scalar)?,
+                    w: {
+                        let mut v = vec![];
+                        for p in &self.e_w {
+                            v.push(wvpair(sys, p)?);
+                        }
+                        v
+                    },
+                    coefficients: {
+                        let mut v = vec![];
+                        for p in &self.coefficients {
+                            v.push(wvpair(sys, p)?);
+                        }
+                        v
+                    },
+                    s: {
+                        let mut v = vec![];
+                        for p in &self.e_s {
+                            v.push(wvpair(sys, p)?);
+                        }
+                        v
+                    },
+                },
             };
 
-            // ---- cip entries: public, [ft0, ft1], then mandatory columns ----
-            let mut cip_entries = vec![];
-            cip_entries.push((
-                w1(sys, self.public_evals[0][0])?,
-                w1(sys, self.public_evals[1][0])?,
-            ));
-            cip_entries.push((ft_eval0, ft_eval1));
-            for &p in &self.cip_cols {
-                cip_entries.push(wpair(sys, p)?);
-            }
-
-            let claimed_xi = w1(sys, self.claimed_xi)?;
-
-            let core = finalize_core(
-                sys,
-                loc!(),
-                &sponge_inputs,
-                &claimed_xi,
-                &cip_entries,
-                self.endo_r,
-            )?;
-
-            // ---- full finalize_other_proof: derive b and perm, recover the
-            //      Type1-shifted claimed values, and AND the four conjuncts ----
-            let perm_derived =
-                crate::ft_eval_circuit::perm_scalar_circuit(sys, loc!(), &env, &ft_evals)?;
-            let b_chals = wvec(sys, &self.bp_chals)?;
-            let b_derived = b_actual(sys, loc!(), &b_chals, &zeta, self.domain_gen, &core.r_field)?;
-            let cip_claimed = type1_to_field(&w1(sys, self.cip_claimed_repr)?);
-            let b_claimed = type1_to_field(&w1(sys, self.b_claimed_repr)?);
-            let perm_claimed = type1_to_field(&w1(sys, self.perm_claimed_repr)?);
-            let finalized = finalize_all(
-                sys,
-                loc!(),
-                &core.xi_correct,
-                &core.combined_inner_product,
-                &cip_claimed,
-                &b_derived,
-                &b_claimed,
-                &perm_derived,
-                &perm_claimed,
-            )?;
+            let out = finalize_deferred(sys, loc!(), &params, &witness)?;
 
             Ok((
                 (
-                    (core.xi_field, core.r_field),
-                    (core.combined_inner_product, core.xi_correct.to_field_var()),
+                    (out.xi_field, out.r_field),
+                    (out.combined_inner_product, out.xi_correct.to_field_var()),
                 ),
-                finalized.to_field_var(),
+                out.finalized.to_field_var(),
             ))
         }
     }
@@ -577,29 +739,11 @@ mod tests {
         let oracles = &o.oracles;
         let combined = proof.evals.combine(&o.powers_of_eval_points_for_chunks);
 
-        // ft_eval0 constant-term column values
-        let mut col_vals = HashMap::new();
-        for t in &vi.linearization.constant_term {
-            if let PolishToken::Cell(v) = t {
-                let pe = combined.evaluate(v.col).unwrap();
-                col_vals.insert((v.col, false), pe.zeta);
-                col_vals.insert((v.col, true), pe.zeta_omega);
-            }
-        }
         let srs_log2 = u64::BITS - 1 - (vi.max_poly_size as u64).leading_zeros();
 
         // fr-sponge column captures
         let e = &proof.evals;
         let pair = |p: &PointEvaluations<Vec<Fp>>| (p.zeta.clone(), p.zeta_omega.clone());
-
-        // cip mandatory columns, in kimchi order
-        let cip_cols: Vec<(Fp, Fp)> = crate::ipa::mandatory_columns()
-            .into_iter()
-            .map(|col| {
-                let pe = combined.evaluate(col).unwrap();
-                (pe.zeta, pe.zeta_omega)
-            })
-            .collect();
 
         let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
 
@@ -675,7 +819,6 @@ mod tests {
             &env_ooc,
             &evals_ooc,
         );
-        let bp_chals_field = crate::ipa::compute_challenges(&prechallenges, *endo_r);
 
         // the raw 128-bit `v_chal` (opaque in RandomOracles) — replay the
         // Fr-sponge out of circuit via the public `squeeze` API, exactly as
@@ -700,15 +843,11 @@ mod tests {
             srs_log2,
             endo: vi.endo,
             shifts: vi.shift.to_vec(),
+            endo_r: *endo_r,
             alpha: oracles.alpha,
             beta: oracles.beta,
             gamma: oracles.gamma,
             zeta: oracles.zeta,
-            w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
-            s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
-            zperm: (combined.z.zeta, combined.z.zeta_omega),
-            public_evals0: o.public_evals[0].clone(),
-            col_vals,
             digest: o.digest,
             ft_eval1: proof.ft_eval1,
             public_evals: o.public_evals.clone(),
@@ -722,11 +861,8 @@ mod tests {
             e_w: e.w.iter().map(pair).collect(),
             coefficients: e.coefficients.iter().map(pair).collect(),
             e_s: e.s.iter().map(pair).collect(),
-            cip_cols,
             claimed_xi,
-            endo_r: *endo_r,
-            bp_chals: bp_chals_field,
-            domain_gen: vi.domain.group_gen,
+            bp_prechals: prechallenges.iter().map(|c| c.prechallenge.0).collect(),
             cip_claimed_repr: dv.combined_inner_product,
             b_claimed_repr: dv.b,
             perm_claimed_repr: dv.perm,
