@@ -113,6 +113,62 @@ pub fn bullet_reduce_challenges<F: PrimeField>(
     Ok(prechallenges)
 }
 
+/// The IPA challenge inputs produced by [`ipa_challenges_transcript`]:
+/// `(u, prechallenges, c)`.
+pub type IpaChallenges<F> = (Point<F>, Vec<FieldVar<F>>, FieldVar<F>);
+
+/// The transcript-driven derivation of the IPA challenge inputs, threading a
+/// single base-field sponge exactly as kimchi's `OpeningProof::verify`
+/// (`poly-commitment/src/ipa.rs`, lines ~371–383) and pickles'
+/// `check_bulletproof`:
+///
+/// ```text
+/// absorb_shifted(sponge, combined_inner_product);      // absorb_fr(shift(cip))
+/// u = group_map(squeeze_field sponge);                 // challenge_fq -> group_map
+/// prechallenges = bullet_reduce(sponge, lr);           // per round: absorb L,R; squeeze
+/// absorb(sponge, delta);                               // absorb_g(delta)
+/// c = squeeze_scalar sponge;                           // raw 128-bit challenge
+/// ```
+///
+/// Returns `(u, prechallenges, c)`, ready for [`check_bulletproof_equation`]
+/// (`c` is the raw challenge fed to the [`endo`] gadget). `cip` is the
+/// `Shifted_value.Type1` representative of the combined inner product.
+#[allow(clippy::too_many_arguments)]
+pub fn ipa_challenges_transcript<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge: &mut crate::sponge::PoseidonSponge<F>,
+    cip: &FieldVar<F>,
+    lr: &[(crate::oracles::PointVar<F>, crate::oracles::PointVar<F>)],
+    delta: &crate::oracles::PointVar<F>,
+    group_map_params: &groupmap::BWParameters<C>,
+) -> SnarkyResult<IpaChallenges<F>>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    use crate::challenge::squeeze_challenge;
+    use crate::oracles::absorb_commitment;
+    use snarky::gadgets::group_map::to_group;
+
+    // absorb_shifted(combined_inner_product)
+    sponge.absorb(sys, loc.clone(), std::slice::from_ref(cip));
+
+    // u = group_map(squeeze_field)
+    let t = sponge.squeeze(sys, loc.clone());
+    let (ux, uy) = to_group(sys, loc.clone(), group_map_params, &t)?;
+    let u = Point::new(ux, uy);
+
+    // prechallenges = bullet_reduce(sponge, lr)
+    let prechallenges = bullet_reduce_challenges(sys, loc.clone(), sponge, lr)?;
+
+    // absorb(delta); c = squeeze_scalar (raw 128-bit)
+    absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(delta));
+    let c = squeeze_challenge(sys, loc, sponge)?;
+
+    Ok((u, prechallenges, c))
+}
+
 /// The final inner-product-argument equation of pickles' `check_bulletproof`
 /// (`wrap_verifier.ml`, lines ~603–622):
 ///
@@ -424,6 +480,113 @@ mod tests {
         assert_eq!(c0, expected[0], "round 0");
         assert_eq!(c1, expected[1], "round 1");
         assert_eq!(c2, expected[2], "round 2");
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    struct IpaTranscriptCircuit {
+        cip: u128,
+        lr: Vec<((Fp, Fp), (Fp, Fp))>,
+        delta: (Fp, Fp),
+    }
+    impl SnarkyCircuit for IpaTranscriptCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        // ((u.x, u.y), c, (pre0, pre1))
+        type PublicOutput = (
+            (FieldVar<Fp>, FieldVar<Fp>),
+            FieldVar<Fp>,
+            (FieldVar<Fp>, FieldVar<Fp>),
+        );
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mkpt =
+                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<crate::oracles::PointVar<Fp>> {
+                    Ok((
+                        sys.compute(loc!(), move |_| p.0)?,
+                        sys.compute(loc!(), move |_| p.1)?,
+                    ))
+                };
+            let cip = sys.compute(loc!(), |_| Fp::from(self.cip))?;
+            let mut lr = vec![];
+            for &(l, r) in &self.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let delta = mkpt(sys, self.delta)?;
+            use groupmap::GroupMap;
+            let params = groupmap::BWParameters::<mina_curves::pasta::PallasParameters>::setup();
+            let mut sponge = crate::sponge::PoseidonSponge::new();
+            let (u, pre, c) = ipa_challenges_transcript::<Fp, mina_curves::pasta::PallasParameters>(
+                sys,
+                loc!(),
+                &mut sponge,
+                &cip,
+                &lr,
+                &delta,
+                &params,
+            )?;
+            Ok(((u.x, u.y), c, (pre[0].clone(), pre[1].clone())))
+        }
+    }
+
+    /// `ipa_challenges_transcript` threads the sponge exactly as kimchi's IPA
+    /// verifier: absorb(cip) -> group_map(squeeze) -> per-round absorb(L,R)+
+    /// squeeze -> absorb(delta) -> squeeze(c). Matches an out-of-circuit mirror.
+    #[test]
+    fn ipa_challenges_transcript_match_reference() {
+        use groupmap::GroupMap;
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let rounds = 2;
+        let lr_pts: Vec<(Pallas, Pallas)> = (0..rounds)
+            .map(|_| {
+                (
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                    (Pallas::generator() * Fq::rand(&mut rng)).into_affine(),
+                )
+            })
+            .collect();
+        let cip = u128::rand(&mut rng);
+        let delta = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+
+        // out-of-circuit mirror over ArithmeticSponge<Fp>
+        let params = groupmap::BWParameters::<mina_curves::pasta::PallasParameters>::setup();
+        let mut s = RefSponge::new(Vesta::sponge_params());
+        s.absorb(&[Fp::from(cip)]);
+        let (ux, uy) = params.to_group(s.squeeze());
+        let pre_ref: Vec<Fp> = lr_pts
+            .iter()
+            .map(|(l, r)| {
+                s.absorb(&[l.x]);
+                s.absorb(&[l.y]);
+                s.absorb(&[r.x]);
+                s.absorb(&[r.y]);
+                lowest_128(s.squeeze())
+            })
+            .collect();
+        s.absorb(&[delta.x]);
+        s.absorb(&[delta.y]);
+        let c_ref = lowest_128(s.squeeze());
+
+        let circ = IpaTranscriptCircuit {
+            cip,
+            lr: lr_pts
+                .iter()
+                .map(|(l, r)| ((l.x, l.y), (r.x, r.y)))
+                .collect(),
+            delta: (delta.x, delta.y),
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        let ((ux_c, uy_c), c_c, (p0, p1)) = *out.clone();
+        assert_eq!((ux_c, uy_c), (ux, uy), "u = group_map(squeeze)");
+        assert_eq!(p0, pre_ref[0], "prechallenge 0");
+        assert_eq!(p1, pre_ref[1], "prechallenge 1");
+        assert_eq!(c_c, c_ref, "c");
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 
