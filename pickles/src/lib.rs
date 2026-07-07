@@ -28,6 +28,7 @@ pub mod oracles;
 pub mod plonk_checks;
 pub mod plonk_curve_ops;
 pub mod scalar_challenge;
+pub mod shifted_value;
 pub mod sponge;
 
 /// The two sides of the Pasta recursion cycle.
