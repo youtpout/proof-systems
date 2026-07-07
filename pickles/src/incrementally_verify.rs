@@ -36,7 +36,6 @@ use crate::bulletproof::{
 use crate::challenge::squeeze_challenge;
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
-use crate::scalar_challenge::scalar_to_field;
 use crate::sponge::PoseidonSponge;
 
 /// The verification-key commitments the base step/wrap verifier absorbs and
@@ -99,7 +98,10 @@ pub struct Advice<F: PrimeField> {
 pub struct IncrementalResult<F: PrimeField> {
     /// The `equal_g` success boolean of the bulletproof equation.
     pub success: Boolean<F>,
-    /// The re-derived Fq-sponge oracles.
+    /// The re-derived Fq-sponge oracles, all as *raw* 128-bit challenges
+    /// (alpha/zeta included — the endo `to_field` mapping happens in the other
+    /// side's `finalize`, so the caller compares them raw against the
+    /// statement's scalar challenges, as OCaml's `assert_eq_plonk` does).
     pub oracles: FqOracles<F>,
     /// `sponge_digest_before_evaluations` (fed to the Fr-sponge / finalize).
     pub sponge_digest: FieldVar<F>,
@@ -123,10 +125,8 @@ fn to_pvs<F: PrimeField>(ps: &[Point<F>]) -> Vec<PointVar<F>> {
 /// polynomial commitments (absorbed as `PC`); `x_hat` is the (blinded) public-
 /// input commitment chunks; `xi` is the polyscale challenge (raw 128-bit).
 ///
-/// Two distinct endomorphism constants are needed:
-/// - `challenge_endo`: the step field's own scalar endomorphism, used by
-///   [`scalar_to_field`] to turn the `alpha`/`zeta` challenges into field
-///   elements (`<StepCurve>::endos().1`);
+/// All four oracles are sampled *raw* (no endo `to_field` — that happens in
+/// the other side's `finalize`). Two endomorphism constants are needed:
 /// - `endo_base`: the inner curve's base-field endomorphism coefficient for the
 ///   `EndoMul` gate ([`crate::endo::tick::base`] = `<InnerCurve>::endos().0`),
 ///   used by `combine_commitments`, `endo`, `endo_inv` and the final equation;
@@ -147,7 +147,6 @@ pub fn incrementally_verify_proof<F, C>(
     advice: &Advice<F>,
     xi: &FieldVar<F>,
     group_map_params: &groupmap::BWParameters<C>,
-    challenge_endo: F,
     endo_base: F,
     endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
     num_bits: usize,
@@ -174,15 +173,13 @@ where
     let beta = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
     let gamma = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
 
-    // == IVC Steps 9-10: absorb z_comm, sample alpha (endo) ==
+    // == IVC Steps 9-10: absorb z_comm, sample alpha (raw scalar challenge) ==
     absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.z_comm));
-    let alpha_chal = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
-    let alpha = scalar_to_field(sys, loc.clone(), &alpha_chal, challenge_endo)?;
+    let alpha = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
 
-    // == IVC Steps 11-12: absorb t_comm, sample zeta (endo) ==
+    // == IVC Steps 11-12: absorb t_comm, sample zeta (raw scalar challenge) ==
     absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.t_comm));
-    let zeta_chal = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
-    let zeta = scalar_to_field(sys, loc.clone(), &zeta_chal, challenge_endo)?;
+    let zeta = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
 
     // == IVC Step 13: fork the sponge, then squeeze the digest ==
     // `sponge_before_evaluations` continues into the IPA transcript; the digest
@@ -356,7 +353,6 @@ mod tests {
         perm: u128,
         zeta_to_srs_length: u128,
         zeta_to_domain_size: u128,
-        challenge_endo: Fp,
     }
 
     impl SnarkyCircuit for IvpCircuit {
@@ -447,7 +443,6 @@ mod tests {
                 &advice,
                 &xi,
                 &params,
-                self.challenge_endo,
                 crate::endo::tick::base(),
                 <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
                 NUM_BITS,
@@ -495,8 +490,6 @@ mod tests {
             let p = rand_pt(rng);
             (p.x, p.y)
         };
-        let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
-
         let sg_old = vec![pt(&mut rng)];
         let x_hat = vec![pt(&mut rng)];
         let w_comm: Vec<Vec<(Fp, Fp)>> = (0..15).map(|_| vec![pt(&mut rng)]).collect();
@@ -545,7 +538,6 @@ mod tests {
             perm: u128::rand(&mut rng),
             zeta_to_srs_length: u128::rand(&mut rng),
             zeta_to_domain_size: u128::rand(&mut rng),
-            challenge_endo: *endo_r,
         };
         let (mut pi, ver) = circ.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
