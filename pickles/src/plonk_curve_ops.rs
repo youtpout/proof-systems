@@ -408,28 +408,23 @@ pub fn scale_fast2_shift_bits(num_bits: usize) -> usize {
     chunks_needed(num_bits - 1) * BITS_PER_CHUNK
 }
 
-/// Scalar multiplication by a packed `num_bits`-bit scalar in the
-/// `Shifted_value.Type2` convention (pickles' `scale_fast2'`): witnesses the
-/// split `(s_div_2, s_odd)` with `s = 2·s_div_2 + s_odd`, constrains it (and
-/// the booleanity of `s_odd`), and runs [`scale_fast2`]. Returns
-/// `(s + 2^scale_fast2_shift_bits(num_bits)) · g`.
+/// Splits a field variable into `(x_div_2, x_odd)` with `x = 2·x_div_2 +
+/// x_odd` and the booleanity of `x_odd` asserted (pickles'
+/// `wrap_main.ml::split_field`, also the witness step of `scale_fast2'`).
 ///
-/// The split is on the *integer representative* of `s`, so it is valid for a
-/// cross-field scalar embedded losslessly in the circuit field.
-pub fn scale_fast2_prime<F: PrimeField>(
+/// The split is on the *integer representative* of `x`, so it is valid for a
+/// cross-field value embedded losslessly in the circuit field.
+pub fn split_field<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    g: &Point<F>,
-    s: &FieldVar<F>,
-    num_bits: usize,
-) -> SnarkyResult<Point<F>> {
+    x: &FieldVar<F>,
+) -> SnarkyResult<(FieldVar<F>, Boolean<F>)> {
     use ark_ff::BigInteger;
 
-    // witness (s_div_2, s_odd) from the integer representative of s
-    let s_clone = s.clone();
-    let (s_div_2, s_odd): (FieldVar<F>, FieldVar<F>) =
+    let x_clone = x.clone();
+    let (y, odd): (FieldVar<F>, FieldVar<F>) =
         sys.compute(loc.clone(), move |env: &dyn WitnessGeneration<F>| {
-            let bits = env.read_var(&s_clone).into_bigint().to_bits_le();
+            let bits = env.read_var(&x_clone).into_bigint().to_bits_le();
             let mut half = F::zero();
             for &b in bits[1..].iter().rev() {
                 half = half + half;
@@ -439,19 +434,31 @@ pub fn scale_fast2_prime<F: PrimeField>(
             }
             (half, if bits[0] { F::one() } else { F::zero() })
         })?;
-
-    // booleanity of s_odd, and 2·s_div_2 + s_odd == s
+    // booleanity of the odd bit, and 2·y + odd == x
     sys.assert_r1cs(
-        Some("scale_fast2_prime: s_odd boolean".into()),
+        Some("split_field: odd bit".into()),
         loc.clone(),
-        s_odd.clone(),
-        s_odd.clone(),
-        s_odd.clone(),
+        odd.clone(),
+        odd.clone(),
+        odd.clone(),
     )?;
-    let recomposed = &(&s_div_2 + &s_div_2) + &s_odd;
-    recomposed.assert_equals(sys, loc.clone(), s)?;
+    let recomposed = &(&y + &y) + &odd;
+    recomposed.assert_equals(sys, loc, x)?;
+    Ok((y, Boolean::create_unsafe(odd)))
+}
 
-    let s_odd = Boolean::create_unsafe(s_odd);
+/// Scalar multiplication by a packed `num_bits`-bit scalar in the
+/// `Shifted_value.Type2` convention (pickles' `scale_fast2'`): witnesses the
+/// split `(s_div_2, s_odd)` via [`split_field`] and runs [`scale_fast2`].
+/// Returns `(s + 2^scale_fast2_shift_bits(num_bits)) · g`.
+pub fn scale_fast2_prime<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    g: &Point<F>,
+    s: &FieldVar<F>,
+    num_bits: usize,
+) -> SnarkyResult<Point<F>> {
+    let (s_div_2, s_odd) = split_field(sys, loc.clone(), s)?;
     scale_fast2(sys, loc, g, &s_div_2, &s_odd, num_bits)
 }
 

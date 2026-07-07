@@ -72,6 +72,49 @@ pub fn hash_messages_for_next_step_proof<F: PrimeField>(
     Ok(sponge.squeeze(sys, loc))
 }
 
+/// Hashes a `messages_for_next_wrap_proof` accumulator
+/// (`Wrap_hack.Checked.hash_messages_for_next_wrap_proof`): a fresh sponge
+/// absorbs `dummy_challenges` (circuit constants padding the vector to
+/// `Padded_length = 2` — empty when this circuit verifies the full width),
+/// then the real old bulletproof challenges, then the challenge-polynomial
+/// commitment's coordinates (`MessagesForNextWrapProof::to_field_elements`
+/// order), and squeezes the digest.
+///
+/// The dummy vectors are `Dummy.Ipa.Wrap.challenges_computed` in OCaml — the
+/// prover-side `Ro` constants, to be supplied when width < 2 (ported with the
+/// prover; the OCaml precomputed sponge states are an in-circuit optimization
+/// of exactly this front-padding absorption).
+pub fn hash_messages_for_next_wrap_proof<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    dummy_challenges: &[Vec<F>],
+    old_bulletproof_challenges: &[Vec<FieldVar<F>>],
+    challenge_polynomial_commitment: &Point<F>,
+) -> FieldVar<F> {
+    let mut sponge = PoseidonSponge::new();
+    for chals in dummy_challenges {
+        for c in chals {
+            sponge.absorb(sys, loc.clone(), &[FieldVar::constant(*c)]);
+        }
+    }
+    for chals in old_bulletproof_challenges {
+        for c in chals {
+            sponge.absorb(sys, loc.clone(), std::slice::from_ref(c));
+        }
+    }
+    sponge.absorb(
+        sys,
+        loc.clone(),
+        std::slice::from_ref(&challenge_polynomial_commitment.x),
+    );
+    sponge.absorb(
+        sys,
+        loc.clone(),
+        std::slice::from_ref(&challenge_polynomial_commitment.y),
+    );
+    sponge.squeeze(sys, loc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +252,84 @@ mod tests {
             app_state,
             cpcs,
             old_chals,
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        assert_eq!(*out, expected);
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    struct WrapHashCircuit {
+        dummy_chals: Vec<Vec<Fp>>,
+        old_chals: Vec<Vec<Fp>>,
+        cpc: (Fp, Fp),
+    }
+
+    impl SnarkyCircuit for WrapHashCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mut old_chals = vec![];
+            for v in &self.old_chals {
+                let mut row = vec![];
+                for &c in v {
+                    row.push(sys.compute(loc!(), move |_| c)?);
+                }
+                old_chals.push(row);
+            }
+            let cpc = Point::new(
+                sys.compute(loc!(), |_| self.cpc.0)?,
+                sys.compute(loc!(), |_| self.cpc.1)?,
+            );
+            Ok(hash_messages_for_next_wrap_proof(
+                sys,
+                loc!(),
+                &self.dummy_chals,
+                &old_chals,
+                &cpc,
+            ))
+        }
+    }
+
+    /// `hash_messages_for_next_wrap_proof` == the out-of-circuit sponge over
+    /// dummy padding, real challenges, then the commitment coordinates.
+    #[test]
+    fn wrap_hash_matches_reference() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let dummy_chals: Vec<Vec<Fp>> = vec![(0..crate::common::TOCK_ROUNDS)
+            .map(|_| Fp::rand(&mut rng))
+            .collect()];
+        let old_chals: Vec<Vec<Fp>> = vec![(0..crate::common::TOCK_ROUNDS)
+            .map(|_| Fp::rand(&mut rng))
+            .collect()];
+        let cpc = {
+            let p = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+            (p.x, p.y)
+        };
+
+        let mut s = RefSponge::new(Vesta::sponge_params());
+        for v in dummy_chals.iter().chain(&old_chals) {
+            for c in v {
+                s.absorb(&[*c]);
+            }
+        }
+        s.absorb(&[cpc.0]);
+        s.absorb(&[cpc.1]);
+        let expected = s.squeeze();
+
+        let circ = WrapHashCircuit {
+            dummy_chals,
+            old_chals,
+            cpc,
         };
         let (mut pi, ver) = circ.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();

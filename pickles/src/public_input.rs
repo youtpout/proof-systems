@@ -58,6 +58,12 @@ where
     (-(*lagrange * two_to_shift)).into_affine()
 }
 
+/// Splitting a field variable into `(x_div_2, x_odd)` — used on the wrap side
+/// where a step statement element lives in the *bigger* Tick field: the halved
+/// value fits the Tock circuit's Lagrange scaling, and the odd bit becomes a
+/// separate 1-bit (conditional) public-input term.
+pub use crate::plonk_curve_ops::split_field;
+
 /// The in-circuit public-input commitment:
 /// `x_hat = -(Σ_i input_i · L_i) + H`.
 ///
@@ -232,5 +238,58 @@ mod tests {
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         assert_eq!(*out, (expected.x, expected.y));
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    struct SplitCircuit {
+        x: Fp,
+    }
+
+    impl SnarkyCircuit for SplitCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, Boolean<Fp>);
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let x: FieldVar<Fp> = sys.compute(loc!(), |_| self.x)?;
+            split_field(sys, loc!(), &x)
+        }
+    }
+
+    /// `split_field(x)` == the integer halving `(x - odd) / 2` with the low
+    /// bit, on odd and even inputs.
+    #[test]
+    fn split_field_matches_reference() {
+        use ark_ff::{BigInteger, PrimeField as _};
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        for _ in 0..2 {
+            let x = Fp::rand(&mut rng);
+            let bits = x.into_bigint().to_bits_le();
+            let odd = bits[0];
+            let y_ref = {
+                let mut half = Fp::from(0u64);
+                for &b in bits[1..].iter().rev() {
+                    half = half + half;
+                    if b {
+                        half += Fp::from(1u64);
+                    }
+                }
+                half
+            };
+
+            let circ = SplitCircuit { x };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            let (y, b) = *out.clone();
+            assert_eq!(y, y_ref, "halved value");
+            assert_eq!(b, odd, "odd bit");
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+        }
     }
 }
