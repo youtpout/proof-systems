@@ -36,6 +36,7 @@ pub mod sponge;
 pub mod step_main;
 pub mod step_verifier;
 pub mod wrap_deferred_values;
+pub mod wrap_main;
 
 /// The two sides of the Pasta recursion cycle.
 pub mod tick_tock {
