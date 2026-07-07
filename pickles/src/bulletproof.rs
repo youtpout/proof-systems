@@ -89,6 +89,69 @@ where
     Ok(acc.unwrap())
 }
 
+/// The final inner-product-argument equation of pickles' `check_bulletproof`
+/// (`wrap_verifier.ml`, lines ~603–622):
+///
+/// ```text
+/// q   = combined_polynomial + scale_fast(u, cip) + lr_prod
+/// lhs = endo(q, c) + delta
+/// rhs = scale_fast(challenge_polynomial_commitment + scale_fast(u, b), z1)
+///       + scale_fast(H, z2)
+/// Success (equal_g lhs rhs)
+/// ```
+///
+/// Returns the `equal_g` boolean asserting `c·Q + δ == z1·(G + b·U) + z2·H`.
+///
+/// The scalar advice values `cip` (combined inner product), `b`, `z1`, `z2` are
+/// the `Shifted_value.Type1` representatives, scaled through [`scale_fast`]
+/// (which computes `(2·repr + 2^num_bits + 1)·base`); `num_bits` is the other
+/// field's `size_in_bits`. `c` is the 128-bit squeezed scalar challenge scaled
+/// through the endomorphism gadget ([`endo`]). The sponge-driven derivation of
+/// `u`, the prechallenges and `c` is handled by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn check_bulletproof_equation<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    combined_polynomial: &Point<F>,
+    lr_prod: &Point<F>,
+    u: &Point<F>,
+    cip: &FieldVar<F>,
+    b: &FieldVar<F>,
+    z1: &FieldVar<F>,
+    z2: &FieldVar<F>,
+    c: &FieldVar<F>,
+    delta: &Point<F>,
+    challenge_polynomial_commitment: &Point<F>,
+    h_generator: &Point<F>,
+    endo_base: F,
+    num_bits: usize,
+) -> SnarkyResult<snarky::Boolean<F>> {
+    use crate::common::SCALAR_CHALLENGE_BITS;
+    use crate::plonk_curve_ops::{add_fast, scale_fast};
+
+    // q = combined_polynomial + scale_fast(u, cip) + lr_prod
+    let uc = scale_fast(sys, loc.clone(), u, cip, num_bits)?;
+    let p_prime = add_fast(sys, loc.clone(), combined_polynomial, &uc)?;
+    let q = add_fast(sys, loc.clone(), &p_prime, lr_prod)?;
+
+    // lhs = endo(q, c) + delta
+    let cq = endo(sys, loc.clone(), &q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
+    let lhs = add_fast(sys, loc.clone(), &cq, delta)?;
+
+    // rhs = scale_fast(challenge_polynomial_commitment + scale_fast(u, b), z1)
+    //       + scale_fast(H, z2)
+    let b_u = scale_fast(sys, loc.clone(), u, b, num_bits)?;
+    let g_plus_b_u = add_fast(sys, loc.clone(), challenge_polynomial_commitment, &b_u)?;
+    let z1_g_plus_b_u = scale_fast(sys, loc.clone(), &g_plus_b_u, z1, num_bits)?;
+    let z2_h = scale_fast(sys, loc.clone(), h_generator, z2, num_bits)?;
+    let rhs = add_fast(sys, loc.clone(), &z1_g_plus_b_u, &z2_h)?;
+
+    // equal_g lhs rhs = Boolean.all [lhs.x == rhs.x; lhs.y == rhs.y]
+    let x_eq = lhs.x.equal(sys, loc.clone(), &rhs.x)?;
+    let y_eq = lhs.y.equal(sys, loc.clone(), &rhs.y)?;
+    snarky::Boolean::all(&[x_eq, y_eq], sys, loc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +310,141 @@ mod tests {
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         assert_eq!(*out, (expected.x, expected.y));
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    /// The other field's `size_in_bits` (Fp, the step field); a multiple of the
+    /// 5-bit VarBaseMul chunk width.
+    const OTHER_FIELD_BITS: usize = 255;
+
+    /// Out-of-circuit `scale_fast`: `(2·n + 2^num_bits + 1) · base`, matching
+    /// the `Shifted_value.Type1` convention.
+    fn scale_fast_ref(base: Pallas, repr: u128, num_bits: usize) -> Pallas {
+        use ark_ff::{Field, One};
+        let shift = Fq::from(2u64).pow([num_bits as u64]);
+        let k = Fq::from(2u64) * Fq::from(repr) + shift + Fq::one();
+        (base * k).into_affine()
+    }
+
+    struct BulletproofEqCircuit {
+        combined_polynomial: (Fp, Fp),
+        lr_prod: (Fp, Fp),
+        u: (Fp, Fp),
+        cip: u128,
+        b: u128,
+        z1: u128,
+        z2: u128,
+        c: u128,
+        delta: (Fp, Fp),
+        cpc: (Fp, Fp),
+        h: (Fp, Fp),
+    }
+    impl SnarkyCircuit for BulletproofEqCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = snarky::Boolean<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                Ok(Point::new(
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
+            let mksc = |sys: &mut RunState<Fp>, s: u128| -> SnarkyResult<FieldVar<Fp>> {
+                sys.compute(loc!(), move |_| Fp::from(s))
+            };
+            let combined_polynomial = mkpt(sys, self.combined_polynomial)?;
+            let lr_prod = mkpt(sys, self.lr_prod)?;
+            let u = mkpt(sys, self.u)?;
+            let delta = mkpt(sys, self.delta)?;
+            let cpc = mkpt(sys, self.cpc)?;
+            let h = mkpt(sys, self.h)?;
+            let cip = mksc(sys, self.cip)?;
+            let b = mksc(sys, self.b)?;
+            let z1 = mksc(sys, self.z1)?;
+            let z2 = mksc(sys, self.z2)?;
+            let c = mksc(sys, self.c)?;
+            check_bulletproof_equation(
+                sys,
+                loc!(),
+                &combined_polynomial,
+                &lr_prod,
+                &u,
+                &cip,
+                &b,
+                &z1,
+                &z2,
+                &c,
+                &delta,
+                &cpc,
+                &h,
+                crate::endo::tick::base(),
+                OTHER_FIELD_BITS,
+            )
+        }
+    }
+
+    /// `check_bulletproof_equation` returns `true` when `δ` is chosen so that
+    /// `c·Q + δ == z1·(G + b·U) + z2·H`, and `false` when `δ` is perturbed.
+    #[test]
+    fn check_bulletproof_equation_accepts_and_rejects() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let (_, endo_scalar) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+
+        let rand_pt = |rng: &mut _| (Pallas::generator() * Fq::rand(rng)).into_affine();
+        let combined_polynomial = rand_pt(&mut rng);
+        let lr_prod = rand_pt(&mut rng);
+        let u = rand_pt(&mut rng);
+        let cpc = rand_pt(&mut rng);
+        let h = rand_pt(&mut rng);
+        let cip = u128::rand(&mut rng);
+        let b = u128::rand(&mut rng);
+        let z1 = u128::rand(&mut rng);
+        let z2 = u128::rand(&mut rng);
+        let c = u128::rand(&mut rng);
+
+        // reference rhs = z1·(cpc + b·u) + z2·h
+        let b_u = scale_fast_ref(u, b, OTHER_FIELD_BITS);
+        let g_plus_b_u = (cpc + b_u).into_affine();
+        let z1_term = scale_fast_ref(g_plus_b_u, z1, OTHER_FIELD_BITS);
+        let z2_h = scale_fast_ref(h, z2, OTHER_FIELD_BITS);
+        let rhs = (z1_term + z2_h).into_affine();
+
+        // reference cq = endo(q, c), with q = combined_polynomial + u·cip + lr_prod
+        let uc = scale_fast_ref(u, cip, OTHER_FIELD_BITS);
+        let q = (combined_polynomial + uc + lr_prod).into_affine();
+        let c_field = crate::scalar_challenge::ScalarChallenge(Fq::from(c)).to_field(*endo_scalar);
+        let cq = (q * c_field).into_affine();
+
+        // δ chosen so that lhs = cq + δ == rhs
+        let delta_ok = (rhs.into_group() - cq.into_group()).into_affine();
+        // perturbed δ so that lhs != rhs
+        let delta_bad = (delta_ok + Pallas::generator()).into_affine();
+
+        for (delta, expected) in [(delta_ok, true), (delta_bad, false)] {
+            let circ = BulletproofEqCircuit {
+                combined_polynomial: (combined_polynomial.x, combined_polynomial.y),
+                lr_prod: (lr_prod.x, lr_prod.y),
+                u: (u.x, u.y),
+                cip,
+                b,
+                z1,
+                z2,
+                c,
+                delta: (delta.x, delta.y),
+                cpc: (cpc.x, cpc.y),
+                h: (h.x, h.y),
+            };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected, "equal_g mismatch (expected {expected})");
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+        }
     }
 }
