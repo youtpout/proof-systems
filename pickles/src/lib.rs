@@ -22,6 +22,7 @@ pub mod expr_eval;
 pub mod finalize;
 pub mod fr_sponge;
 pub mod ft_eval_circuit;
+pub mod hash_messages;
 pub mod incrementally_verify;
 pub mod ipa;
 pub mod opt_sponge;
