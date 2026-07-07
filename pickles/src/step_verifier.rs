@@ -722,7 +722,8 @@ mod tests {
         type Proof = IpaProof<Self::Curve, { snarky::FULL_ROUNDS }>;
         type PrivateInput = ();
         type PublicInput = ();
-        type PublicOutput = Boolean<Fp>;
+        /// the new `messages_for_next_step_proof` digest
+        type PublicOutput = FieldVar<Fp>;
         fn circuit(
             &self,
             sys: &mut RunState<Fp>,
@@ -910,49 +911,57 @@ mod tests {
                 sponge_digest_before_evaluations: w1(sys, self.claimed.4)?,
                 bulletproof_challenges: wvec(sys, &self.claimed_bp)?,
             };
+            // must_verify = should_finalize = false: with synthetic finalize
+            // data and random IPA data the ok boolean is !must_verify = true,
+            // so step_main's Boolean.Assert.all is satisfiable.
+            let fals: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
             let tru: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
 
             use groupmap::GroupMap;
             let params = groupmap::BWParameters::<PallasParameters>::setup();
-            let (_chals, ok) = verify_one::<Fp, PallasParameters>(
+            let proof_input = crate::step_main::PerProofInput {
+                finalize_params,
+                finalize_evals,
+                stmt,
+                sponge_after_index: after_index,
+                prev_app_state: app_state.clone(),
+                prev_challenge_polynomial_commitments: prev_cpcs,
+                prev_challenges: prev_chals,
+                vk_digest,
+                vk,
+                packed_lagranges,
+                flag_lagranges,
+                h_generator: h,
+                messages,
+                openings,
+                advice,
+                xi,
+                claimed,
+                should_finalize: fals.clone(),
+                must_verify: fals,
+                is_base_case: tru,
+            };
+            crate::step_main::step_main::<Fp, PallasParameters>(
                 sys,
                 loc!(),
-                &finalize_params,
-                &finalize_evals,
-                &stmt,
-                &after_index,
                 &app_state,
-                &prev_cpcs,
-                &prev_chals,
-                &vk_digest,
-                &vk,
-                &packed_lagranges,
-                &flag_lagranges,
-                &h,
-                &messages,
-                &openings,
-                &advice,
-                &xi,
-                &claimed,
-                &tru, // should_finalize
-                &tru, // must_verify
-                &tru, // is_base_case
+                &vk28,
+                std::slice::from_ref(&proof_input),
                 &params,
                 crate::endo::tick::base(),
                 <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
                 NUM_BITS,
-            )?;
-            Ok(Boolean::create_unsafe(
-                ok.to_field_var().seal(sys, loc!())?,
-            ))
+            )
         }
     }
 
-    /// `verify_one` wires finalize + accumulator digest + statement terms +
-    /// verify into one satisfiable circuit (claims from a transcript mirror
-    /// that includes the in-circuit accumulator digest and x_hat).
+    /// `step_main` (looping `verify_one`) wires finalize, the accumulator
+    /// digest, the statement terms, `verify` and `Boolean.Assert.all` into one
+    /// satisfiable circuit (claims from a transcript mirror that includes the
+    /// in-circuit accumulator digest and x_hat), and its output digest matches
+    /// the out-of-circuit accumulator mirror.
     #[test]
-    fn verify_one_assembles() {
+    fn step_main_assembles() {
         use ark_poly::EvaluationDomain;
         use groupmap::GroupMap;
         use kimchi::circuits::wires::{COLUMNS, PERMUTS};
@@ -1055,6 +1064,29 @@ mod tests {
         let claimed_zeta = lowest_128(s.squeeze());
         let claimed_digest = s.squeeze();
 
+        // mirror of step_main's output digest: the new accumulator hash over
+        // the wrap VK, this app state, the wrap proof's challenge-polynomial
+        // commitment and the field images of the statement's prechallenges
+        let wrap_cpc = pt(&mut rng);
+        let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+        let expected_digest = {
+            let mut s = RefSponge::new(Vesta::sponge_params());
+            for (x, y) in &vk28 {
+                s.absorb(&[*x]);
+                s.absorb(&[*y]);
+            }
+            for x in &app_state {
+                s.absorb(&[*x]);
+            }
+            s.absorb(&[wrap_cpc.0]);
+            s.absorb(&[wrap_cpc.1]);
+            for raw in &stmt_values[13..29] {
+                let f = crate::scalar_challenge::ScalarChallenge(*raw).to_field(*endo_r);
+                s.absorb(&[f]);
+            }
+            s.squeeze()
+        };
+
         let circ = VerifyOneCircuit {
             vk28,
             app_state,
@@ -1081,7 +1113,7 @@ mod tests {
             ivp_vk: (0..28).map(|_| pt(&mut rng)).collect(),
             lr: (0..2).map(|_| (pt(&mut rng), pt(&mut rng))).collect(),
             delta: pt(&mut rng),
-            cpc: pt(&mut rng),
+            cpc: wrap_cpc,
             h: (h.x, h.y),
             advice_scalars: core::array::from_fn(|_| u128::rand(&mut rng)),
             opening_scalars: core::array::from_fn(|_| u128::rand(&mut rng)),
@@ -1098,6 +1130,7 @@ mod tests {
         let _ = &params;
         let (mut pi, ver) = circ.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        assert_eq!(*out, expected_digest, "messages_for_next_step_proof digest");
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 }

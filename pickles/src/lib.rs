@@ -33,6 +33,7 @@ pub mod public_input;
 pub mod scalar_challenge;
 pub mod shifted_value;
 pub mod sponge;
+pub mod step_main;
 pub mod step_verifier;
 pub mod wrap_deferred_values;
 
