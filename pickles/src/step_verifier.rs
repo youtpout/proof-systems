@@ -131,6 +131,235 @@ where
     Ok(success)
 }
 
+/// The wrap statement as circuit variables (base subset), in the
+/// `Wrap.Statement.to_data` element order minus the in-circuit
+/// `messages_for_next_step_proof` digest (computed by [`verify_one`]).
+/// Challenges are raw 128-bit; the `fp` scalars are `Shifted_value.Type1`
+/// representatives.
+pub struct WrapStatementVars<F: PrimeField> {
+    // fp (Type1 representatives, 255-bit)
+    pub combined_inner_product: FieldVar<F>,
+    pub b: FieldVar<F>,
+    pub zeta_to_srs_length: FieldVar<F>,
+    pub zeta_to_domain_size: FieldVar<F>,
+    pub perm: FieldVar<F>,
+    // challenges (raw 128-bit)
+    pub beta: FieldVar<F>,
+    pub gamma: FieldVar<F>,
+    pub alpha: FieldVar<F>,
+    pub zeta: FieldVar<F>,
+    pub xi: FieldVar<F>,
+    // digests (255-bit)
+    pub sponge_digest_before_evaluations: FieldVar<F>,
+    pub messages_for_next_wrap_proof_digest: FieldVar<F>,
+    // bulletproof challenges of the previous step proof (raw 128-bit, 16)
+    pub bulletproof_challenges: Vec<FieldVar<F>>,
+    // packed branch data (10-bit)
+    pub branch_data: FieldVar<F>,
+    // feature flags (8 booleans)
+    pub feature_flags: Vec<Boolean<F>>,
+}
+
+/// The bit widths of the packed (non-boolean) wrap statement elements, in
+/// `to_data` order: `fp[5]` (255), `challenge[2]` (128), `scalar_challenge[3]`
+/// (128), `digest[3]` (255), `bulletproof_challenges[16]` (128),
+/// `branch_data[1]` (10). The 8 trailing feature flags are 1-bit conditional
+/// terms, handled separately.
+pub fn wrap_statement_packed_widths() -> Vec<usize> {
+    let mut w = vec![255usize; 5];
+    w.extend([128, 128]); // beta, gamma
+    w.extend([128, 128, 128]); // alpha, zeta, xi
+    w.extend([255, 255, 255]); // digests
+    w.extend(std::iter::repeat_n(128, 16)); // bulletproof challenges
+    w.push(10); // branch_data
+    w
+}
+
+/// Builds the x_hat [`Term`]s for the wrap statement: the packed elements in
+/// `to_data` order (with `messages_for_next_step_proof` spliced in as the
+/// third digest), then the 8 feature flags as conditional terms.
+///
+/// `packed_lagranges` pairs each packed element with its `(L_i, correction_i)`
+/// constants; `flag_lagranges` are the plain `L_i` for the boolean flags.
+pub fn wrap_statement_terms<F: PrimeField>(
+    stmt: &WrapStatementVars<F>,
+    messages_for_next_step_proof_digest: &FieldVar<F>,
+    packed_lagranges: &[(Point<F>, Point<F>)],
+    flag_lagranges: &[Point<F>],
+) -> Vec<Term<F>> {
+    let widths = wrap_statement_packed_widths();
+    let mut values: Vec<FieldVar<F>> = vec![
+        stmt.combined_inner_product.clone(),
+        stmt.b.clone(),
+        stmt.zeta_to_srs_length.clone(),
+        stmt.zeta_to_domain_size.clone(),
+        stmt.perm.clone(),
+        stmt.beta.clone(),
+        stmt.gamma.clone(),
+        stmt.alpha.clone(),
+        stmt.zeta.clone(),
+        stmt.xi.clone(),
+        stmt.sponge_digest_before_evaluations.clone(),
+        stmt.messages_for_next_wrap_proof_digest.clone(),
+        messages_for_next_step_proof_digest.clone(),
+    ];
+    values.extend(stmt.bulletproof_challenges.iter().cloned());
+    values.push(stmt.branch_data.clone());
+    assert_eq!(values.len(), widths.len(), "wrap statement element count");
+    assert_eq!(packed_lagranges.len(), widths.len());
+    assert_eq!(flag_lagranges.len(), stmt.feature_flags.len());
+
+    let mut terms: Vec<Term<F>> = values
+        .into_iter()
+        .zip(&widths)
+        .zip(packed_lagranges)
+        .map(|((value, &num_bits), (lagrange, correction))| Term::Packed {
+            value,
+            num_bits,
+            lagrange: lagrange.clone(),
+            correction: correction.clone(),
+        })
+        .collect();
+    for (bit, lagrange) in stmt.feature_flags.iter().zip(flag_lagranges) {
+        terms.push(Term::Cond {
+            bit: bit.clone(),
+            lagrange: lagrange.clone(),
+        });
+    }
+    terms
+}
+
+/// One previous proof, fully handled inside a step circuit
+/// (`step_main.ml::verify_one`):
+///
+/// ```text
+/// assert (unfinalized.should_finalize == must_verify)
+/// (finalized, chals) = finalize_deferred(statement's deferred values, evals)
+/// msgs_step_digest   = hash_messages_for_next_step_proof(...)
+/// statement_terms    = wrap statement + msgs_step_digest
+/// verified           = verify(wrap proof, statement_terms, unfinalized claims)
+/// return (chals, verified && finalized || !must_verify)
+/// ```
+///
+/// `stmt` is the wrap proof's statement; `unfinalized_*`/`advice`/`claimed`
+/// carry the wrap proof's own deferred values (from the step statement's
+/// `Unfinalized`); `finalize_*` finalize the *previous step proof*'s deferred
+/// values against `stmt`.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_one<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    // finalize
+    finalize_params: &crate::finalize::FinalizeParams<'_, F>,
+    finalize_evals: &FinalizeEvals<F>,
+    stmt: &WrapStatementVars<F>,
+    // accumulator digest
+    sponge_after_index: &crate::sponge::PoseidonSponge<F>,
+    app_state: &[FieldVar<F>],
+    prev_challenge_polynomial_commitments: &[Point<F>],
+    prev_challenges: &[Vec<FieldVar<F>>],
+    // wrap proof verification
+    vk_digest: &FieldVar<F>,
+    vk: &VerificationKeyComm<F>,
+    packed_lagranges: &[(Point<F>, Point<F>)],
+    flag_lagranges: &[Point<F>],
+    h_generator: &Point<F>,
+    messages: &Messages<F>,
+    openings: &OpeningProof<F>,
+    advice: &Advice<F>,
+    xi: &FieldVar<F>,
+    claimed: &Claimed<F>,
+    // control booleans
+    should_finalize: &Boolean<F>,
+    must_verify: &Boolean<F>,
+    is_base_case: &Boolean<F>,
+    // constants
+    group_map_params: &groupmap::BWParameters<C>,
+    endo_base: F,
+    endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
+    num_bits: usize,
+) -> SnarkyResult<(Vec<FieldVar<F>>, Boolean<F>)>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    use crate::finalize::{finalize_deferred, FinalizeWitness};
+    use crate::hash_messages::hash_messages_for_next_step_proof;
+    use crate::scalar_challenge::scalar_to_field;
+
+    // Boolean.Assert (unfinalized.should_finalize == must_verify)
+    should_finalize
+        .to_field_var()
+        .assert_equals(sys, loc.clone(), &must_verify.to_field_var())?;
+
+    // finalize the previous step proof's deferred values (map_plonk_to_field:
+    // alpha/zeta raw -> field via the endomorphism; beta/gamma used raw)
+    let alpha_f = scalar_to_field(sys, loc.clone(), &stmt.alpha, finalize_params.endo_r)?;
+    let zeta_f = scalar_to_field(sys, loc.clone(), &stmt.zeta, finalize_params.endo_r)?;
+    let witness = FinalizeWitness {
+        alpha: alpha_f,
+        beta: stmt.beta.clone(),
+        gamma: stmt.gamma.clone(),
+        zeta: zeta_f,
+        xi: stmt.xi.clone(),
+        cip_repr: stmt.combined_inner_product.clone(),
+        b_repr: stmt.b.clone(),
+        perm_repr: stmt.perm.clone(),
+        bulletproof_challenges: stmt.bulletproof_challenges.clone(),
+        digest: stmt.sponge_digest_before_evaluations.clone(),
+        prev_challenges: prev_challenges.to_vec(),
+        ft_eval1: finalize_evals.ft_eval1.clone(),
+        public_evals: finalize_evals.public_evals.clone(),
+        evals: finalize_evals.evals.clone(),
+    };
+    let fin = finalize_deferred(sys, loc.clone(), finalize_params, &witness)?;
+
+    // the previous accumulator digest, recomputed in-circuit
+    let msgs_step_digest = hash_messages_for_next_step_proof(
+        sys,
+        loc.clone(),
+        sponge_after_index,
+        app_state,
+        prev_challenge_polynomial_commitments,
+        prev_challenges,
+    )?;
+
+    // the wrap statement public input, then the full wrap-proof check
+    let terms = wrap_statement_terms(stmt, &msgs_step_digest, packed_lagranges, flag_lagranges);
+    let verified = verify::<F, C>(
+        sys,
+        loc.clone(),
+        vk_digest,
+        vk,
+        prev_challenge_polynomial_commitments,
+        &terms,
+        h_generator,
+        messages,
+        openings,
+        advice,
+        xi,
+        claimed,
+        is_base_case,
+        group_map_params,
+        endo_base,
+        endo_scalar,
+        num_bits,
+    )?;
+
+    // verified && finalized || !must_verify
+    let both = verified.and(&fin.finalized, sys, loc.clone());
+    let ok = both.or(&must_verify.not(), loc, sys);
+    Ok((fin.challenges, ok))
+}
+
+/// The previous step proof's evaluations consumed by the finalize half of
+/// [`verify_one`] (the witness data not present in the wrap statement).
+pub struct FinalizeEvals<F: PrimeField> {
+    pub ft_eval1: FieldVar<F>,
+    pub public_evals: [Vec<FieldVar<F>>; 2],
+    pub evals: crate::fr_sponge::AbsorbEvalsVar<F>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +677,427 @@ mod tests {
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         // success is not asserted true (random data cannot satisfy the IPA
         // equation) — the point is that every assert in `verify` held.
+        ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    /// Structural run of `verify_one`: synthetic finalize data (its real-proof
+    /// parity is covered by the finalize_deferred test), transcript-mirrored
+    /// claims for the verify half, statement committed through the terms
+    /// builder with the in-circuit accumulator digest spliced in.
+    struct VerifyOneCircuit {
+        // accumulator digest inputs
+        vk28: Vec<(Fp, Fp)>,
+        app_state: Vec<Fp>,
+        prev_cpc: (Fp, Fp),
+        prev_chals: Vec<Fp>,
+        // wrap statement values (packed order minus the in-circuit digest)
+        stmt_packed: Vec<Fp>, // 29 = 5 fp + 5 chals + 2 digests + 16 bp + 1 branch
+        // lagrange constants for the 30 packed + 8 flag terms
+        packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))>,
+        flag_lagranges: Vec<(Fp, Fp)>,
+        // synthetic finalize inputs
+        domain: ark_poly::Radix2EvaluationDomain<Fp>,
+        shifts: Vec<Fp>,
+        ft_eval1: Fp,
+        public_evals: [Vec<Fp>; 2],
+        evals_flat: Vec<(Fp, Fp)>, // z, 6 selectors, 15 w, 15 coeff, 6 s = 43
+        // wrap proof (random)
+        vk_digest: Fp,
+        w_comm: Vec<Vec<(Fp, Fp)>>,
+        z_comm: Vec<(Fp, Fp)>,
+        t_comm: Vec<(Fp, Fp)>,
+        ivp_vk: Vec<(Fp, Fp)>, // generic..endomul_scalar(6), coeff(15), sigma_init(6), sigma_last(1)
+        lr: Vec<((Fp, Fp), (Fp, Fp))>,
+        delta: (Fp, Fp),
+        cpc: (Fp, Fp),
+        h: (Fp, Fp),
+        advice_scalars: [u128; 5], // cip, b, perm, z2srs, z2dom
+        opening_scalars: [u128; 3], // xi, z1, z2
+        claimed: (Fp, Fp, Fp, Fp, Fp), // beta, gamma, alpha, zeta, digest
+        claimed_bp: Vec<Fp>,
+    }
+
+    impl SnarkyCircuit for VerifyOneCircuit {
+        type Curve = Vesta;
+        type Proof = IpaProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = Boolean<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            use kimchi::circuits::wires::{COLUMNS, PERMUTS};
+
+            let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                Ok(Point::new(
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
+            let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
+                let mut out = vec![];
+                for &p in ps {
+                    out.push(mkpt(sys, p)?);
+                }
+                Ok(out)
+            };
+            let w1 = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
+            let wvec = |sys: &mut RunState<Fp>, vs: &[Fp]| -> SnarkyResult<Vec<FieldVar<Fp>>> {
+                let mut out = vec![];
+                for &v in vs {
+                    out.push(sys.compute(loc!(), move |_| v)?);
+                }
+                Ok(out)
+            };
+            let cpt = |p: (Fp, Fp)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
+
+            // ---- accumulator inputs ----
+            let vk28pts = mkpts(sys, &self.vk28)?;
+            let mut it = vk28pts.into_iter();
+            let vk28 = crate::composition_types::PlonkVerificationKeyEvals {
+                sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
+                coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
+                generic_comm: it.next().unwrap(),
+                psm_comm: it.next().unwrap(),
+                complete_add_comm: it.next().unwrap(),
+                mul_comm: it.next().unwrap(),
+                emul_comm: it.next().unwrap(),
+                endomul_scalar_comm: it.next().unwrap(),
+            };
+            let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &vk28);
+            let app_state = wvec(sys, &self.app_state)?;
+            let prev_cpcs = vec![mkpt(sys, self.prev_cpc)?];
+            let prev_chals = vec![wvec(sys, &self.prev_chals)?];
+
+            // ---- wrap statement vars ----
+            let sp = wvec(sys, &self.stmt_packed)?;
+            let stmt = WrapStatementVars {
+                combined_inner_product: sp[0].clone(),
+                b: sp[1].clone(),
+                zeta_to_srs_length: sp[2].clone(),
+                zeta_to_domain_size: sp[3].clone(),
+                perm: sp[4].clone(),
+                beta: sp[5].clone(),
+                gamma: sp[6].clone(),
+                alpha: sp[7].clone(),
+                zeta: sp[8].clone(),
+                xi: sp[9].clone(),
+                sponge_digest_before_evaluations: sp[10].clone(),
+                messages_for_next_wrap_proof_digest: sp[11].clone(),
+                bulletproof_challenges: sp[12..28].to_vec(),
+                branch_data: sp[28].clone(),
+                feature_flags: {
+                    let mut v = vec![];
+                    for _ in 0..8 {
+                        let b: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+                        v.push(b);
+                    }
+                    v
+                },
+            };
+            let packed_lagranges: Vec<(Point<Fp>, Point<Fp>)> = self
+                .packed_lagranges
+                .iter()
+                .map(|&(l, c)| (cpt(l), cpt(c)))
+                .collect();
+            let flag_lagranges: Vec<Point<Fp>> =
+                self.flag_lagranges.iter().map(|&l| cpt(l)).collect();
+
+            // ---- synthetic finalize data ----
+            let tokens = vec![kimchi::circuits::expr::PolishToken::Constant(
+                kimchi::circuits::expr::ConstantTerm::Literal(Fp::zero()),
+            )];
+            let mds: Vec<Vec<Fp>> = Vesta::sponge_params()
+                .mds
+                .iter()
+                .map(|r| r.to_vec())
+                .collect();
+            let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+            let finalize_params = crate::finalize::FinalizeParams {
+                tokens: &tokens,
+                domain: self.domain,
+                srs_log2: 12,
+                endo: Fp::from(3u64),
+                shifts: &self.shifts,
+                endo_r: *endo_r,
+                mds: &mds,
+            };
+            let mut fe = self.evals_flat.iter();
+            let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
+                let &(a, b) = fe.next().unwrap();
+                Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+            };
+            let evals = crate::fr_sponge::AbsorbEvalsVar {
+                z: next_pe(sys)?,
+                generic_selector: next_pe(sys)?,
+                poseidon_selector: next_pe(sys)?,
+                complete_add_selector: next_pe(sys)?,
+                mul_selector: next_pe(sys)?,
+                emul_selector: next_pe(sys)?,
+                endomul_scalar_selector: next_pe(sys)?,
+                w: (0..COLUMNS)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+                coefficients: (0..COLUMNS)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+                s: (0..PERMUTS - 1)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+            };
+            let finalize_evals = FinalizeEvals {
+                ft_eval1: w1(sys, self.ft_eval1)?,
+                public_evals: [
+                    wvec(sys, &self.public_evals[0])?,
+                    wvec(sys, &self.public_evals[1])?,
+                ],
+                evals,
+            };
+
+            // ---- wrap proof pieces (random) ----
+            let vk_digest = w1(sys, self.vk_digest)?;
+            let mut w_comm = vec![];
+            for w in &self.w_comm {
+                w_comm.push(mkpts(sys, w)?);
+            }
+            let ivp = mkpts(sys, &self.ivp_vk)?;
+            let vk = VerificationKeyComm {
+                generic: ivp[0].clone(),
+                psm: ivp[1].clone(),
+                complete_add: ivp[2].clone(),
+                mul: ivp[3].clone(),
+                emul: ivp[4].clone(),
+                endomul_scalar: ivp[5].clone(),
+                coefficients: ivp[6..21].to_vec(),
+                sigma_init: ivp[21..27].to_vec(),
+                sigma_last: vec![ivp[27].clone()],
+            };
+            let messages = Messages {
+                w_comm,
+                z_comm: mkpts(sys, &self.z_comm)?,
+                t_comm: mkpts(sys, &self.t_comm)?,
+            };
+            let mut lr = vec![];
+            for &(l, r) in &self.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let h = cpt(self.h);
+            let mksc = |sys: &mut RunState<Fp>, s: u128| sys.compute(loc!(), move |_| Fp::from(s));
+            let openings = OpeningProof {
+                lr,
+                delta: mkpt(sys, self.delta)?,
+                z1: mksc(sys, self.opening_scalars[1])?,
+                z2: mksc(sys, self.opening_scalars[2])?,
+                challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
+                h_generator: h.clone(),
+            };
+            let advice = Advice {
+                combined_inner_product: mksc(sys, self.advice_scalars[0])?,
+                b: mksc(sys, self.advice_scalars[1])?,
+                perm: mksc(sys, self.advice_scalars[2])?,
+                zeta_to_srs_length: mksc(sys, self.advice_scalars[3])?,
+                zeta_to_domain_size: mksc(sys, self.advice_scalars[4])?,
+            };
+            let xi = mksc(sys, self.opening_scalars[0])?;
+            let claimed = Claimed {
+                beta: w1(sys, self.claimed.0)?,
+                gamma: w1(sys, self.claimed.1)?,
+                alpha: w1(sys, self.claimed.2)?,
+                zeta: w1(sys, self.claimed.3)?,
+                sponge_digest_before_evaluations: w1(sys, self.claimed.4)?,
+                bulletproof_challenges: wvec(sys, &self.claimed_bp)?,
+            };
+            let tru: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
+
+            use groupmap::GroupMap;
+            let params = groupmap::BWParameters::<PallasParameters>::setup();
+            let (_chals, ok) = verify_one::<Fp, PallasParameters>(
+                sys,
+                loc!(),
+                &finalize_params,
+                &finalize_evals,
+                &stmt,
+                &after_index,
+                &app_state,
+                &prev_cpcs,
+                &prev_chals,
+                &vk_digest,
+                &vk,
+                &packed_lagranges,
+                &flag_lagranges,
+                &h,
+                &messages,
+                &openings,
+                &advice,
+                &xi,
+                &claimed,
+                &tru, // should_finalize
+                &tru, // must_verify
+                &tru, // is_base_case
+                &params,
+                crate::endo::tick::base(),
+                <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
+                NUM_BITS,
+            )?;
+            Ok(Boolean::create_unsafe(
+                ok.to_field_var().seal(sys, loc!())?,
+            ))
+        }
+    }
+
+    /// `verify_one` wires finalize + accumulator digest + statement terms +
+    /// verify into one satisfiable circuit (claims from a transcript mirror
+    /// that includes the in-circuit accumulator digest and x_hat).
+    #[test]
+    fn verify_one_assembles() {
+        use ark_poly::EvaluationDomain;
+        use groupmap::GroupMap;
+        use kimchi::circuits::wires::{COLUMNS, PERMUTS};
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let rand_pt = |rng: &mut _| (Pallas::generator() * Fq::rand(rng)).into_affine();
+        let pt = |rng: &mut _| {
+            let p = rand_pt(rng);
+            (p.x, p.y)
+        };
+
+        // accumulator inputs
+        let vk28: Vec<(Fp, Fp)> = (0..PERMUTS + COLUMNS + 6).map(|_| pt(&mut rng)).collect();
+        let app_state: Vec<Fp> = (0..2).map(|_| Fp::rand(&mut rng)).collect();
+        let prev_cpc = pt(&mut rng);
+        let prev_chals: Vec<Fp> = (0..crate::common::TICK_ROUNDS)
+            .map(|_| Fp::rand(&mut rng))
+            .collect();
+
+        // mirror the accumulator digest
+        let msgs_step_digest = {
+            let mut s = RefSponge::new(Vesta::sponge_params());
+            for (x, y) in &vk28 {
+                s.absorb(&[*x]);
+                s.absorb(&[*y]);
+            }
+            for x in &app_state {
+                s.absorb(&[*x]);
+            }
+            s.absorb(&[prev_cpc.0]);
+            s.absorb(&[prev_cpc.1]);
+            for c in &prev_chals {
+                s.absorb(&[*c]);
+            }
+            s.squeeze()
+        };
+
+        // wrap statement packed values (29): widths [255×5, 128×5, 255×2,
+        // 128×16, 10]
+        let widths = wrap_statement_packed_widths();
+        let mut stmt_packed: Vec<Fp> = vec![];
+        for (i, &w) in widths.iter().enumerate() {
+            if i == 12 {
+                continue; // msgs_step digest — in-circuit
+            }
+            let v = match w {
+                255 => crate::shifted_value::embed_repr::<Fq, Fp>(Fq::rand(&mut rng)),
+                128 => Fp::from(u128::rand(&mut rng)),
+                _ => Fp::from(u64::rand(&mut rng) % (1 << w)),
+            };
+            stmt_packed.push(v);
+        }
+        // splice the digest back for the mirror's full value list
+        let mut stmt_values = stmt_packed.clone();
+        stmt_values.insert(12, msgs_step_digest);
+
+        let lagrange_pts: Vec<Pallas> = (0..widths.len()).map(|_| rand_pt(&mut rng)).collect();
+        let corrections: Vec<Pallas> = lagrange_pts
+            .iter()
+            .zip(&widths)
+            .map(|(l, &n)| crate::public_input::lagrange_correction(l, n))
+            .collect();
+        let flag_lagrange_pts: Vec<Pallas> = (0..8).map(|_| rand_pt(&mut rng)).collect();
+        let h = rand_pt(&mut rng);
+
+        // mirror x_hat (flags all false)
+        let x_hat = {
+            let mut sum = Pallas::zero().into_group();
+            for (v, l) in stmt_values.iter().zip(&lagrange_pts) {
+                let scalar = Fq::from_le_bytes_mod_order(&v.into_bigint().to_bytes_le());
+                sum += *l * scalar;
+            }
+            (-sum + h).into_affine()
+        };
+
+        // wrap proof pieces
+        let vk_digest = Fp::rand(&mut rng);
+        let w_comm_pts: Vec<Pallas> = (0..15).map(|_| rand_pt(&mut rng)).collect();
+        let z_comm_pt = rand_pt(&mut rng);
+        let t_comm_pts: Vec<Pallas> = (0..7).map(|_| rand_pt(&mut rng)).collect();
+
+        // transcript mirror (sg_old = prev_cpc)
+        let mut s = RefSponge::new(Vesta::sponge_params());
+        let absorb_pt = |s: &mut RefSponge, p: (Fp, Fp)| {
+            s.absorb(&[p.0]);
+            s.absorb(&[p.1]);
+        };
+        s.absorb(&[vk_digest]);
+        absorb_pt(&mut s, prev_cpc);
+        absorb_pt(&mut s, (x_hat.x, x_hat.y));
+        for w in &w_comm_pts {
+            absorb_pt(&mut s, (w.x, w.y));
+        }
+        let claimed_beta = lowest_128(s.squeeze());
+        let claimed_gamma = lowest_128(s.squeeze());
+        absorb_pt(&mut s, (z_comm_pt.x, z_comm_pt.y));
+        let claimed_alpha = lowest_128(s.squeeze());
+        for t in &t_comm_pts {
+            absorb_pt(&mut s, (t.x, t.y));
+        }
+        let claimed_zeta = lowest_128(s.squeeze());
+        let claimed_digest = s.squeeze();
+
+        let circ = VerifyOneCircuit {
+            vk28,
+            app_state,
+            prev_cpc,
+            prev_chals,
+            stmt_packed,
+            packed_lagranges: lagrange_pts
+                .iter()
+                .zip(&corrections)
+                .map(|(l, c)| ((l.x, l.y), (c.x, c.y)))
+                .collect(),
+            flag_lagranges: flag_lagrange_pts.iter().map(|p| (p.x, p.y)).collect(),
+            domain: ark_poly::Radix2EvaluationDomain::new(1 << 10).unwrap(),
+            shifts: (0..PERMUTS).map(|_| Fp::rand(&mut rng)).collect(),
+            ft_eval1: Fp::rand(&mut rng),
+            public_evals: [vec![Fp::rand(&mut rng)], vec![Fp::rand(&mut rng)]],
+            evals_flat: (0..1 + 6 + 2 * COLUMNS + PERMUTS - 1)
+                .map(|_| (Fp::rand(&mut rng), Fp::rand(&mut rng)))
+                .collect(),
+            vk_digest,
+            w_comm: w_comm_pts.iter().map(|p| vec![(p.x, p.y)]).collect(),
+            z_comm: vec![(z_comm_pt.x, z_comm_pt.y)],
+            t_comm: t_comm_pts.iter().map(|p| (p.x, p.y)).collect(),
+            ivp_vk: (0..28).map(|_| pt(&mut rng)).collect(),
+            lr: (0..2).map(|_| (pt(&mut rng), pt(&mut rng))).collect(),
+            delta: pt(&mut rng),
+            cpc: pt(&mut rng),
+            h: (h.x, h.y),
+            advice_scalars: core::array::from_fn(|_| u128::rand(&mut rng)),
+            opening_scalars: core::array::from_fn(|_| u128::rand(&mut rng)),
+            claimed: (
+                claimed_beta,
+                claimed_gamma,
+                claimed_alpha,
+                claimed_zeta,
+                claimed_digest,
+            ),
+            claimed_bp: (0..2).map(|_| Fp::from(u128::rand(&mut rng))).collect(),
+        };
+        let params = groupmap::BWParameters::<PallasParameters>::setup();
+        let _ = &params;
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
 }
