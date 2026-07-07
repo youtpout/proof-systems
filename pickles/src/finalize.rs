@@ -107,13 +107,39 @@ pub fn b_actual<F: PrimeField>(
 /// Recovers a field element from its `Shifted_value.Type1` representation,
 /// in-circuit: `to_field(repr) = 2·repr + 2^size + 1`.
 ///
-/// This is the shift `finalize_other_proof` uses for the claimed
-/// `combined_inner_product`, `b` and `perm` (`step_verifier.ml`, `shift1` —
-/// `Shifted_value.Type1.to_field`). It mirrors the constant
+/// This is the shift the *step*-side `finalize_other_proof` uses for the
+/// claimed `combined_inner_product`, `b` and `perm` (`step_verifier.ml`,
+/// `shift1` — `Shifted_value.Type1.to_field`). It mirrors the constant
 /// [`crate::shifted_value::type1_to_field`] but over a `FieldVar`.
 pub fn type1_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
     let c = crate::shifted_value::two_to_size::<F>() + F::one();
     &(repr + repr) + &FieldVar::constant(c)
+}
+
+/// Recovers a field element from its `Shifted_value.Type2` representation,
+/// in-circuit: `to_field(repr) = repr + 2^size` — the shift the *wrap*-side
+/// `finalize_other_proof` uses (`wrap_verifier.ml`, `shift2`).
+pub fn type2_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
+    repr + &FieldVar::constant(crate::shifted_value::two_to_size::<F>())
+}
+
+/// Which `Shifted_value` convention the claimed deferred values use:
+/// [`ShiftKind::Type1`] on the step side, [`ShiftKind::Type2`] on the wrap
+/// side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftKind {
+    Type1,
+    Type2,
+}
+
+impl ShiftKind {
+    /// The in-circuit `Shifted_value.to_field` for this convention.
+    pub fn to_field<F: PrimeField>(self, repr: &FieldVar<F>) -> FieldVar<F> {
+        match self {
+            ShiftKind::Type1 => type1_to_field(repr),
+            ShiftKind::Type2 => type2_to_field(repr),
+        }
+    }
 }
 
 /// Combines the four `finalize_other_proof` conjuncts into the single boolean
@@ -217,6 +243,10 @@ pub struct FinalizeParams<'a, F: PrimeField> {
     /// The Poseidon MDS matrix of the proof curve's sponge (for `Mds` tokens
     /// in the linearization).
     pub mds: &'a [Vec<F>],
+    /// The `Shifted_value` convention of the claimed deferred values
+    /// ([`ShiftKind::Type1`] in a step circuit, [`ShiftKind::Type2`] in a wrap
+    /// circuit).
+    pub shift: ShiftKind,
 }
 
 /// The witness [`finalize_deferred`] consumes: the statement's deferred values
@@ -425,9 +455,9 @@ pub fn finalize_deferred<F: PrimeField>(
         params.domain.group_gen,
         &core.r_field,
     )?;
-    let cip_claimed = type1_to_field(&witness.cip_repr);
-    let b_claimed = type1_to_field(&witness.b_repr);
-    let perm_claimed = type1_to_field(&witness.perm_repr);
+    let cip_claimed = params.shift.to_field(&witness.cip_repr);
+    let b_claimed = params.shift.to_field(&witness.b_repr);
+    let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let finalized = finalize_all(
         sys,
         loc,
@@ -580,6 +610,7 @@ mod tests {
                 shifts: &self.shifts,
                 endo_r: self.endo_r,
                 mds: &mds,
+                shift: ShiftKind::Type1,
             };
             let witness = FinalizeWitness {
                 alpha: w1(sys, self.alpha)?,

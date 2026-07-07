@@ -825,6 +825,7 @@ mod tests {
                 shifts: &self.shifts,
                 endo_r: *endo_r,
                 mds: &mds,
+                shift: crate::finalize::ShiftKind::Type1,
             };
             let mut fe = self.evals_flat.iter();
             let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
