@@ -28,6 +28,7 @@ pub mod opt_sponge;
 pub mod oracles;
 pub mod plonk_checks;
 pub mod plonk_curve_ops;
+pub mod public_input;
 pub mod scalar_challenge;
 pub mod shifted_value;
 pub mod sponge;

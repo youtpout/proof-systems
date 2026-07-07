@@ -400,6 +400,61 @@ pub fn scale_fast2<F: PrimeField>(
     Point::select(sys, loc, s_odd, &h, &h_minus_g)
 }
 
+/// The `2^k` shift picked up by [`scale_fast2`] for a `num_bits`-bit scalar:
+/// `k = BITS_PER_CHUNK · chunks_needed(num_bits - 1)` (the whole-chunk width
+/// used to scale `s_div_2`). The Lagrange correction terms of the public-input
+/// commitment must be `-(2^k)·L` with this same `k`.
+pub fn scale_fast2_shift_bits(num_bits: usize) -> usize {
+    chunks_needed(num_bits - 1) * BITS_PER_CHUNK
+}
+
+/// Scalar multiplication by a packed `num_bits`-bit scalar in the
+/// `Shifted_value.Type2` convention (pickles' `scale_fast2'`): witnesses the
+/// split `(s_div_2, s_odd)` with `s = 2·s_div_2 + s_odd`, constrains it (and
+/// the booleanity of `s_odd`), and runs [`scale_fast2`]. Returns
+/// `(s + 2^scale_fast2_shift_bits(num_bits)) · g`.
+///
+/// The split is on the *integer representative* of `s`, so it is valid for a
+/// cross-field scalar embedded losslessly in the circuit field.
+pub fn scale_fast2_prime<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    g: &Point<F>,
+    s: &FieldVar<F>,
+    num_bits: usize,
+) -> SnarkyResult<Point<F>> {
+    use ark_ff::BigInteger;
+
+    // witness (s_div_2, s_odd) from the integer representative of s
+    let s_clone = s.clone();
+    let (s_div_2, s_odd): (FieldVar<F>, FieldVar<F>) =
+        sys.compute(loc.clone(), move |env: &dyn WitnessGeneration<F>| {
+            let bits = env.read_var(&s_clone).into_bigint().to_bits_le();
+            let mut half = F::zero();
+            for &b in bits[1..].iter().rev() {
+                half = half + half;
+                if b {
+                    half += F::one();
+                }
+            }
+            (half, if bits[0] { F::one() } else { F::zero() })
+        })?;
+
+    // booleanity of s_odd, and 2·s_div_2 + s_odd == s
+    sys.assert_r1cs(
+        Some("scale_fast2_prime: s_odd boolean".into()),
+        loc.clone(),
+        s_odd.clone(),
+        s_odd.clone(),
+        s_odd.clone(),
+    )?;
+    let recomposed = &(&s_div_2 + &s_div_2) + &s_odd;
+    recomposed.assert_equals(sys, loc.clone(), s)?;
+
+    let s_odd = Boolean::create_unsafe(s_odd);
+    scale_fast2(sys, loc, g, &s_div_2, &s_odd, num_bits)
+}
+
 #[cfg(test)]
 mod scale_fast2_tests {
     use super::*;
@@ -471,6 +526,61 @@ mod scale_fast2_tests {
                 .unwrap();
 
             assert_eq!(*public_output, (expected.x, expected.y), "s_odd = {s_odd}");
+            verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
+        }
+    }
+
+    struct Scale2PrimeCircuit {}
+
+    impl SnarkyCircuit for Scale2PrimeCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+
+        /// (s packed, (g.x, g.y))
+        type PrivateInput = (Fp, (Fp, Fp));
+        type PublicInput = ();
+        type PublicOutput = (FieldVar<Fp>, FieldVar<Fp>);
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _public: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let s: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().0)?;
+            let gx: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .0)?;
+            let gy: FieldVar<Fp> = sys.compute(loc!(), |_| private.unwrap().1 .1)?;
+
+            let g = Point::new(gx, gy);
+            let res = scale_fast2_prime(sys, loc!(), &g, &s, NUM_BITS)?;
+            Ok((res.x, res.y))
+        }
+    }
+
+    /// `scale_fast2_prime(g, s)` == `(s + 2^scale_fast2_shift_bits) · g`, with
+    /// the `(s_div_2, s_odd)` split witnessed in-circuit.
+    #[test]
+    fn scale_fast2_prime_matches_scalar_mul() {
+        let circuit = Scale2PrimeCircuit {};
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let shift = scale_fast2_shift_bits(NUM_BITS);
+
+        for _ in 0..2 {
+            use ark_ff::UniformRand;
+            let s = u64::rand(&mut rng) % (1 << NUM_BITS);
+            let g = (Pallas::generator() * Fq::rand(&mut rng)).into_affine();
+
+            let scalar = Fq::from(s + (1 << shift));
+            let expected = (g * scalar).into_affine();
+
+            let private_input = (Fp::from(s), (g.x, g.y));
+            let (proof, public_output) = prover_index
+                .prove::<BaseSponge, ScalarSponge>((), private_input, true)
+                .unwrap();
+
+            assert_eq!(*public_output, (expected.x, expected.y), "s = {s}");
             verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
         }
     }
