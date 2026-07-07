@@ -104,23 +104,16 @@ pub fn b_actual<F: PrimeField>(
     Ok(&h_zeta + &r_h_zetaw)
 }
 
-/// The `Shifted_value.Type2` shift constant `2^{MODULUS_BIT_SIZE}` (mod p).
-/// Deferred values (`combined_inner_product`, `b`, `perm`) are stored in the
-/// statement as `Shifted_value(repr)` with `repr = field - shift`; recovering
-/// the field is `to_field(repr) = repr + shift`.
-pub fn type2_shift<F: PrimeField>() -> F {
-    // 2^{size_in_bits}, matching OCaml `Shifted_value.Type2.Shift.create`
-    let mut acc = F::one();
-    for _ in 0..F::MODULUS_BIT_SIZE {
-        acc.double_in_place();
-    }
-    acc
-}
-
-/// Recovers a field element from its `Shifted_value.Type2` representation:
-/// `to_field(repr) = repr + 2^{size_in_bits}`.
-pub fn type2_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
-    repr + &FieldVar::constant(type2_shift::<F>())
+/// Recovers a field element from its `Shifted_value.Type1` representation,
+/// in-circuit: `to_field(repr) = 2·repr + 2^size + 1`.
+///
+/// This is the shift `finalize_other_proof` uses for the claimed
+/// `combined_inner_product`, `b` and `perm` (`step_verifier.ml`, `shift1` —
+/// `Shifted_value.Type1.to_field`). It mirrors the constant
+/// [`crate::shifted_value::type1_to_field`] but over a `FieldVar`.
+pub fn type1_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
+    let c = crate::shifted_value::two_to_size::<F>() + F::one();
+    &(repr + repr) + &FieldVar::constant(c)
 }
 
 /// Combines the four `finalize_other_proof` conjuncts into the single boolean
@@ -129,7 +122,8 @@ pub fn type2_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
 ///
 /// `xi_correct` is the (already-computed) 128-bit challenge comparison; the
 /// other three compare an in-circuit *derived* value against the *claimed*
-/// value recovered from the statement (`Shifted_value.Type2.to_field`).
+/// value recovered from the statement via [`type1_to_field`]
+/// (`Shifted_value.Type1.to_field` with `shift1`).
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_all<F: PrimeField>(
     sys: &mut RunState<F>,
@@ -688,6 +682,45 @@ mod tests {
             b_claimed: b.b_claimed,
             perm_derived: b.perm_derived,
             perm_claimed: b.perm_claimed,
+        }
+    }
+
+    struct Type1RecoverCircuit {
+        repr: Fp,
+    }
+    impl SnarkyCircuit for Type1RecoverCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<FieldVar<Fp>> {
+            let repr: FieldVar<Fp> = sys.compute(loc!(), |_| self.repr)?;
+            Ok(type1_to_field(&repr))
+        }
+    }
+
+    /// The in-circuit `type1_to_field` inverts `expand_deferred`'s Type1 shift:
+    /// `finalize` recovers the same field value the prover shifted with
+    /// [`crate::shifted_value::type1_of_field`] (the `shift1` convention of
+    /// `finalize_other_proof`, not Type2).
+    #[test]
+    fn type1_recovery_inverts_of_field() {
+        use ark_ff::UniformRand;
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        for _ in 0..2 {
+            let s = Fp::rand(&mut rng);
+            let repr = crate::shifted_value::type1_of_field(s);
+            let circ = Type1RecoverCircuit { repr };
+            let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+            let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, s, "in-circuit Type1 recovery");
+            ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
         }
     }
 }
