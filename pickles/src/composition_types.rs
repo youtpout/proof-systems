@@ -79,6 +79,20 @@ pub struct BranchData {
     pub domain_log2: u8,
 }
 
+impl BranchData {
+    /// Packs into a single field element (`branch_data.ml`, `pack`): the low 2
+    /// bits are `proofs_verified`, the next 8 bits are `domain_log2`, i.e.
+    /// `domain_log2·4 + proofs_verified`.
+    pub fn pack<F: ark_ff::PrimeField>(&self) -> F {
+        let pv = match self.proofs_verified {
+            ProofsVerified::N0 => 0u64,
+            ProofsVerified::N1 => 1,
+            ProofsVerified::N2 => 2,
+        };
+        F::from(u64::from(self.domain_log2)) * F::from(4u64) + F::from(pv)
+    }
+}
+
 pub mod plonk {
     use super::Features;
 
@@ -93,6 +107,23 @@ pub mod plonk {
         pub zeta: ScalarChallenge,
         pub joint_combiner: Option<ScalarChallenge>,
         pub feature_flags: Features<Bool>,
+    }
+
+    /// The derived PLONK scalars (`Deferred_values.Plonk.In_circuit`): the
+    /// minimal challenges plus the values `derive_plonk` computes
+    /// (`zeta_to_srs_length`, `zeta_to_domain_size`, `perm`). `Challenge` and
+    /// the derived scalars share the circuit field.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct InCircuit<Fp, ScalarChallenge, Bool> {
+        pub alpha: ScalarChallenge,
+        pub beta: Fp,
+        pub gamma: Fp,
+        pub zeta: ScalarChallenge,
+        pub zeta_to_srs_length: Fp,
+        pub zeta_to_domain_size: Fp,
+        pub perm: Fp,
+        pub feature_flags: Features<Bool>,
+        pub joint_combiner: Option<ScalarChallenge>,
     }
 }
 
@@ -128,7 +159,74 @@ pub struct Unfinalized<Plonk, Fp, ScalarChallenge, BpChals, Digest, Bool> {
 }
 
 pub mod wrap {
-    use super::DeferredValues;
+    use super::{plonk, BranchData, BulletproofChallenge, DeferredValues};
+    use crate::scalar_challenge::ScalarChallenge;
+    use ark_ff::PrimeField;
+
+    /// Flattens the wrap statement's deferred proof state to field elements in
+    /// the `to_data` order (`composition_types.ml:815`):
+    /// `fp[5]` (combined_inner_product, b, zeta_to_srs_length,
+    /// zeta_to_domain_size, perm), `challenge[2]` (beta, gamma),
+    /// `scalar_challenge[3]` (alpha, zeta, xi), `digest[3]`
+    /// (sponge_digest_before_evaluations, messages_for_next_wrap_proof,
+    /// messages_for_next_step_proof), `bulletproof_challenges[16]`,
+    /// `index[1]` (branch_data), `feature_flags[8]`.
+    ///
+    /// Base case: no `joint_combiner`. The two `messages_for_next_*` are passed
+    /// as their in-circuit digests. This is the public input the wrap circuit
+    /// commits to.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_statement_to_field_elements<F: PrimeField>(
+        plonk: &plonk::InCircuit<F, ScalarChallenge<F>, bool>,
+        combined_inner_product: F,
+        b: F,
+        xi: &ScalarChallenge<F>,
+        bulletproof_challenges: &[BulletproofChallenge<ScalarChallenge<F>>],
+        branch_data: &BranchData,
+        sponge_digest_before_evaluations: F,
+        messages_for_next_wrap_proof_digest: F,
+        messages_for_next_step_proof_digest: F,
+    ) -> Vec<F> {
+        let mut out = Vec::with_capacity(38);
+        // fp (5)
+        out.push(combined_inner_product);
+        out.push(b);
+        out.push(plonk.zeta_to_srs_length);
+        out.push(plonk.zeta_to_domain_size);
+        out.push(plonk.perm);
+        // challenge (2)
+        out.push(plonk.beta);
+        out.push(plonk.gamma);
+        // scalar_challenge (3): alpha, zeta, xi
+        out.push(plonk.alpha.0);
+        out.push(plonk.zeta.0);
+        out.push(xi.0);
+        // digest (3)
+        out.push(sponge_digest_before_evaluations);
+        out.push(messages_for_next_wrap_proof_digest);
+        out.push(messages_for_next_step_proof_digest);
+        // bulletproof_challenges (16)
+        for c in bulletproof_challenges {
+            out.push(c.prechallenge.0);
+        }
+        // index (1): branch_data
+        out.push(branch_data.pack::<F>());
+        // feature_flags (8) — Plonk_types.Features.to_data order
+        let ff = &plonk.feature_flags;
+        for flag in [
+            ff.range_check0,
+            ff.range_check1,
+            ff.foreign_field_add,
+            ff.foreign_field_mul,
+            ff.xor,
+            ff.rot,
+            ff.lookup,
+            ff.runtime_tables,
+        ] {
+            out.push(if flag { F::one() } else { F::zero() });
+        }
+        out
+    }
 
     /// The wrap proof state (`Wrap.Proof_state`).
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,6 +380,56 @@ mod tests {
                 Fq::from(11u64),
             ]
         );
+    }
+
+    #[test]
+    fn wrap_statement_to_field_elements_order() {
+        let plonk = plonk::InCircuit {
+            alpha: ScalarChallenge(Fq::from(107u64)),
+            beta: Fq::from(105u64),
+            gamma: Fq::from(106u64),
+            zeta: ScalarChallenge(Fq::from(108u64)),
+            zeta_to_srs_length: Fq::from(102u64),
+            zeta_to_domain_size: Fq::from(103u64),
+            perm: Fq::from(104u64),
+            feature_flags: Features::none(),
+            joint_combiner: None,
+        };
+        let bp: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = (0..16)
+            .map(|i| BulletproofChallenge {
+                prechallenge: ScalarChallenge(Fq::from(200u64 + i as u64)),
+            })
+            .collect();
+        let branch = BranchData {
+            proofs_verified: ProofsVerified::N2,
+            domain_log2: 15,
+        };
+        let fe = wrap::wrap_statement_to_field_elements(
+            &plonk,
+            Fq::from(100u64), // combined_inner_product
+            Fq::from(101u64), // b
+            &ScalarChallenge(Fq::from(109u64)), // xi
+            &bp,
+            &branch,
+            Fq::from(110u64), // sponge digest
+            Fq::from(111u64), // messages_for_next_wrap digest
+            Fq::from(112u64), // messages_for_next_step digest
+        );
+
+        let mut expected: Vec<Fq> = vec![
+            100, 101, 102, 103, 104, // fp
+            105, 106, // challenge
+            107, 108, 109, // scalar_challenge
+            110, 111, 112, // digest
+        ]
+        .into_iter()
+        .map(Fq::from)
+        .collect();
+        expected.extend((200..216).map(Fq::from)); // bulletproof_challenges
+        expected.push(Fq::from(15u64 * 4 + 2)); // branch_data pack
+        expected.extend(std::iter::repeat_n(Fq::from(0u64), 8)); // feature_flags
+        assert_eq!(fe, expected);
+        assert_eq!(fe.len(), 5 + 2 + 3 + 3 + 16 + 1 + 8);
     }
 
     #[test]
