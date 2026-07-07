@@ -260,4 +260,107 @@ mod tests {
         assert_eq!(z, zeta, "zeta");
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
     }
+
+    /// Low 128 bits of a field element as a `u128` (challenges are 128-bit, so
+    /// this is field-agnostic and lets us compare an in-circuit `Fp` challenge
+    /// against kimchi's `Fq` challenge for a Pallas proof).
+    fn low_u128<F: PrimeField>(x: F) -> u128 {
+        let bits = x.into_bigint().to_bits_le();
+        let mut acc = 0u128;
+        for &b in bits[..128].iter().rev() {
+            acc = (acc << 1) | u128::from(b);
+        }
+        acc
+    }
+
+    // A real kimchi proof on Pallas (commitments have coordinates in Fp), so it
+    // can be absorbed by an Fp circuit — exactly the step/wrap cross-field case.
+    type PallasBase = DefaultFqSponge<
+        mina_curves::pasta::PallasParameters,
+        PlonkSpongeConstantsKimchi,
+        { snarky::FULL_ROUNDS },
+    >;
+    type PallasScalar = DefaultFrSponge<
+        mina_curves::pasta::Fq,
+        PlonkSpongeConstantsKimchi,
+        { snarky::FULL_ROUNDS },
+    >;
+
+    struct PallasCircuit {}
+    impl SnarkyCircuit for PallasCircuit {
+        type Curve = mina_curves::pasta::Pallas;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = mina_curves::pasta::Fq;
+        type PublicInput = FieldVar<mina_curves::pasta::Fq>;
+        type PublicOutput = ();
+        fn circuit(
+            &self,
+            sys: &mut RunState<mina_curves::pasta::Fq>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<()> {
+            let x: FieldVar<mina_curves::pasta::Fq> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let _ = sys.poseidon(loc!(), (x, z));
+            Ok(())
+        }
+    }
+
+    /// `derive_fq_oracles` reproduces kimchi's actual `proof.oracles()` β/γ on a
+    /// *real* Pallas proof — validating the absorption order and point encoding
+    /// against kimchi on genuine commitment data (not a synthetic reference).
+    #[test]
+    fn fq_oracles_match_real_pallas_proof() {
+        use ark_ff::One;
+        use mina_curves::pasta::{Fq, Pallas};
+        use poly_commitment::commitment::PolyComm;
+        use poly_commitment::SRS;
+
+        // 1. produce a real Pallas proof
+        let mut pi = PallasCircuit {}.compile_to_indexes().unwrap().0;
+        let vi = PallasCircuit {}.compile_to_indexes().unwrap().1;
+        let vi = &vi.index;
+        let x = Fq::from(6u64);
+        let z = x * x;
+        let (proof, _) = pi.prove::<PallasBase, PallasScalar>(z, x, true).unwrap();
+
+        // 2. kimchi's own oracles (β/γ are raw 128-bit challenges in Fq)
+        let public_input = vec![z];
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let pc = PolyComm::<Pallas>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(pc.clone(), &pc.map(|_| Fq::one()))
+            .unwrap()
+            .commitment;
+        let o = proof
+            .oracles::<PallasBase, PallasScalar, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+        let oracles = &o.oracles;
+
+        // 3. in-circuit derive_fq_oracles over Fp on the real Pallas commitments
+        let vk_digest = vi.digest::<PallasBase>();
+        let coords = |c: &PolyComm<Pallas>| -> Vec<(Fp, Fp)> {
+            c.chunks.iter().map(|p| (p.x, p.y)).collect()
+        };
+        let circ = OracleCircuit {
+            vk_digest,
+            public_comm: coords(&public_comm),
+            w_comm: proof.commitments.w_comm.iter().map(coords).collect(),
+            z_comm: coords(&proof.commitments.z_comm),
+            t_comm: coords(&proof.commitments.t_comm),
+            // endo only affects alpha/zeta (not compared here)
+            endo: <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
+        };
+        let (mut cpi, _cver) = circ.compile_to_indexes().unwrap();
+        let (_cproof, out) = cpi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        let ((beta, gamma), (_alpha, _zeta)) = *out.clone();
+
+        // β/γ are 128-bit; compare as integers across fields
+        assert_eq!(low_u128(beta), low_u128(oracles.beta), "beta");
+        assert_eq!(low_u128(gamma), low_u128(oracles.gamma), "gamma");
+    }
 }
