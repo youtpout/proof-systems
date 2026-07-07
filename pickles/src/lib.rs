@@ -14,6 +14,7 @@
 pub mod all_evals;
 pub mod bulletproof;
 pub mod challenge;
+pub mod commitments;
 pub mod common;
 pub mod composition_types;
 pub mod endo;
