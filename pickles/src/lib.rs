@@ -30,6 +30,7 @@ pub mod plonk_curve_ops;
 pub mod scalar_challenge;
 pub mod shifted_value;
 pub mod sponge;
+pub mod wrap_deferred_values;
 
 /// The two sides of the Pasta recursion cycle.
 pub mod tick_tock {
