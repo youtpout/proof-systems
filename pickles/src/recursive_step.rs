@@ -337,9 +337,9 @@ pub fn wrap_unfinalized_from_base<
             .collect(),
         sponge_digest_before_evaluations: sw.sponge_digest,
         should_finalize: true,
-        old_bulletproof_challenges: vec![],
+        old_bulletproof_challenges: dummy_wrap_chals,
         prev_step_acc: (base.step_proof.proof.sg.x, base.step_proof.proof.sg.y),
-        hash_dummy_challenges: dummy_wrap_chals,
+        hash_dummy_challenges: vec![],
     }
 }
 

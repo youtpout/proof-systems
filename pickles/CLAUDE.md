@@ -174,6 +174,15 @@ forme du statement wrap préparé et la présence de l'unfinalized. Prochaine
 étape : appeler `WrapCircuit::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>` avec ce
 témoin et résoudre les éventuels écarts de transcript/finalize en circuit.
 
+Essai suivant effectué localement : brancher directement ce témoin dans
+`WrapCircuit::<14, 36>` compile et atteint le circuit, mais échoue encore sur
+un assert booléen dans `wrap_main` (`UnsatisfiedEqualConstraint 0 == 1`).
+Bypasser temporairement `should_finalize` ne supprime pas l'échec, donc le
+prochain écart à isoler est côté vérification IPA/transcript du step proof
+enveloppé (probablement `sg_old`/x_hat/transcript de récursion), pas seulement
+le `finalize_deferred` de l'unfinalized. L'état commité reste vert avec le
+témoin préparé et testé.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
