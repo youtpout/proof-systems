@@ -3,7 +3,7 @@
 //! This module keeps the recursion test focused on witness construction while
 //! the step circuit plumbing lives in the crate.
 
-use ark_ff::{BigInteger, One, PrimeField, Zero};
+use ark_ff::{AdditiveGroup, BigInteger, Field, One, PrimeField, Zero};
 use groupmap::GroupMap;
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
@@ -660,7 +660,10 @@ pub fn prepare_recursive_wrap<
     base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
     step: &RecursiveStepProof<BASE_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
-    assert_eq!(STEP_STMT_LEN, width1_step_statement_len(VERIFIED_WRAP_ROUNDS));
+    assert_eq!(
+        STEP_STMT_LEN,
+        width1_step_statement_len(VERIFIED_WRAP_ROUNDS)
+    );
     assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 9);
     assert_eq!(step.proof.proof.lr.len(), STEP_PROOF_ROUNDS);
 
@@ -681,7 +684,10 @@ pub fn prepare_recursive_wrap<
         .unwrap();
     let oracles = &o.oracles;
 
-    let combined = step.proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+    let combined = step
+        .proof
+        .evals
+        .combine(&o.powers_of_eval_points_for_chunks);
     let srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
     let domain = crate::plonk_checks::Domain::<Fp> {
         log2_size: svi.domain.log_size_of_group,
@@ -723,7 +729,13 @@ pub fn prepare_recursive_wrap<
         let params = Vesta::sponge_params();
         let mut fr = VestaScalar::from(params);
         fr.absorb(&o.digest);
-        let pcd = VestaScalar::from(params).digest();
+        let pcd = {
+            let mut prev = VestaScalar::from(params);
+            for challenge in &step.proof.prev_challenges {
+                prev.absorb_multiple(&challenge.chals);
+            }
+            prev.digest()
+        };
         fr.absorb(&pcd);
         fr.absorb(&step.proof.ft_eval1);
         fr.absorb_multiple(&o.public_evals[0]);
@@ -890,6 +902,130 @@ pub fn reconstruct_step_statement_commitment(
         acc += lagrange * scalar;
     }
     (-acc + h.into_group()).into_affine()
+}
+
+pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
+    prepared: &PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
+) -> bool {
+    use ark_ec::{AffineRepr, CurveGroup};
+    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
+
+    type RefSponge = ArithmeticSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+
+    let data = &prepared.data;
+    let stmt = &prepared.statement;
+    let pt = |p: (Fq, Fq)| Vesta::new(p.0, p.1);
+    let abpt = |s: &mut RefSponge, p: Vesta| {
+        s.absorb(&[p.x]);
+        s.absorb(&[p.y]);
+    };
+    let low_128 = |x: Fq| {
+        let bits = x.into_bigint().to_bits_le();
+        let mut acc = Fq::zero();
+        for &b in bits[..128].iter().rev() {
+            acc.double_in_place();
+            if b {
+                acc += Fq::one();
+            }
+        }
+        acc
+    };
+    let t1 = |repr_fq: Fq| crate::shifted_value::type1_to_field(embed_fq_to_fp(repr_fq));
+    let to_chal = |raw: Fq| {
+        let raw_fp = embed_fq_to_fp(raw);
+        crate::scalar_challenge::ScalarChallenge(raw_fp)
+            .to_field(<Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1)
+    };
+
+    let h = pt(data.h);
+    let x_hat = reconstruct_step_statement_commitment(
+        &data.step_statement,
+        &data.step_statement_lagranges,
+        h,
+    );
+
+    let mut sponge =
+        RefSponge::new(<Vesta as KimchiCurve<FULL_ROUNDS>>::other_curve_sponge_params());
+    sponge.absorb(&[data.step_vk_digest]);
+    for unf in &data.unfinalized {
+        abpt(&mut sponge, pt(unf.prev_step_acc));
+    }
+    abpt(&mut sponge, x_hat);
+    for &w in &data.w_comm {
+        abpt(&mut sponge, pt(w));
+    }
+    let _beta = low_128(sponge.squeeze());
+    let _gamma = low_128(sponge.squeeze());
+    abpt(&mut sponge, pt(data.z_comm));
+    let _alpha = low_128(sponge.squeeze());
+    for &t in &data.t_comm {
+        abpt(&mut sponge, pt(t));
+    }
+    let _zeta = low_128(sponge.squeeze());
+
+    let mut ipa_sponge = sponge;
+    ipa_sponge.absorb(&[stmt[0]]);
+    let gm = groupmap::BWParameters::<VestaParameters>::setup();
+    let (ux, uy) = gm.to_group(ipa_sponge.squeeze());
+    let u = Vesta::new_unchecked(ux, uy);
+
+    let mut lr_prod = Vesta::zero().into_group();
+    for &((lx, ly), (rx, ry)) in &data.lr {
+        let l = Vesta::new(lx, ly);
+        let r = Vesta::new(rx, ry);
+        abpt(&mut ipa_sponge, l);
+        abpt(&mut ipa_sponge, r);
+        let raw = low_128(ipa_sponge.squeeze());
+        let chal = to_chal(raw);
+        lr_prod += l * chal.inverse().unwrap() + r * chal;
+    }
+    let delta = pt(data.delta);
+    abpt(&mut ipa_sponge, delta);
+    let c = to_chal(low_128(ipa_sponge.squeeze()));
+
+    let cip = t1(stmt[0]);
+    let b = t1(stmt[1]);
+    let zeta_to_srs_length = t1(stmt[2]);
+    let zeta_to_domain_size = t1(stmt[3]);
+    let perm = t1(stmt[4]);
+    let xi = to_chal(stmt[9]);
+    let z1 = t1(data.z1_repr);
+    let z2 = t1(data.z2_repr);
+
+    let mut t_red = pt(data.t_comm[6]).into_group();
+    for &t in data.t_comm[..6].iter().rev() {
+        t_red = pt(t).into_group() + t_red * zeta_to_srs_length;
+    }
+    let ft = pt(data.sigma_last[0]) * perm + t_red - t_red * zeta_to_domain_size;
+
+    let mut commitments = Vec::new();
+    commitments.extend(
+        data.unfinalized
+            .iter()
+            .map(|u| pt(u.prev_step_acc).into_group()),
+    );
+    commitments.push(x_hat.into_group());
+    commitments.push(ft);
+    commitments.push(pt(data.z_comm).into_group());
+    commitments.push(pt(data.generic).into_group());
+    commitments.push(pt(data.psm).into_group());
+    commitments.push(pt(data.complete_add).into_group());
+    commitments.push(pt(data.mul).into_group());
+    commitments.push(pt(data.emul).into_group());
+    commitments.push(pt(data.endomul_scalar).into_group());
+    commitments.extend(data.w_comm.iter().map(|&p| pt(p).into_group()));
+    commitments.extend(data.coefficients.iter().map(|&p| pt(p).into_group()));
+    commitments.extend(data.sigma_init.iter().map(|&p| pt(p).into_group()));
+
+    let mut combined = *commitments.last().unwrap();
+    for p in commitments[..commitments.len() - 1].iter().rev() {
+        combined = *p + combined * xi;
+    }
+
+    let q = combined + u * cip + lr_prod;
+    let lhs = q * c + delta.into_group();
+    let rhs = (pt(data.sg).into_group() + u * b) * z1 + h.into_group() * z2;
+    lhs.into_affine() == rhs.into_affine()
 }
 
 impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>

@@ -178,14 +178,22 @@ Essai suivant effectué localement : brancher directement ce témoin dans
 `WrapCircuit::<14, 36>` compile et atteint le circuit, mais échoue encore sur
 un assert booléen dans `wrap_main` (`UnsatisfiedEqualConstraint 0 == 1`).
 Bypasser temporairement `should_finalize` ne supprime pas l'échec, donc le
-prochain écart à isoler est côté vérification IPA/transcript du step proof
-enveloppé, pas seulement le `finalize_deferred` de l'unfinalized.
+prochain écart à isoler n'est pas seulement le `finalize_deferred` de
+l'unfinalized.
 `prepare_recursive_wrap` reconstruit désormais le commitment public `x_hat`
 du statement step récursif depuis les slots width-1 et les Lagranges SRS, puis
 l'asserte contre `public_comm.chunks[0]` produit par kimchi. Cette piste est
-donc validée hors-circuit ; l'écart restant est plutôt à chercher dans le
-threading transcript/advice IPA (`sg_old`, challenges, scalaires différés).
-L'état commité reste vert avec le témoin préparé et testé.
+donc validée hors-circuit. Correction importante ensuite : le replay Fr-sponge
+de `xi` pour le step proof récursif doit absorber le digest des
+`prev_challenges` (`proof.prev_challenges[*].chals`) comme
+`kimchi::verifier`, pas le digest vide du cas base. Le test récursif valide
+maintenant aussi l'équation IPA hors-circuit reconstruite depuis
+`PreparedRecursiveWrap` (`sg_old`, x_hat, ft, transcript IPA, `z1/z2`, `b`,
+`cip`). Rebrancher directement `WrapCircuit::<14, 36>` après cette correction
+échoue encore dans `wrap_main` au callsite `api.rs:405`; le prochain écart est
+donc dans l'encodage/exécution circuit de `wrap_main` (assert interne,
+finalize/hash/advice in-circuit), plus dans la préparation kimchi hors-circuit
+de l'IPA. L'état commité reste vert avec le témoin préparé et testé.
 
 ### Ce qu'il manque maintenant
 
