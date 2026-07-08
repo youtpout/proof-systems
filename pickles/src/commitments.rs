@@ -10,25 +10,25 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
+use snarky::{gadgets::curve::Point, RunState, SnarkyResult};
 
-use crate::plonk_curve_ops::{add_fast, scale_fast};
+use crate::plonk_curve_ops::{add_fast, ShiftedScalar};
 
 /// Combines a chunked commitment by the SRS-length challenge, Horner-style
 /// (pickles' `reduce_chunks`): `res = comm[n-1]; for i=n-2..0 { res = comm[i] +
-/// scale·res }`, where `scale·res` is [`scale_fast`] by `zeta_to_srs_length`.
+/// scale·res }`, where `scale·res` scales by `zeta_to_srs_length`.
 fn reduce_chunks<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     comm: &[Point<F>],
-    zeta_to_srs_length: &FieldVar<F>,
+    zeta_to_srs_length: &ShiftedScalar<F>,
     num_bits: usize,
 ) -> SnarkyResult<Point<F>> {
     let n = comm.len();
     assert!(n > 0, "reduce_chunks: empty commitment");
     let mut res = comm[n - 1].clone();
     for c in comm[..n - 1].iter().rev() {
-        let scaled = scale_fast(sys, loc.clone(), &res, zeta_to_srs_length, num_bits)?;
+        let scaled = zeta_to_srs_length.scale(sys, loc.clone(), &res, num_bits)?;
         res = add_fast(sys, loc.clone(), c, &scaled)?;
     }
     Ok(res)
@@ -54,21 +54,21 @@ pub fn ft_comm<F: PrimeField>(
     loc: Cow<'static, str>,
     sigma_comm_last: &[Point<F>],
     t_comm: &[Point<F>],
-    perm: &FieldVar<F>,
-    zeta_to_srs_length: &FieldVar<F>,
-    zeta_to_domain_size: &FieldVar<F>,
+    perm: &ShiftedScalar<F>,
+    zeta_to_srs_length: &ShiftedScalar<F>,
+    zeta_to_domain_size: &ShiftedScalar<F>,
     num_bits: usize,
 ) -> SnarkyResult<Point<F>> {
     // f_comm = perm · reduce_chunks(sigma_comm_last)
     let sigma = reduce_chunks(sys, loc.clone(), sigma_comm_last, zeta_to_srs_length, num_bits)?;
-    let f_comm = scale_fast(sys, loc.clone(), &sigma, perm, num_bits)?;
+    let f_comm = perm.scale(sys, loc.clone(), &sigma, num_bits)?;
 
     // chunked_t_comm = reduce_chunks(t_comm)
     let chunked_t = reduce_chunks(sys, loc.clone(), t_comm, zeta_to_srs_length, num_bits)?;
 
     // ft_comm = f_comm + chunked_t - zeta_to_domain_size · chunked_t
     let sum = add_fast(sys, loc.clone(), &f_comm, &chunked_t)?;
-    let t_scaled = scale_fast(sys, loc.clone(), &chunked_t, zeta_to_domain_size, num_bits)?;
+    let t_scaled = zeta_to_domain_size.scale(sys, loc.clone(), &chunked_t, num_bits)?;
     add_fast(sys, loc, &sum, &t_scaled.negate())
 }
 
@@ -83,7 +83,7 @@ mod tests {
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof;
-    use snarky::{api::SnarkyCircuit, loc};
+    use snarky::{api::SnarkyCircuit, loc, FieldVar};
 
     type BaseSponge =
         DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
@@ -139,9 +139,9 @@ mod tests {
             let mksc = |sys: &mut RunState<Fp>, s: u128| sys.compute(loc!(), move |_| Fp::from(s));
             let sigma_comm_last = mkpts(sys, &self.sigma_comm_last)?;
             let t_comm = mkpts(sys, &self.t_comm)?;
-            let perm = mksc(sys, self.perm)?;
-            let zsl = mksc(sys, self.zeta_to_srs_length)?;
-            let zds = mksc(sys, self.zeta_to_domain_size)?;
+            let perm = ShiftedScalar::Type1(mksc(sys, self.perm)?);
+            let zsl = ShiftedScalar::Type1(mksc(sys, self.zeta_to_srs_length)?);
+            let zds = ShiftedScalar::Type1(mksc(sys, self.zeta_to_domain_size)?);
             let ft = ft_comm(
                 sys,
                 loc!(),

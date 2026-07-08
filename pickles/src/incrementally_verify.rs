@@ -36,6 +36,7 @@ use crate::bulletproof::{
 use crate::challenge::squeeze_challenge;
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
+use crate::plonk_curve_ops::ShiftedScalar;
 use crate::sponge::PoseidonSponge;
 
 /// The verification-key commitments the base step/wrap verifier absorbs and
@@ -67,15 +68,15 @@ pub struct Messages<F: PrimeField> {
 }
 
 /// The IPA opening proof pieces (`Openings.Bulletproof.t`), plus the SRS
-/// blinding generator `H`.
+/// blinding generator `H`. The scalars are [`ShiftedScalar`] representatives
+/// ([`ShiftedScalar::Type2`] pairs in a step circuit, single
+/// [`ShiftedScalar::Type1`] in a wrap circuit).
 pub struct OpeningProof<F: PrimeField> {
     /// The per-round `(L, R)` commitments.
     pub lr: Vec<(Point<F>, Point<F>)>,
     pub delta: Point<F>,
-    /// `Shifted_value.Type1` of `z_1`.
-    pub z1: FieldVar<F>,
-    /// `Shifted_value.Type1` of `z_2`.
-    pub z2: FieldVar<F>,
+    pub z1: ShiftedScalar<F>,
+    pub z2: ShiftedScalar<F>,
     /// The challenge-polynomial commitment (`sg`).
     pub challenge_polynomial_commitment: Point<F>,
     /// The SRS blinding generator `H`.
@@ -83,15 +84,15 @@ pub struct OpeningProof<F: PrimeField> {
 }
 
 /// The deferred scalar advice consumed by the Fq-side verifier
-/// (`Shifted_value.Type1` field images): the combined inner product, `b`, and
+/// ([`ShiftedScalar`] representatives): the combined inner product, `b`, and
 /// the `ft_comm` PlonK scalars `perm`, `zeta_to_srs_length`,
 /// `zeta_to_domain_size`.
 pub struct Advice<F: PrimeField> {
-    pub combined_inner_product: FieldVar<F>,
-    pub b: FieldVar<F>,
-    pub perm: FieldVar<F>,
-    pub zeta_to_srs_length: FieldVar<F>,
-    pub zeta_to_domain_size: FieldVar<F>,
+    pub combined_inner_product: ShiftedScalar<F>,
+    pub b: ShiftedScalar<F>,
+    pub perm: ShiftedScalar<F>,
+    pub zeta_to_srs_length: ShiftedScalar<F>,
+    pub zeta_to_domain_size: ShiftedScalar<F>,
 }
 
 /// The output of [`incrementally_verify_proof`].
@@ -311,6 +312,20 @@ mod tests {
         acc
     }
 
+    /// Splits an Fq value's integer into `(bits[1..] packed into Fp, bit 0)` —
+    /// the Type2 pair / kimchi `absorb_fr` split (`s_div_2 < 2^254` fits Fp).
+    fn split_fq(t: Fq) -> (Fp, bool) {
+        let bits = t.into_bigint().to_bits_le();
+        let mut half = Fp::zero();
+        for &b in bits[1..].iter().rev() {
+            half.double_in_place();
+            if b {
+                half += Fp::one();
+            }
+        }
+        (half, bits[0])
+    }
+
     fn rand_pt(rng: &mut impl rand::Rng) -> Pallas {
         (Pallas::generator() * Fq::rand(rng)).into_affine()
     }
@@ -412,20 +427,21 @@ mod tests {
             for &(l, r) in &self.lr {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
             }
+            let t1 = ShiftedScalar::Type1;
             let openings = OpeningProof {
                 lr,
                 delta: mkpt(sys, self.delta)?,
-                z1: mksc(sys, self.z1)?,
-                z2: mksc(sys, self.z2)?,
+                z1: t1(mksc(sys, self.z1)?),
+                z2: t1(mksc(sys, self.z2)?),
                 challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
                 h_generator: mkpt(sys, self.h)?,
             };
             let advice = Advice {
-                combined_inner_product: mksc(sys, self.cip)?,
-                b: mksc(sys, self.b)?,
-                perm: mksc(sys, self.perm)?,
-                zeta_to_srs_length: mksc(sys, self.zeta_to_srs_length)?,
-                zeta_to_domain_size: mksc(sys, self.zeta_to_domain_size)?,
+                combined_inner_product: t1(mksc(sys, self.cip)?),
+                b: t1(mksc(sys, self.b)?),
+                perm: t1(mksc(sys, self.perm)?),
+                zeta_to_srs_length: t1(mksc(sys, self.zeta_to_srs_length)?),
+                zeta_to_domain_size: t1(mksc(sys, self.zeta_to_domain_size)?),
             };
             let xi = mksc(sys, self.xi)?;
 
@@ -545,5 +561,518 @@ mod tests {
         assert_eq!(beta, beta_ref, "beta (sponge order incl. sg_old)");
         assert_eq!(gamma, gamma_ref, "gamma");
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    // ---- the decisive test: equal_g == true against a real kimchi proof ----
+    //
+    // kimchi's berkeley linearization has zero index_terms
+    // (kimchi/src/linearization.rs asserts it), so its f_comm carries only the
+    // permutation term — the same split as pickles' Common.ft_comm. A plain
+    // kimchi Pallas proof therefore satisfies the full pickles Fq-side
+    // verifier, advice included.
+
+    type PallasBase = DefaultFqSponge<
+        mina_curves::pasta::PallasParameters,
+        PlonkSpongeConstantsKimchi,
+        { snarky::FULL_ROUNDS },
+    >;
+    type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
+
+    struct PallasAppCircuit {}
+    impl SnarkyCircuit for PallasAppCircuit {
+        type Curve = Pallas;
+        type Proof = IpaProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = Fq;
+        type PublicInput = FieldVar<Fq>;
+        type PublicOutput = ();
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fq>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<()> {
+            let x: FieldVar<Fq> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let _ = sys.poseidon(loc!(), (x, z));
+            Ok(())
+        }
+    }
+
+    /// Like `IvpCircuit`, but the deferred scalars are full-width field values
+    /// (Type1 representatives of real Fq values, embedded into Fp) and the
+    /// bulletproof-success boolean is exposed.
+    struct RealIvpCircuit {
+        vk_digest: Fp,
+        x_hat: Vec<(Fp, Fp)>,
+        w_comm: Vec<Vec<(Fp, Fp)>>,
+        z_comm: Vec<(Fp, Fp)>,
+        t_comm: Vec<(Fp, Fp)>,
+        generic: (Fp, Fp),
+        psm: (Fp, Fp),
+        complete_add: (Fp, Fp),
+        mul: (Fp, Fp),
+        emul: (Fp, Fp),
+        endomul_scalar: (Fp, Fp),
+        coefficients: Vec<(Fp, Fp)>,
+        sigma_init: Vec<(Fp, Fp)>,
+        sigma_last: Vec<(Fp, Fp)>,
+        lr: Vec<((Fp, Fp), (Fp, Fp))>,
+        delta: (Fp, Fp),
+        cpc: (Fp, Fp),
+        h: (Fp, Fp),
+        xi: Fp,
+        // Type2 split pairs (s_div_2, s_odd) of the Fq advice scalars
+        cip: (Fp, bool),
+        b: (Fp, bool),
+        z1: (Fp, bool),
+        z2: (Fp, bool),
+        perm: (Fp, bool),
+        zeta_to_srs_length: (Fp, bool),
+        zeta_to_domain_size: (Fp, bool),
+    }
+
+    impl SnarkyCircuit for RealIvpCircuit {
+        type Curve = Vesta;
+        type Proof = IpaProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        /// (success, first raw IPA prechallenge — for transcript diagnosis)
+        type PublicOutput = (Boolean<Fp>, FieldVar<Fp>);
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _pr: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                Ok(Point::new(
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
+            let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
+                let mut out = vec![];
+                for &p in ps {
+                    out.push(mkpt(sys, p)?);
+                }
+                Ok(out)
+            };
+            let w1 = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
+
+            let vk_digest = w1(sys, self.vk_digest)?;
+            let x_hat = mkpts(sys, &self.x_hat)?;
+            let mut w_comm = vec![];
+            for w in &self.w_comm {
+                w_comm.push(mkpts(sys, w)?);
+            }
+            let vk = VerificationKeyComm {
+                generic: mkpt(sys, self.generic)?,
+                psm: mkpt(sys, self.psm)?,
+                complete_add: mkpt(sys, self.complete_add)?,
+                mul: mkpt(sys, self.mul)?,
+                emul: mkpt(sys, self.emul)?,
+                endomul_scalar: mkpt(sys, self.endomul_scalar)?,
+                coefficients: mkpts(sys, &self.coefficients)?,
+                sigma_init: mkpts(sys, &self.sigma_init)?,
+                sigma_last: mkpts(sys, &self.sigma_last)?,
+            };
+            let messages = Messages {
+                w_comm,
+                z_comm: mkpts(sys, &self.z_comm)?,
+                t_comm: mkpts(sys, &self.t_comm)?,
+            };
+            let mut lr = vec![];
+            for &(l, r) in &self.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let t2 = |sys: &mut RunState<Fp>,
+                          p: (Fp, bool)|
+             -> SnarkyResult<ShiftedScalar<Fp>> {
+                let half = sys.compute(loc!(), move |_| p.0)?;
+                let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+                Ok(ShiftedScalar::Type2(half, odd))
+            };
+            let openings = OpeningProof {
+                lr,
+                delta: mkpt(sys, self.delta)?,
+                z1: t2(sys, self.z1)?,
+                z2: t2(sys, self.z2)?,
+                challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
+                h_generator: mkpt(sys, self.h)?,
+            };
+            let advice = Advice {
+                combined_inner_product: t2(sys, self.cip)?,
+                b: t2(sys, self.b)?,
+                perm: t2(sys, self.perm)?,
+                zeta_to_srs_length: t2(sys, self.zeta_to_srs_length)?,
+                zeta_to_domain_size: t2(sys, self.zeta_to_domain_size)?,
+            };
+            let xi = w1(sys, self.xi)?;
+
+            use groupmap::GroupMap;
+            let params = groupmap::BWParameters::<PallasParameters>::setup();
+            let res = incrementally_verify_proof::<Fp, PallasParameters>(
+                sys,
+                loc!(),
+                &vk_digest,
+                &vk,
+                &[],
+                &x_hat,
+                &messages,
+                &openings,
+                &advice,
+                &xi,
+                &params,
+                crate::endo::tick::base(),
+                <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
+                NUM_BITS,
+            )?;
+            let success = Boolean::create_unsafe(res.success.to_field_var().seal(sys, loc!())?);
+            let pre0 = res.bulletproof_challenges[0].clone().seal(sys, loc!())?;
+            Ok((success, pre0))
+        }
+    }
+
+    /// The full in-circuit `incrementally_verify_proof` ACCEPTS a real kimchi
+    /// Pallas proof: `equal_g == true` with the genuine SRS, commitments,
+    /// opening proof and Type1 advice — validating the whole Fq-side verifier
+    /// (oracles, ft_comm, polyscale combination, IPA transcript and equation)
+    /// against real data.
+    #[test]
+    fn incrementally_verify_proof_accepts_real_kimchi_proof() {
+        use ark_ff::Field;
+        use kimchi::circuits::wires::PERMUTS;
+        use mina_curves::pasta::PallasParameters;
+        use poly_commitment::commitment::{b_poly, shift_scalar, PolyComm};
+        use poly_commitment::SRS;
+
+        // 1. a real Pallas proof
+        let (mut ppi, pver) = PallasAppCircuit {}.compile_to_indexes().unwrap();
+        let vi = &pver.index;
+        let x = Fq::from(3u64);
+        let z = x * x;
+        let (proof, _) = ppi.prove::<PallasBase, PallasScalar>(z, x, true).unwrap();
+
+        // 2. kimchi's own oracles + the public commitment (our x_hat)
+        let public_input = vec![z];
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let pc = PolyComm::<Pallas>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(pc.clone(), &pc.map(|_| Fq::one()))
+            .unwrap()
+            .commitment;
+        let o = proof
+            .oracles::<PallasBase, PallasScalar, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+        let oracles = &o.oracles;
+        let (_, endo_q) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
+
+        // 3. the real IPA challenges, continuing kimchi's forked fq-sponge
+        let (b_value, u_pt, ipa_chals, c_value) = {
+            let mut sponge = o.fq_sponge.clone();
+            sponge.absorb_fr(&[shift_scalar::<Pallas>(o.combined_inner_product)]);
+            use groupmap::GroupMap;
+            let gm = groupmap::BWParameters::<PallasParameters>::setup();
+            use mina_poseidon::FqSponge as _;
+            let t = sponge.challenge_fq();
+            let u = gm.to_group(t);
+            let chals = proof.proof.challenges::<PallasBase>(endo_q, &mut sponge);
+            sponge.absorb_g(&[proof.proof.delta]);
+            let c = mina_poseidon::sponge::ScalarChallenge::new(sponge.challenge())
+                .to_field(endo_q);
+            let zetaw = oracles.zeta * vi.domain.group_gen;
+            let b = b_poly(&chals.chal, oracles.zeta) + oracles.u * b_poly(&chals.chal, zetaw);
+            (b, u, chals, c)
+        };
+
+        // 4. the deferred plonk scalars (perm via our validated port)
+        let combined = proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+        let srs_log2 = u64::BITS - 1 - (vi.max_poly_size as u64).leading_zeros();
+        let domain = crate::plonk_checks::Domain::<Fq> {
+            log2_size: vi.domain.log_size_of_group,
+            generator: vi.domain.group_gen,
+        };
+        let minimal = crate::composition_types::plonk::Minimal::<Fq, Fq, bool> {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            zeta: oracles.zeta,
+            joint_combiner: None,
+            feature_flags: crate::composition_types::Features::none(),
+        };
+        let env = crate::plonk_checks::scalars_env::<Fq, bool>(&domain, srs_log2, &minimal);
+        let evals = crate::plonk_checks::Evals {
+            w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+            z: (combined.z.zeta, combined.z.zeta_omega),
+        };
+        let perm = crate::plonk_checks::perm_scalar(&env, &evals);
+        let zeta_to_srs_length = oracles.zeta.pow([vi.max_poly_size as u64]);
+        let zeta_to_domain_size = oracles.zeta.pow([vi.domain.size]);
+
+        // -- diagnostic: our perm scalar vs kimchi's perm_scalars --
+        {
+            use ark_poly::Polynomial;
+            use kimchi::circuits::argument::ArgumentType;
+            use kimchi::circuits::constraints::ConstraintSystem;
+            let pvp = vi
+                .permutation_vanishing_polynomial_m()
+                .evaluate(&oracles.zeta);
+            let alphas = o
+                .all_alphas
+                .get_alphas(ArgumentType::Permutation, kimchi::circuits::polynomials::permutation::CONSTRAINTS);
+            let kimchi_perm =
+                ConstraintSystem::<Fq>::perm_scalars(&combined, oracles.beta, oracles.gamma, alphas, pvp);
+            assert_eq!(perm, kimchi_perm, "perm scalar vs kimchi perm_scalars");
+        }
+        // -- diagnostic: our ft point vs kimchi's ft_comm, out of circuit --
+        {
+            use ark_ec::CurveGroup;
+            let sigma_last = vi.sigma_comm[kimchi::circuits::wires::PERMUTS - 1].chunks[0];
+            let mut t_red = proof.commitments.t_comm.chunks[6].into_group();
+            for c in proof.commitments.t_comm.chunks[..6].iter().rev() {
+                t_red = c.into_group() + t_red * zeta_to_srs_length;
+            }
+            let our_ft =
+                (sigma_last * perm + t_red - t_red * zeta_to_domain_size).into_affine();
+            let kimchi_ft = {
+                let f = poly_commitment::commitment::PolyComm::multi_scalar_mul(
+                    &[&vi.sigma_comm[kimchi::circuits::wires::PERMUTS - 1]],
+                    &[perm],
+                );
+                let chunked_f = f.chunk_commitment(zeta_to_srs_length);
+                let chunked_t = proof.commitments.t_comm.chunk_commitment(zeta_to_srs_length);
+                (&chunked_f - &chunked_t.scale(zeta_to_domain_size - Fq::one())).chunks[0]
+            };
+            assert_eq!(our_ft, kimchi_ft, "ft_comm out-of-circuit");
+        }
+
+        // 5. the raw 128-bit polyscale challenge (v_chal) via Fr-sponge replay
+        let claimed_xi = {
+            use kimchi::plonk_sponge::FrSponge as _;
+            let params = Pallas::sponge_params();
+            let mut fr = PallasScalar::from(params);
+            fr.absorb(&o.digest);
+            let pcd = PallasScalar::from(params).digest();
+            fr.absorb(&pcd);
+            fr.absorb(&proof.ft_eval1);
+            fr.absorb_multiple(&o.public_evals[0]);
+            fr.absorb_multiple(&o.public_evals[1]);
+            fr.absorb_evaluations(&proof.evals);
+            fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
+        };
+
+        // -- diagnostic: xi replay and the full equation, out of circuit --
+        {
+            use ark_ec::CurveGroup;
+            use kimchi::circuits::wires::PERMUTS;
+            // xi replay: to_field(v_chal) == oracles.v
+            assert_eq!(
+                mina_poseidon::sponge::ScalarChallenge::new(claimed_xi).to_field(endo_q),
+                oracles.v,
+                "xi replay"
+            );
+            // the pickles-side combined commitment
+            let sigma_last = vi.sigma_comm[PERMUTS - 1].chunks[0];
+            let mut t_red = proof.commitments.t_comm.chunks[6].into_group();
+            for ch in proof.commitments.t_comm.chunks[..6].iter().rev() {
+                t_red = ch.into_group() + t_red * zeta_to_srs_length;
+            }
+            let ft = sigma_last * perm + t_red - t_red * zeta_to_domain_size;
+            let mut comms: Vec<<Pallas as AffineRepr>::Group> = vec![
+                public_comm.chunks[0].into_group(),
+                ft,
+                proof.commitments.z_comm.chunks[0].into_group(),
+                vi.generic_comm.chunks[0].into_group(),
+                vi.psm_comm.chunks[0].into_group(),
+                vi.complete_add_comm.chunks[0].into_group(),
+                vi.mul_comm.chunks[0].into_group(),
+                vi.emul_comm.chunks[0].into_group(),
+                vi.endomul_scalar_comm.chunks[0].into_group(),
+            ];
+            comms.extend(
+                proof
+                    .commitments
+                    .w_comm
+                    .iter()
+                    .map(|c| c.chunks[0].into_group()),
+            );
+            comms.extend(vi.coefficients_comm.iter().map(|c| c.chunks[0].into_group()));
+            comms.extend(
+                vi.sigma_comm[..PERMUTS - 1]
+                    .iter()
+                    .map(|c| c.chunks[0].into_group()),
+            );
+            let mut combined_pt = *comms.last().unwrap();
+            for cpt in comms[..comms.len() - 1].iter().rev() {
+                combined_pt = *cpt + combined_pt * oracles.v;
+            }
+            // lr_prod
+            let mut lr_prod = Pallas::zero().into_group();
+            for ((l, r), (ci, c)) in proof
+                .proof
+                .lr
+                .iter()
+                .zip(ipa_chals.chal_inv.iter().zip(&ipa_chals.chal))
+            {
+                lr_prod += *l * *ci + *r * *c;
+            }
+            let u_base = Pallas::new_unchecked(u_pt.0, u_pt.1);
+            let q = combined_pt + u_base * o.combined_inner_product + lr_prod;
+            let lhs = q * c_value + proof.proof.delta.into_group();
+            let rhs = (proof.proof.sg.into_group() + u_base * b_value) * proof.proof.z1
+                + vi.srs().h.into_group() * proof.proof.z2;
+            assert_eq!(
+                lhs.into_affine(),
+                rhs.into_affine(),
+                "IPA equation out-of-circuit"
+            );
+        }
+
+        // -- diagnostic: full ArithmeticSponge<Fp> replay of the transcript,
+        //    bisecting where the in-circuit continuation would diverge --
+        {
+            use mina_poseidon::FqSponge as _;
+            let mut s = RefSponge::new(Vesta::sponge_params());
+            let abpt = |s: &mut RefSponge, p: &Pallas| {
+                s.absorb(&[p.x]);
+                s.absorb(&[p.y]);
+            };
+            s.absorb(&[vi.digest::<PallasBase>()]);
+            abpt(&mut s, &public_comm.chunks[0]);
+            for w in &proof.commitments.w_comm {
+                abpt(&mut s, &w.chunks[0]);
+            }
+            let beta_r = s.squeeze();
+            let gamma_r = s.squeeze();
+            let l128 = |x: Fp| {
+                let mut acc = 0u128;
+                for &b in x.into_bigint().to_bits_le()[..128].iter().rev() {
+                    acc = (acc << 1) | u128::from(b);
+                }
+                acc
+            };
+            let l128q = |x: Fq| {
+                let mut acc = 0u128;
+                for &b in x.into_bigint().to_bits_le()[..128].iter().rev() {
+                    acc = (acc << 1) | u128::from(b);
+                }
+                acc
+            };
+            assert_eq!(l128(beta_r), l128q(oracles.beta), "replay beta");
+            assert_eq!(l128(gamma_r), l128q(oracles.gamma), "replay gamma");
+            abpt(&mut s, &proof.commitments.z_comm.chunks[0]);
+            let alpha_r = s.squeeze();
+            assert_eq!(
+                mina_poseidon::sponge::ScalarChallenge::new(Fq::from_le_bytes_mod_order(
+                    &Fp::from(l128(alpha_r)).into_bigint().to_bytes_le()
+                ))
+                .to_field(endo_q),
+                oracles.alpha,
+                "replay alpha"
+            );
+            for t in &proof.commitments.t_comm.chunks {
+                abpt(&mut s, t);
+            }
+            let zeta_r = s.squeeze();
+            assert_eq!(
+                mina_poseidon::sponge::ScalarChallenge::new(Fq::from(l128q(Fq::from(
+                    l128(zeta_r)
+                ))))
+                .to_field(endo_q),
+                oracles.zeta,
+                "replay zeta"
+            );
+            // fork: continue the IPA transcript exactly as the circuit does.
+            // Fq > Fp, so kimchi's shift_scalar is the Type2 shift (x - 2^255)
+            // and absorb_fr splits it into (s_div_2, s_odd) — two elements.
+            let repr = crate::shifted_value::type2_of_field(o.combined_inner_product);
+            assert_eq!(
+                repr,
+                shift_scalar::<Pallas>(o.combined_inner_product),
+                "type2_of_field vs kimchi shift_scalar"
+            );
+            let (half, odd) = split_fq(repr);
+            s.absorb(&[half]);
+            s.absorb(&[if odd { Fp::one() } else { Fp::zero() }]);
+            let t_ours = s.squeeze();
+            // kimchi's t
+            let t_kimchi = {
+                let mut sp = o.fq_sponge.clone();
+                sp.absorb_fr(&[shift_scalar::<Pallas>(o.combined_inner_product)]);
+                sp.challenge_fq()
+            };
+            assert_eq!(t_ours, t_kimchi, "group-map input t (post-cip squeeze)");
+        }
+
+        // 6. Type2 split representatives of the Fq advice: the pair
+        //    (s_div_2, s_odd) of t = value - 2^255 mod q (s_div_2 < 2^254 fits Fp)
+        let t2 = |s: Fq| split_fq(crate::shifted_value::type2_of_field(s));
+        // the raw 128-bit xi fits either field directly
+        let emb = |s: Fq| Fp::from_le_bytes_mod_order(&s.into_bigint().to_bytes_le());
+
+        let coords = |c: &PolyComm<Pallas>| -> Vec<(Fp, Fp)> {
+            c.chunks.iter().map(|p| (p.x, p.y)).collect()
+        };
+        let pt = |p: &Pallas| (p.x, p.y);
+        let srs_h = vi.srs().h;
+
+        let circ = RealIvpCircuit {
+            vk_digest: vi.digest::<PallasBase>(),
+            x_hat: coords(&public_comm),
+            w_comm: proof.commitments.w_comm.iter().map(coords).collect(),
+            z_comm: coords(&proof.commitments.z_comm),
+            t_comm: coords(&proof.commitments.t_comm),
+            generic: pt(&vi.generic_comm.chunks[0]),
+            psm: pt(&vi.psm_comm.chunks[0]),
+            complete_add: pt(&vi.complete_add_comm.chunks[0]),
+            mul: pt(&vi.mul_comm.chunks[0]),
+            emul: pt(&vi.emul_comm.chunks[0]),
+            endomul_scalar: pt(&vi.endomul_scalar_comm.chunks[0]),
+            coefficients: vi
+                .coefficients_comm
+                .iter()
+                .map(|c| pt(&c.chunks[0]))
+                .collect(),
+            sigma_init: vi.sigma_comm[..PERMUTS - 1]
+                .iter()
+                .map(|c| pt(&c.chunks[0]))
+                .collect(),
+            sigma_last: vec![pt(&vi.sigma_comm[PERMUTS - 1].chunks[0])],
+            lr: proof
+                .proof
+                .lr
+                .iter()
+                .map(|(l, r)| (pt(l), pt(r)))
+                .collect(),
+            delta: pt(&proof.proof.delta),
+            cpc: pt(&proof.proof.sg),
+            h: (srs_h.x, srs_h.y),
+            xi: emb(claimed_xi),
+            cip: t2(o.combined_inner_product),
+            b: t2(b_value),
+            z1: t2(proof.proof.z1),
+            z2: t2(proof.proof.z2),
+            perm: t2(perm),
+            zeta_to_srs_length: t2(zeta_to_srs_length),
+            zeta_to_domain_size: t2(zeta_to_domain_size),
+        };
+        let (mut pi, ver) = circ.compile_to_indexes().unwrap();
+        let (cproof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        let (success, pre0) = *out.clone();
+        // transcript diagnosis: the endo image of the first in-circuit raw
+        // prechallenge must equal kimchi's field-form challenge
+        let pre0_fq = Fq::from_le_bytes_mod_order(&pre0.into_bigint().to_bytes_le());
+        assert_eq!(
+            mina_poseidon::sponge::ScalarChallenge::new(pre0_fq).to_field(endo_q),
+            ipa_chals.chal[0],
+            "in-circuit prechallenge 0 vs kimchi"
+        );
+        assert!(success, "equal_g must hold on a real kimchi proof");
+        ver.verify::<BaseSponge, ScalarSponge>(cproof, (), *out);
     }
 }

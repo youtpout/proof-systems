@@ -138,7 +138,7 @@ pub fn ipa_challenges_transcript<F, C>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     sponge: &mut crate::sponge::PoseidonSponge<F>,
-    cip: &FieldVar<F>,
+    cip: &crate::plonk_curve_ops::ShiftedScalar<F>,
     lr: &[(crate::oracles::PointVar<F>, crate::oracles::PointVar<F>)],
     delta: &crate::oracles::PointVar<F>,
     group_map_params: &groupmap::BWParameters<C>,
@@ -151,8 +151,8 @@ where
     use crate::oracles::absorb_commitment;
     use snarky::gadgets::group_map::to_group;
 
-    // absorb_shifted(combined_inner_product)
-    sponge.absorb(sys, loc.clone(), std::slice::from_ref(cip));
+    // absorb_shifted(combined_inner_product) — 1 or 2 elements per convention
+    cip.absorb(sys, loc.clone(), sponge);
 
     // u = group_map(squeeze_field)
     let t = sponge.squeeze(sys, loc.clone());
@@ -195,10 +195,10 @@ pub fn check_bulletproof_equation<F: PrimeField>(
     combined_polynomial: &Point<F>,
     lr_prod: &Point<F>,
     u: &Point<F>,
-    cip: &FieldVar<F>,
-    b: &FieldVar<F>,
-    z1: &FieldVar<F>,
-    z2: &FieldVar<F>,
+    cip: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    b: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    z1: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    z2: &crate::plonk_curve_ops::ShiftedScalar<F>,
     c: &FieldVar<F>,
     delta: &Point<F>,
     challenge_polynomial_commitment: &Point<F>,
@@ -207,10 +207,10 @@ pub fn check_bulletproof_equation<F: PrimeField>(
     num_bits: usize,
 ) -> SnarkyResult<snarky::Boolean<F>> {
     use crate::common::SCALAR_CHALLENGE_BITS;
-    use crate::plonk_curve_ops::{add_fast, scale_fast};
+    use crate::plonk_curve_ops::add_fast;
 
-    // q = combined_polynomial + scale_fast(u, cip) + lr_prod
-    let uc = scale_fast(sys, loc.clone(), u, cip, num_bits)?;
+    // q = combined_polynomial + cip·u + lr_prod
+    let uc = cip.scale(sys, loc.clone(), u, num_bits)?;
     let p_prime = add_fast(sys, loc.clone(), combined_polynomial, &uc)?;
     let q = add_fast(sys, loc.clone(), &p_prime, lr_prod)?;
 
@@ -218,12 +218,11 @@ pub fn check_bulletproof_equation<F: PrimeField>(
     let cq = endo(sys, loc.clone(), &q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
     let lhs = add_fast(sys, loc.clone(), &cq, delta)?;
 
-    // rhs = scale_fast(challenge_polynomial_commitment + scale_fast(u, b), z1)
-    //       + scale_fast(H, z2)
-    let b_u = scale_fast(sys, loc.clone(), u, b, num_bits)?;
+    // rhs = z1·(challenge_polynomial_commitment + b·u) + z2·H
+    let b_u = b.scale(sys, loc.clone(), u, num_bits)?;
     let g_plus_b_u = add_fast(sys, loc.clone(), challenge_polynomial_commitment, &b_u)?;
-    let z1_g_plus_b_u = scale_fast(sys, loc.clone(), &g_plus_b_u, z1, num_bits)?;
-    let z2_h = scale_fast(sys, loc.clone(), h_generator, z2, num_bits)?;
+    let z1_g_plus_b_u = z1.scale(sys, loc.clone(), &g_plus_b_u, num_bits)?;
+    let z2_h = z2.scale(sys, loc.clone(), h_generator, num_bits)?;
     let rhs = add_fast(sys, loc.clone(), &z1_g_plus_b_u, &z2_h)?;
 
     // equal_g lhs rhs = Boolean.all [lhs.x == rhs.x; lhs.y == rhs.y]
@@ -512,7 +511,9 @@ mod tests {
                         sys.compute(loc!(), move |_| p.1)?,
                     ))
                 };
-            let cip = sys.compute(loc!(), |_| Fp::from(self.cip))?;
+            let cip = crate::plonk_curve_ops::ShiftedScalar::Type1(
+                sys.compute(loc!(), |_| Fp::from(self.cip))?,
+            );
             let mut lr = vec![];
             for &(l, r) in &self.lr {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
@@ -643,10 +644,11 @@ mod tests {
             let delta = mkpt(sys, self.delta)?;
             let cpc = mkpt(sys, self.cpc)?;
             let h = mkpt(sys, self.h)?;
-            let cip = mksc(sys, self.cip)?;
-            let b = mksc(sys, self.b)?;
-            let z1 = mksc(sys, self.z1)?;
-            let z2 = mksc(sys, self.z2)?;
+            let t1 = |x| crate::plonk_curve_ops::ShiftedScalar::Type1(x);
+            let cip = t1(mksc(sys, self.cip)?);
+            let b = t1(mksc(sys, self.b)?);
+            let z1 = t1(mksc(sys, self.z1)?);
+            let z2 = t1(mksc(sys, self.z2)?);
             let c = mksc(sys, self.c)?;
             check_bulletproof_equation(
                 sys,

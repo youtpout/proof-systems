@@ -527,20 +527,21 @@ mod tests {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
             }
             let h = cpt(self.h);
+            let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
             let openings = OpeningProof {
                 lr,
                 delta: mkpt(sys, self.delta)?,
-                z1: mksc(sys, self.z1)?,
-                z2: w1(sys, self.z2_repr)?,
+                z1: t1(mksc(sys, self.z1)?),
+                z2: t1(w1(sys, self.z2_repr)?),
                 challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
                 h_generator: h.clone(),
             };
             let advice = Advice {
-                combined_inner_product: mksc(sys, self.cip)?,
-                b: w1(sys, self.b_repr)?,
-                perm: mksc(sys, self.perm)?,
-                zeta_to_srs_length: mksc(sys, self.zsl)?,
-                zeta_to_domain_size: mksc(sys, self.zds)?,
+                combined_inner_product: t1(mksc(sys, self.cip)?),
+                b: t1(w1(sys, self.b_repr)?),
+                perm: t1(mksc(sys, self.perm)?),
+                zeta_to_srs_length: t1(mksc(sys, self.zsl)?),
+                zeta_to_domain_size: t1(mksc(sys, self.zds)?),
             };
             let xi = mksc(sys, self.xi)?;
             let claimed = Claimed {

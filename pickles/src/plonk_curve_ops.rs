@@ -447,6 +447,60 @@ pub fn split_field<F: PrimeField>(
     Ok((y, Boolean::create_unsafe(odd)))
 }
 
+/// An in-circuit `Shifted_value` representative of a cross-field scalar,
+/// following kimchi's `shift_scalar` conventions (`commitment.rs`):
+///
+/// - [`ShiftedScalar::Type1`] when the scalar field is *smaller* than the
+///   circuit field (wrap side, Tick scalars): a single representative `t` with
+///   `value = 2t + 2^size + 1`, scaled by [`scale_fast`] and absorbed as one
+///   element.
+/// - [`ShiftedScalar::Type2`] when the scalar field is *bigger* (step side,
+///   Tock scalars — Fq > Fp): the split pair `(s_div_2, s_odd)` of
+///   `t = value - 2^size` (which does not fit the circuit field), scaled by
+///   [`scale_fast2`] and absorbed as two elements (`absorb_fr`'s split).
+#[derive(Clone)]
+pub enum ShiftedScalar<F: PrimeField> {
+    Type1(FieldVar<F>),
+    Type2(FieldVar<F>, Boolean<F>),
+}
+
+impl<F: PrimeField> ShiftedScalar<F> {
+    /// Absorbs the representative into the transcript sponge exactly as
+    /// kimchi's `absorb_fr(shift_scalar(value))`: one element for Type1, the
+    /// `(s_div_2, s_odd)` pair for Type2.
+    pub fn absorb(
+        &self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        sponge: &mut crate::sponge::PoseidonSponge<F>,
+    ) {
+        match self {
+            ShiftedScalar::Type1(t) => sponge.absorb(sys, loc, std::slice::from_ref(t)),
+            ShiftedScalar::Type2(s_div_2, s_odd) => {
+                sponge.absorb(sys, loc.clone(), std::slice::from_ref(s_div_2));
+                sponge.absorb(sys, loc, &[s_odd.to_field_var()]);
+            }
+        }
+    }
+
+    /// `value · g` through the matching scale gadget ([`scale_fast`] /
+    /// [`scale_fast2`]); `num_bits` is the scalar field's size in bits.
+    pub fn scale(
+        &self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        g: &Point<F>,
+        num_bits: usize,
+    ) -> SnarkyResult<Point<F>> {
+        match self {
+            ShiftedScalar::Type1(t) => scale_fast(sys, loc, g, t, num_bits),
+            ShiftedScalar::Type2(s_div_2, s_odd) => {
+                scale_fast2(sys, loc, g, s_div_2, s_odd, num_bits)
+            }
+        }
+    }
+}
+
 /// Scalar multiplication by a packed `num_bits`-bit scalar in the
 /// `Shifted_value.Type2` convention (pickles' `scale_fast2'`): witnesses the
 /// split `(s_div_2, s_odd)` via [`split_field`] and runs [`scale_fast2`].

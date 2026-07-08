@@ -507,20 +507,21 @@ mod tests {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
             }
             let h = cpt(self.h);
+            let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
             let openings = OpeningProof {
                 lr,
                 delta: mkpt(sys, self.delta)?,
-                z1: mksc(sys, self.z1)?,
-                z2: mksc(sys, self.z2)?,
+                z1: t1(mksc(sys, self.z1)?),
+                z2: t1(mksc(sys, self.z2)?),
                 challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
                 h_generator: h.clone(),
             };
             let advice = Advice {
-                combined_inner_product: mksc(sys, self.cip)?,
-                b: mksc(sys, self.b)?,
-                perm: mksc(sys, self.perm)?,
-                zeta_to_srs_length: mksc(sys, self.zeta_to_srs_length)?,
-                zeta_to_domain_size: mksc(sys, self.zeta_to_domain_size)?,
+                combined_inner_product: t1(mksc(sys, self.cip)?),
+                b: t1(mksc(sys, self.b)?),
+                perm: t1(mksc(sys, self.perm)?),
+                zeta_to_srs_length: t1(mksc(sys, self.zeta_to_srs_length)?),
+                zeta_to_domain_size: t1(mksc(sys, self.zeta_to_domain_size)?),
             };
             let xi = mksc(sys, self.xi)?;
 
@@ -888,20 +889,21 @@ mod tests {
             }
             let h = cpt(self.h);
             let mksc = |sys: &mut RunState<Fp>, s: u128| sys.compute(loc!(), move |_| Fp::from(s));
+            let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
             let openings = OpeningProof {
                 lr,
                 delta: mkpt(sys, self.delta)?,
-                z1: mksc(sys, self.opening_scalars[1])?,
-                z2: mksc(sys, self.opening_scalars[2])?,
+                z1: t1(mksc(sys, self.opening_scalars[1])?),
+                z2: t1(mksc(sys, self.opening_scalars[2])?),
                 challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
                 h_generator: h.clone(),
             };
             let advice = Advice {
-                combined_inner_product: mksc(sys, self.advice_scalars[0])?,
-                b: mksc(sys, self.advice_scalars[1])?,
-                perm: mksc(sys, self.advice_scalars[2])?,
-                zeta_to_srs_length: mksc(sys, self.advice_scalars[3])?,
-                zeta_to_domain_size: mksc(sys, self.advice_scalars[4])?,
+                combined_inner_product: t1(mksc(sys, self.advice_scalars[0])?),
+                b: t1(mksc(sys, self.advice_scalars[1])?),
+                perm: t1(mksc(sys, self.advice_scalars[2])?),
+                zeta_to_srs_length: t1(mksc(sys, self.advice_scalars[3])?),
+                zeta_to_domain_size: t1(mksc(sys, self.advice_scalars[4])?),
             };
             let xi = mksc(sys, self.opening_scalars[0])?;
             let claimed = Claimed {
