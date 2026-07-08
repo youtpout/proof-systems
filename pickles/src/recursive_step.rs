@@ -80,6 +80,74 @@ pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_
     statement.try_into().unwrap_or_else(|_| unreachable!())
 }
 
+pub fn flatten_proof_evaluations(
+    evals: &kimchi::proof::ProofEvaluations<kimchi::proof::PointEvaluations<Vec<Fp>>>,
+) -> Vec<(Fp, Fp)> {
+    let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta[0], p.zeta_omega[0]);
+    let mut out = vec![
+        pair(&evals.z),
+        pair(&evals.generic_selector),
+        pair(&evals.poseidon_selector),
+        pair(&evals.complete_add_selector),
+        pair(&evals.mul_selector),
+        pair(&evals.emul_selector),
+        pair(&evals.endomul_scalar_selector),
+    ];
+    out.extend(evals.w.iter().map(pair));
+    out.extend(evals.coefficients.iter().map(pair));
+    out.extend(evals.s.iter().map(pair));
+    out
+}
+
+pub fn wrap_x_hat_lagranges(
+    lagrange_basis: &[PolyComm<Pallas>],
+    prev_rounds: usize,
+) -> (Vec<((Fp, Fp), (Fp, Fp))>, Vec<(Fp, Fp)>) {
+    let widths = crate::step_verifier::wrap_statement_packed_widths(prev_rounds);
+    let packed_lagranges = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &num_bits)| {
+            let l = lagrange_basis[i].chunks[0];
+            let c = crate::public_input::lagrange_correction(&l, num_bits);
+            ((l.x, l.y), (c.x, c.y))
+        })
+        .collect();
+    let flag_lagranges = (0..8)
+        .map(|i| {
+            let l = lagrange_basis[widths.len() + i].chunks[0];
+            (l.x, l.y)
+        })
+        .collect();
+    (packed_lagranges, flag_lagranges)
+}
+
+pub fn statement_challenges_to_field<const ROUNDS: usize>(statement: &[Fq]) -> Vec<Fp> {
+    let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+    statement[13..13 + ROUNDS]
+        .iter()
+        .map(|&raw| crate::scalar_challenge::ScalarChallenge(embed_fq_to_fp(raw)).to_field(endo_p))
+        .collect()
+}
+
+pub fn recursion_challenge(
+    srs: &poly_commitment::ipa::SRS<Vesta>,
+    step_proof: &kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    chals: Vec<Fp>,
+) -> kimchi::proof::RecursionChallenge<Vesta> {
+    let sg_check = crate::dummy::compute_sg(srs, &chals);
+    assert_eq!(
+        sg_check, step_proof.proof.sg,
+        "sg_step1 == commit(b_poly(chals_step1))"
+    );
+    kimchi::proof::RecursionChallenge {
+        chals,
+        comm: PolyComm {
+            chunks: vec![step_proof.proof.sg],
+        },
+    }
+}
+
 /// Plain witness data for a recursive step circuit that verifies one wrap
 /// proof and folds it into the next step accumulator.
 pub struct RecursiveStepData {
@@ -162,20 +230,7 @@ pub fn prepare_recursive_step<
     let so = step_proof
         .oracles::<VestaBase, VestaScalar, _>(svi, &step_public_comm, Some(&step_public))
         .unwrap();
-    let e = &step_proof.evals;
-    let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta[0], p.zeta_omega[0]);
-    let mut evals_flat: Vec<(Fp, Fp)> = vec![
-        pair(&e.z),
-        pair(&e.generic_selector),
-        pair(&e.poseidon_selector),
-        pair(&e.complete_add_selector),
-        pair(&e.mul_selector),
-        pair(&e.emul_selector),
-        pair(&e.endomul_scalar_selector),
-    ];
-    evals_flat.extend(e.w.iter().map(pair));
-    evals_flat.extend(e.coefficients.iter().map(pair));
-    evals_flat.extend(e.s.iter().map(pair));
+    let evals_flat = flatten_proof_evaluations(&step_proof.evals);
     let step_srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
 
     let wvi = &base.wrap_verifier.index;
@@ -245,22 +300,7 @@ pub fn prepare_recursive_step<
         fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
     };
 
-    let widths = crate::step_verifier::wrap_statement_packed_widths(PREV_ROUNDS);
-    let packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))> = widths
-        .iter()
-        .enumerate()
-        .map(|(i, &n)| {
-            let l = wlgr[i].chunks[0];
-            let c = crate::public_input::lagrange_correction(&l, n);
-            ((l.x, l.y), (c.x, c.y))
-        })
-        .collect();
-    let flag_lagranges: Vec<(Fp, Fp)> = (0..8)
-        .map(|i| {
-            let l = wlgr[widths.len() + i].chunks[0];
-            (l.x, l.y)
-        })
-        .collect();
+    let (packed_lagranges, flag_lagranges) = wrap_x_hat_lagranges(&wlgr, PREV_ROUNDS);
 
     let co = |p: &Pallas| (p.x, p.y);
     let wh = wvi.srs().h;
@@ -322,16 +362,7 @@ pub fn prepare_recursive_step<
         flag_lagranges,
     };
 
-    let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-    let chals_step1: Vec<Fp> = base.statement[13..13 + PREV_ROUNDS]
-        .iter()
-        .map(|&raw| crate::scalar_challenge::ScalarChallenge(embed_fq_to_fp(raw)).to_field(endo_p))
-        .collect();
-    let sg_check = crate::dummy::compute_sg(svi.srs(), &chals_step1);
-    assert_eq!(
-        sg_check, base.step_proof.proof.sg,
-        "sg_step1 == commit(b_poly(chals_step1))"
-    );
+    let chals_step1 = statement_challenges_to_field::<PREV_ROUNDS>(&base.statement);
 
     let new_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
@@ -349,12 +380,7 @@ pub fn prepare_recursive_step<
         true,
     );
 
-    let recursion = kimchi::proof::RecursionChallenge {
-        chals: chals_step1,
-        comm: PolyComm {
-            chunks: vec![base.step_proof.proof.sg],
-        },
-    };
+    let recursion = recursion_challenge(svi.srs(), step_proof, chals_step1);
 
     PreparedRecursiveStep {
         data,
