@@ -21,7 +21,6 @@ use kimchi::circuits::wires::PERMUTS;
 use kimchi::curve::KimchiCurve;
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
 use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
 use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
@@ -41,7 +40,6 @@ type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type PallasBase =
     DefaultFqSponge<mina_curves::pasta::PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
-type FpSponge = ArithmeticSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
 /// An application circuit hosted by a base-case step proof.
 pub trait StepApp {
@@ -313,17 +311,13 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     let (mut step_pi, step_ver) = step.compile_to_indexes().unwrap();
     let svi = &step_ver.index;
 
-    let digest = {
-        let mut s = FpSponge::new(Vesta::sponge_params());
-        for (px, py) in &wrap_vk_pts {
-            s.absorb(&[*px]);
-            s.absorb(&[*py]);
-        }
-        for v in &app_state {
-            s.absorb(&[*v]);
-        }
-        s.squeeze()
-    };
+    let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+        Vesta::sponge_params(),
+        &wrap_vk_pts,
+        &app_state,
+        &[],
+        &[],
+    );
     let (step_proof, _) = step_pi
         .prove::<VestaBase, VestaScalar>(digest, (witness, wrap_vk_pts), true)
         .unwrap();
