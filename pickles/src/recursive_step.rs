@@ -787,7 +787,7 @@ pub fn prepare_recursive_wrap<
 
     let co = |p: &Vesta| (p.x, p.y);
     let step_statement = width1_step_statement_slots::<VERIFIED_WRAP_ROUNDS>(&step.statement);
-    let step_statement_lagranges = step_statement
+    let step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))> = step_statement
         .iter()
         .enumerate()
         .map(|(i, slot)| {
@@ -802,6 +802,12 @@ pub fn prepare_recursive_wrap<
         })
         .collect();
     let srs_h = svi.srs().h;
+    let reconstructed_public_comm =
+        reconstruct_step_statement_commitment(&step_statement, &step_statement_lagranges, srs_h);
+    assert_eq!(
+        reconstructed_public_comm, public_comm.chunks[0],
+        "recursive wrap step statement x_hat"
+    );
     let data = WrapWitnessData {
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
@@ -858,6 +864,32 @@ pub fn prepare_recursive_wrap<
         data,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
     }
+}
+
+pub fn reconstruct_step_statement_commitment(
+    statement: &[WrapStepStatementSlot],
+    lagranges: &[((Fq, Fq), (Fq, Fq))],
+    h: Vesta,
+) -> Vesta {
+    use ark_ec::{AffineRepr, CurveGroup};
+
+    assert_eq!(statement.len(), lagranges.len());
+    let mut acc = Vesta::zero().into_group();
+    for (slot, &((x, y), _)) in statement.iter().zip(lagranges) {
+        let lagrange = Vesta::new(x, y);
+        let scalar = match *slot {
+            WrapStepStatementSlot::Packed { value, .. } => embed_fq_to_fp(value),
+            WrapStepStatementSlot::Bool(bit) => {
+                if bit {
+                    Fp::one()
+                } else {
+                    Fp::from(0u64)
+                }
+            }
+        };
+        acc += lagrange * scalar;
+    }
+    (-acc + h.into_group()).into_affine()
 }
 
 impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>

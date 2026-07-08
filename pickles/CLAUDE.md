@@ -179,9 +179,13 @@ Essai suivant effectué localement : brancher directement ce témoin dans
 un assert booléen dans `wrap_main` (`UnsatisfiedEqualConstraint 0 == 1`).
 Bypasser temporairement `should_finalize` ne supprime pas l'échec, donc le
 prochain écart à isoler est côté vérification IPA/transcript du step proof
-enveloppé (probablement `sg_old`/x_hat/transcript de récursion), pas seulement
-le `finalize_deferred` de l'unfinalized. L'état commité reste vert avec le
-témoin préparé et testé.
+enveloppé, pas seulement le `finalize_deferred` de l'unfinalized.
+`prepare_recursive_wrap` reconstruit désormais le commitment public `x_hat`
+du statement step récursif depuis les slots width-1 et les Lagranges SRS, puis
+l'asserte contre `public_comm.chunks[0]` produit par kimchi. Cette piste est
+donc validée hors-circuit ; l'écart restant est plutôt à chercher dans le
+threading transcript/advice IPA (`sg_old`, challenges, scalaires différés).
+L'état commité reste vert avec le témoin préparé et testé.
 
 ### Ce qu'il manque maintenant
 
