@@ -287,10 +287,16 @@ fn fp_to_fq(x: Fp) -> Fq {
     Fq::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
 }
 
-/// The base-case pickles proof: the wrap (Pallas) proof plus its statement.
-pub struct BaseCaseProof {
+/// The base-case pickles proof plus everything the *next* (recursive) step
+/// proof consumes: the wrap proof and its statement, both verifier wrappers,
+/// and the underlying step proof (whose evaluations the recursive finalize
+/// re-checks).
+pub struct BaseCaseProof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     pub statement: Vec<Fq>,
     pub proof: kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    pub step_proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    pub step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
+    pub wrap_verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
 }
 
 /// Proves one application execution through the full base-case pipeline and
@@ -300,7 +306,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     app: A,
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
-) -> BaseCaseProof {
+) -> BaseCaseProof<A, ROUNDS, STMT_LEN> {
     assert_eq!(STMT_LEN, 13 + ROUNDS + 9, "STMT_LEN mismatch");
     // ---- step proof ----
     let app_state = app.state(&witness);
@@ -446,6 +452,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     // ---- wrap proof ----
     let co = |p: &Vesta| (p.x, p.y);
     let l0 = lgr[0].chunks[0];
+    drop(lgr); // release the SRS cache guard so step_ver can move below
     let correction = crate::public_input::lagrange_correction(&l0, 255);
     let srs_h = svi.srs().h;
     let wdata = WrapWitnessData {
@@ -508,5 +515,8 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     BaseCaseProof {
         statement,
         proof: wrap_proof,
+        step_proof,
+        step_verifier: step_ver,
+        wrap_verifier: wrap_ver,
     }
 }
