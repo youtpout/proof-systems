@@ -12,6 +12,7 @@
 //! See `pickles/CLAUDE.md` for the port map and status.
 
 pub mod all_evals;
+pub mod api;
 pub mod bulletproof;
 pub mod challenge;
 pub mod commitments;
