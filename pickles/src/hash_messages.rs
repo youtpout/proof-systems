@@ -15,8 +15,10 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
+use mina_poseidon::poseidon::ArithmeticSpongeParams;
 use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
 
+use crate::common::FULL_ROUNDS;
 use crate::composition_types::PlonkVerificationKeyEvals;
 use crate::sponge::PoseidonSponge;
 
@@ -113,6 +115,31 @@ pub fn hash_messages_for_next_wrap_proof<F: PrimeField>(
         std::slice::from_ref(&challenge_polynomial_commitment.y),
     );
     sponge.squeeze(sys, loc)
+}
+
+/// Out-of-circuit mirror of [`hash_messages_for_next_wrap_proof`].
+pub fn hash_messages_for_next_wrap_proof_ref<F: PrimeField>(
+    params: &'static ArithmeticSpongeParams<F, FULL_ROUNDS>,
+    dummy_challenges: &[Vec<F>],
+    old_bulletproof_challenges: &[Vec<F>],
+    challenge_polynomial_commitment: (F, F),
+) -> F {
+    use mina_poseidon::poseidon::Sponge as _;
+
+    let mut sponge = crate::sponge::make_sponge(params);
+    for chals in dummy_challenges {
+        for c in chals {
+            sponge.absorb(&[*c]);
+        }
+    }
+    for chals in old_bulletproof_challenges {
+        for c in chals {
+            sponge.absorb(&[*c]);
+        }
+    }
+    sponge.absorb(&[challenge_polynomial_commitment.0]);
+    sponge.absorb(&[challenge_polynomial_commitment.1]);
+    sponge.squeeze()
 }
 
 #[cfg(test)]
@@ -325,6 +352,15 @@ mod tests {
         s.absorb(&[cpc.0]);
         s.absorb(&[cpc.1]);
         let expected = s.squeeze();
+        assert_eq!(
+            hash_messages_for_next_wrap_proof_ref(
+                Vesta::sponge_params(),
+                &dummy_chals,
+                &old_chals,
+                cpc,
+            ),
+            expected
+        );
 
         let circ = WrapHashCircuit {
             dummy_chals,

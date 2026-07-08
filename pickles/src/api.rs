@@ -42,7 +42,6 @@ type PallasBase =
     DefaultFqSponge<mina_curves::pasta::PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type FpSponge = ArithmeticSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
-type FqSpongeRef = ArithmeticSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
 /// An application circuit hosted by a base-case step proof.
 pub trait StepApp {
@@ -399,21 +398,15 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     let dummy_wrap_chals: Vec<Vec<Fq>> = {
         let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
         let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let (wrap_dummy, _) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
-        vec![wrap_dummy.challenges_computed.clone(), wrap_dummy.challenges_computed]
+        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
     };
     let sg_pt = step_proof.proof.sg;
-    let msgs_wrap_digest = {
-        let mut s = FqSpongeRef::new(Pallas::sponge_params());
-        for v in &dummy_wrap_chals {
-            for c in v {
-                s.absorb(&[*c]);
-            }
-        }
-        s.absorb(&[sg_pt.x]);
-        s.absorb(&[sg_pt.y]);
-        s.squeeze()
-    };
+    let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
+        Pallas::sponge_params(),
+        &dummy_wrap_chals,
+        &[],
+        (sg_pt.x, sg_pt.y),
+    );
 
     let plonk_vals = plonk::InCircuit::<Fq, ScalarChallenge<Fq>, bool> {
         alpha: ScalarChallenge(ww.alpha_raw),

@@ -8,7 +8,9 @@
 //! (`compute_sg` = a non-hiding commitment to `b_poly_coefficients`).
 
 use ark_ff::PrimeField;
+use kimchi::proof::{PointEvaluations, ProofEvaluations};
 
+use crate::all_evals::AllEvals;
 use crate::ro::Ro;
 
 /// The dummy IPA challenges of one side: raw 128-bit prechallenges and their
@@ -16,6 +18,17 @@ use crate::ro::Ro;
 pub struct DummyIpa<F: PrimeField> {
     pub prechallenges: Vec<F>,
     pub challenges_computed: Vec<F>,
+}
+
+/// One challenge-polynomial accumulator entry: the commitment to `b_poly` and
+/// the field-form IPA challenges it commits to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChallengePolynomial<G>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+{
+    pub commitment: G,
+    pub challenges: Vec<G::ScalarField>,
 }
 
 /// `rounds` dummy challenges from the shared 128-bit stream, with their
@@ -45,6 +58,68 @@ pub fn ipa_wrap_and_step<FWrap: PrimeField, FStep: PrimeField>(
     (wrap, step)
 }
 
+/// `Dummy.Ipa.Wrap.challenges_computed`: the wrap-side dummy IPA challenges in
+/// field form, after the shared wrap-then-step `Ro.chal` initialisation order.
+pub fn wrap_challenges_computed<FWrap: PrimeField, FStep: PrimeField>(
+    endo_wrap: FWrap,
+    endo_step: FStep,
+) -> Vec<FWrap> {
+    ipa_wrap_and_step::<FWrap, FStep>(endo_wrap, endo_step)
+        .0
+        .challenges_computed
+}
+
+/// `Wrap_hack.pad_challenges`: front-pad the real wrap accumulator challenge
+/// vectors to Pickles' fixed padded length 2 using
+/// [`wrap_challenges_computed`].
+pub fn pad_wrap_challenges<FWrap: PrimeField, FStep: PrimeField>(
+    real: &[Vec<FWrap>],
+    endo_wrap: FWrap,
+    endo_step: FStep,
+) -> Vec<Vec<FWrap>> {
+    assert!(
+        real.len() <= crate::common::MAX_PROOFS_VERIFIED,
+        "pad_wrap_challenges: at most two proof accumulators"
+    );
+    let dummy = wrap_challenges_computed::<FWrap, FStep>(endo_wrap, endo_step);
+    let mut out = Vec::with_capacity(crate::common::MAX_PROOFS_VERIFIED);
+    for _ in real.len()..crate::common::MAX_PROOFS_VERIFIED {
+        out.push(dummy.clone());
+    }
+    out.extend(real.iter().cloned());
+    out
+}
+
+/// `Wrap_hack.pad_accumulator`: front-pad challenge-polynomial accumulator
+/// entries to Pickles' fixed padded length 2 using `Dummy.Ipa.Wrap.sg` and
+/// `Dummy.Ipa.Wrap.challenges_computed`.
+pub fn pad_wrap_accumulator<G, FStep>(
+    srs: &poly_commitment::ipa::SRS<G>,
+    real: &[ChallengePolynomial<G>],
+    endo_wrap: G::ScalarField,
+    endo_step: FStep,
+) -> Vec<ChallengePolynomial<G>>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    FStep: PrimeField,
+{
+    assert!(
+        real.len() <= crate::common::MAX_PROOFS_VERIFIED,
+        "pad_wrap_accumulator: at most two proof accumulators"
+    );
+    let challenges = wrap_challenges_computed::<G::ScalarField, FStep>(endo_wrap, endo_step);
+    let dummy = ChallengePolynomial {
+        commitment: compute_sg(srs, &challenges),
+        challenges,
+    };
+    let mut out = Vec::with_capacity(crate::common::MAX_PROOFS_VERIFIED);
+    for _ in real.len()..crate::common::MAX_PROOFS_VERIFIED {
+        out.push(dummy.clone());
+    }
+    out.extend(real.iter().cloned());
+    out
+}
+
 /// `compute_sg`: the challenge-polynomial commitment of the given (field-form)
 /// challenges — a non-hiding SRS commitment to `b_poly_coefficients(chals)`.
 pub fn compute_sg<G>(
@@ -63,10 +138,93 @@ where
     srs.commit_non_hiding(&poly, 1).chunks[0]
 }
 
+/// `Dummy.evals`: deterministic Tock-field evaluations used for padding
+/// unverified proofs. This mirrors `dummy.ml`: every mandatory evaluation has
+/// one chunk at `zeta` and one at `zeta*omega`, followed by one public-input
+/// chunk at each point and `ft_eval1`.
+pub fn evals<F: PrimeField>() -> AllEvals<F> {
+    let mut ro = Ro::tock();
+
+    let mut pair = || PointEvaluations {
+        zeta: vec![ro.next_field()],
+        zeta_omega: vec![ro.next_field()],
+    };
+
+    // Keep the draw order aligned with `Evaluation_lengths.default` in OCaml:
+    // w, coefficients, z, s, then the six mandatory selectors.
+    let w = std::array::from_fn(|_| pair());
+    let coefficients = std::array::from_fn(|_| pair());
+    let z = pair();
+    let s = std::array::from_fn(|_| pair());
+    let generic_selector = pair();
+    let poseidon_selector = pair();
+    let complete_add_selector = pair();
+    let mul_selector = pair();
+    let emul_selector = pair();
+    let endomul_scalar_selector = pair();
+
+    let evals = ProofEvaluations {
+        public: None,
+        w,
+        z,
+        s,
+        coefficients,
+        generic_selector,
+        poseidon_selector,
+        complete_add_selector,
+        mul_selector,
+        emul_selector,
+        endomul_scalar_selector,
+        range_check0_selector: None,
+        range_check1_selector: None,
+        foreign_field_add_selector: None,
+        foreign_field_mul_selector: None,
+        xor_selector: None,
+        rot_selector: None,
+        lookup_aggregation: None,
+        lookup_table: None,
+        lookup_sorted: std::array::from_fn(|_| None),
+        runtime_lookup_table: None,
+        runtime_lookup_table_selector: None,
+        xor_lookup_selector: None,
+        lookup_gate_lookup_selector: None,
+        range_check_lookup_selector: None,
+        foreign_field_mul_lookup_selector: None,
+    };
+    let public_input = PointEvaluations {
+        zeta: vec![ro.next_field()],
+        zeta_omega: vec![ro.next_field()],
+    };
+    let ft_eval1 = ro.next_field();
+
+    AllEvals {
+        ft_eval1,
+        public_input,
+        evals,
+    }
+}
+
+/// `Dummy.evals_combined`: same dummy evaluations after chunk-combination.
+/// With the default single chunk this is an identity, but keeping the helper
+/// explicit matches the OCaml API and the places that consume scalar evals.
+pub fn evals_combined<F: PrimeField>() -> AllEvals<F> {
+    fn combine<F: PrimeField>(xs: &[F]) -> F {
+        xs.iter().copied().sum()
+    }
+
+    let evals = evals::<F>();
+    AllEvals {
+        ft_eval1: evals.ft_eval1,
+        public_input: evals.public_input.map(&|xs| vec![combine(&xs)]),
+        evals: evals.evals.map(&|pe| pe.map(&|xs| vec![combine(&xs)])),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
+    use kimchi::circuits::wires::{COLUMNS, PERMUTS};
     use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
     use poly_commitment::commitment::b_poly_coefficients;
@@ -92,10 +250,94 @@ mod tests {
         let srs = poly_commitment::ipa::SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
         let sg = compute_sg(&srs, &wrap.challenges_computed);
         let coeffs = b_poly_coefficients(&wrap.challenges_computed);
-        let expected =
-            <Pallas as AffineRepr>::Group::msm(&srs.g[..coeffs.len()], &coeffs).unwrap();
+        let expected = <Pallas as AffineRepr>::Group::msm(&srs.g[..coeffs.len()], &coeffs).unwrap();
         assert_eq!(sg, expected.into_affine());
         assert!(sg.is_on_curve());
+    }
+
+    /// `Wrap_hack.pad_challenges` prepends dummy wrap challenges up to padded
+    /// length 2, preserving the real accumulator suffix.
+    #[test]
+    fn pad_wrap_challenges_prepends_dummy_vectors() {
+        let endo_wrap = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let dummy = wrap_challenges_computed::<Fq, Fp>(endo_wrap, endo_step);
+
+        let none = pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step);
+        assert_eq!(none, vec![dummy.clone(), dummy.clone()]);
+
+        let real = vec![vec![Fq::from(1u64); crate::common::TOCK_ROUNDS]];
+        let one = pad_wrap_challenges::<Fq, Fp>(&real, endo_wrap, endo_step);
+        assert_eq!(one, vec![dummy, real[0].clone()]);
+
+        let two_real = vec![
+            vec![Fq::from(2u64); crate::common::TOCK_ROUNDS],
+            vec![Fq::from(3u64); crate::common::TOCK_ROUNDS],
+        ];
+        let two = pad_wrap_challenges::<Fq, Fp>(&two_real, endo_wrap, endo_step);
+        assert_eq!(two, two_real);
+    }
+
+    /// `Wrap_hack.pad_accumulator` uses the same dummy challenge vector and
+    /// its `sg = compute_sg(dummy_challenges)`.
+    #[test]
+    fn pad_wrap_accumulator_prepends_dummy_sg() {
+        let endo_wrap = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let srs = poly_commitment::ipa::SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
+        let dummy_challenges = wrap_challenges_computed::<Fq, Fp>(endo_wrap, endo_step);
+        let dummy_sg = compute_sg(&srs, &dummy_challenges);
+
+        let real = ChallengePolynomial {
+            commitment: Pallas::generator(),
+            challenges: vec![Fq::from(42u64); crate::common::TOCK_ROUNDS],
+        };
+        let padded = pad_wrap_accumulator(&srs, std::slice::from_ref(&real), endo_wrap, endo_step);
+
+        assert_eq!(padded.len(), crate::common::MAX_PROOFS_VERIFIED);
+        assert_eq!(padded[0].commitment, dummy_sg);
+        assert_eq!(padded[0].challenges, dummy_challenges);
+        assert_eq!(padded[1], real);
+    }
+
+    /// `Dummy.evals` uses the `Ro.tock` stream in the same order as
+    /// `dummy.ml`: mandatory column pairs first, then public-input evals, then
+    /// `ft_eval1`.
+    #[test]
+    fn dummy_evals_follow_ocaml_ro_order() {
+        let e = evals::<Fq>();
+        let mut ro = Ro::tock();
+
+        assert_eq!(e.evals.w[0].zeta[0], ro.next_field::<Fq>());
+        assert_eq!(e.evals.w[0].zeta_omega[0], ro.next_field::<Fq>());
+
+        let mandatory = COLUMNS + COLUMNS + 1 + (PERMUTS - 1) + 6;
+        let mut all = Ro::tock();
+        let expected: Vec<Fq> = (0..(2 * mandatory + 3)).map(|_| all.next_field()).collect();
+        assert_eq!(e.public_input.zeta[0], expected[2 * mandatory]);
+        assert_eq!(e.public_input.zeta_omega[0], expected[2 * mandatory + 1]);
+        assert_eq!(e.ft_eval1, expected[2 * mandatory + 2]);
+
+        assert!(e.evals.public.is_none());
+        assert!(e.evals.range_check0_selector.is_none());
+        assert!(e.evals.lookup_sorted.iter().all(Option::is_none));
+    }
+
+    /// The default evaluation lengths are all one chunk, so combining preserves
+    /// every value while exposing the scalar-eval API shape.
+    #[test]
+    fn dummy_evals_combined_is_single_chunk_identity() {
+        let raw = evals::<Fq>();
+        let combined = evals_combined::<Fq>();
+
+        assert_eq!(combined.ft_eval1, raw.ft_eval1);
+        assert_eq!(combined.public_input, raw.public_input);
+        assert_eq!(combined.evals.z, raw.evals.z);
+        assert_eq!(combined.evals.w[0], raw.evals.w[0]);
+        assert_eq!(
+            combined.evals.endomul_scalar_selector,
+            raw.evals.endomul_scalar_selector
+        );
     }
 
     use mina_curves::pasta::VestaParameters;
@@ -117,7 +359,8 @@ mod tests {
     impl SnarkyCircuit for SmallCircuit {
         type Curve = Vesta;
         const PREV_CHALLENGES: usize = 1;
-        type Proof = poly_commitment::ipa::OpeningProof<Self::Curve, { crate::common::FULL_ROUNDS }>;
+        type Proof =
+            poly_commitment::ipa::OpeningProof<Self::Curve, { crate::common::FULL_ROUNDS }>;
         type PrivateInput = Fp;
         type PublicInput = FieldVar<Fp>;
         type PublicOutput = ();
@@ -144,10 +387,8 @@ mod tests {
         use poly_commitment::commitment::PolyComm;
 
         let (mut pi, ver) = SmallCircuit {}.compile_to_indexes().unwrap();
-        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
-            { crate::common::FULL_ROUNDS },
-        >>::endos()
-        .1;
+        let endo_step =
+            <Vesta as kimchi::curve::KimchiCurve<{ crate::common::FULL_ROUNDS }>>::endos().1;
         // as many dummy challenges as the prover SRS supports (the challenge
         // polynomial has 2^rounds coefficients and must fit in one chunk)
         let rounds = {
@@ -181,10 +422,8 @@ mod tests {
 
         let (mut pi, ver) = SmallCircuit {}.compile_to_indexes().unwrap();
         let vi = &ver.index;
-        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
-            { crate::common::FULL_ROUNDS },
-        >>::endos()
-        .1;
+        let endo_step =
+            <Vesta as kimchi::curve::KimchiCurve<{ crate::common::FULL_ROUNDS }>>::endos().1;
 
         // proof #0 (no accumulator)
         let x = Fp::from(5u64);
@@ -227,7 +466,10 @@ mod tests {
             let mut sp = o.fq_sponge.clone();
             sp.absorb_fr(&[shift_scalar::<Vesta>(o.combined_inner_product)]);
             let _t = sp.challenge_fq();
-            proof0.proof.challenges::<BaseSponge>(&endo_step, &mut sp).chal
+            proof0
+                .proof
+                .challenges::<BaseSponge>(&endo_step, &mut sp)
+                .chal
         };
         // consistency: sg == commit(b_poly(chals))
         assert_eq!(
@@ -248,7 +490,6 @@ mod tests {
             .unwrap();
         ver.verify::<BaseSponge, ScalarSponge>(proof1, z, ());
         let _ = Fp::from_le_bytes_mod_order(&Fp::one().into_bigint().to_bytes_le());
-
     }
 
     /// Regression test: folding an accumulator whose challenge polynomial is
@@ -266,10 +507,8 @@ mod tests {
         use poly_commitment::SRS as _;
 
         let (pi, _ver) = SmallCircuit {}.compile_to_indexes().unwrap();
-        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
-            { crate::common::FULL_ROUNDS },
-        >>::endos()
-        .1;
+        let endo_step =
+            <Vesta as kimchi::curve::KimchiCurve<{ crate::common::FULL_ROUNDS }>>::endos().1;
         let rounds = (u32::BITS - 1 - (pi.index.srs.size() as u32).leading_zeros()) as usize;
         let mut chal = crate::ro::Ro::chal();
         let dummy = ipa_challenges::<Fp>(&mut chal, rounds, endo_step);
