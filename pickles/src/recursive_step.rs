@@ -199,6 +199,20 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
     pub recursion: kimchi::proof::RecursionChallenge<Vesta>,
 }
 
+/// A proved width-1 recursive step, ready to be wrapped by the next Pickles
+/// layer once the generic wrap-proof plumbing is exposed.
+pub struct RecursiveStepProof<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+> {
+    pub statement: [Fp; PUBLIC_INPUT_LEN],
+    pub proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    pub verifier: snarky::api::VerifierIndexWrapper<
+        RecursiveStepCircuit<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>,
+    >,
+}
+
 /// Builds the witness, width-1 statement and recursion challenge for the first
 /// recursive step over a base-case wrap proof.
 #[allow(clippy::too_many_lines)]
@@ -386,6 +400,51 @@ pub fn prepare_recursive_step<
         data,
         statement,
         recursion,
+    }
+}
+
+/// Proves and verifies the first recursive step over a base-case wrap proof.
+///
+/// This is the reusable Rust-side counterpart of the test harness: it keeps
+/// witness construction, statement construction, recursive proving and local
+/// verification in one API step while the general multi-branch `compile` API is
+/// still being ported.
+pub fn prove_recursive_step<
+    A: StepApp,
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PREV_STMT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, PREV_ROUNDS, PREV_STMT_LEN>,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> RecursiveStepProof<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
+    let prepared =
+        prepare_recursive_step::<A, PREV_ROUNDS, WRAP_ROUNDS, PREV_STMT_LEN, PUBLIC_INPUT_LEN>(
+            base,
+            wrap_vk_pts,
+            prev_app_state,
+        );
+
+    let (mut prover, verifier) =
+        RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> { d: prepared.data }
+            .compile_to_indexes()
+            .unwrap();
+    let (proof, _) = prover
+        .prove_with_recursion::<VestaBase, VestaScalar>(
+            prepared.statement,
+            (),
+            true,
+            vec![prepared.recursion],
+        )
+        .unwrap();
+    verifier.verify::<VestaBase, VestaScalar>(proof.clone(), prepared.statement, ());
+
+    RecursiveStepProof {
+        statement: prepared.statement,
+        proof,
+        verifier,
     }
 }
 

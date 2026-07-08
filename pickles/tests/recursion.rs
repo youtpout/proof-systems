@@ -7,20 +7,10 @@
 //! `must_verify = true`, so every check is real.
 
 use mina_curves::pasta::Fp;
-use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
-use pickles::recursive_step::{
-    prepare_recursive_step, width1_step_statement_len, RecursiveStepCircuit,
-};
-
-const FULL_ROUNDS: usize = snarky::FULL_ROUNDS;
-
-type VestaBase =
-    DefaultFqSponge<mina_curves::pasta::VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
-type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+use pickles::recursive_step::{prove_recursive_step, width1_step_statement_len};
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
 const ROUNDS: usize = 9;
@@ -63,21 +53,10 @@ fn pickles_recursive_step() {
     );
     let prev_app_state = vec![Fp::from(49u64)];
 
-    let prepared = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
+    let proof2 = prove_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
         &base,
         wrap_vk_pts,
         prev_app_state,
     );
-    let (mut pi2, ver2) = RecursiveStepCircuit::<ROUNDS, WROUNDS, K2> { d: prepared.data }
-        .compile_to_indexes()
-        .unwrap();
-    let (proof2, _) = pi2
-        .prove_with_recursion::<VestaBase, VestaScalar>(
-            prepared.statement,
-            (),
-            true,
-            vec![prepared.recursion],
-        )
-        .unwrap();
-    ver2.verify::<VestaBase, VestaScalar>(proof2, prepared.statement, ());
+    assert_eq!(proof2.statement.len(), K2);
 }

@@ -116,11 +116,24 @@ layout statement est isolé dans `build_width1_step_statement` et les sous
 `pickles_recursive_step` ne conserve que le cas d'intégration
 preuve/vérification.
 
+### Mise à jour : API DU PREMIER STEP RÉCURSIF
+
+`recursive_step::prove_recursive_step` expose maintenant l'étape complète
+`prepare_recursive_step → compile RecursiveStepCircuit → prove_with_recursion
+→ verify` comme primitive réutilisable. Le test `pickles_recursive_step`
+consomme cette API au lieu de réassembler le prover manuellement, ce qui
+déplace la plomberie du harness vers le crate et prépare le chaînage N>1 :
+le résultat `RecursiveStepProof` conserve le statement width-1, la preuve
+Vesta et son verifier wrapper, prêts pour la future étape de wrap générique
+des step proofs récursifs.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
-  `prove_base_case + prepare_recursive_step` en API générique capable de
-  chaîner plusieurs steps/wraps et plusieurs branches.
+  `prove_base_case + prove_recursive_step` en API générique capable de
+  chaîner plusieurs steps/wraps et plusieurs branches. La première brique
+  d'API est maintenant portée ; il reste le wrap générique d'un step proof
+  width>0, puis le bouclage step→wrap répété.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.
