@@ -68,13 +68,17 @@ where
     }
 
     /// Produces a proof for the given public input.
-    pub fn prove<EFqSponge, EFrSponge>(
+    /// Like [`Self::prove`], but with previous recursion challenges — the
+    /// polynomial commitments and challenges of accumulated proofs, which the
+    /// prover folds into the opening (pickles' `sg_old`).
+    pub fn prove_with_recursion<EFqSponge, EFrSponge>(
         // TODO: this should not be mutable ideally
         &mut self,
         public_input: <Circuit::PublicInput as SnarkyType<ScalarField<Circuit::Curve>>>::OutOfCircuit,
         private_input: Circuit::PrivateInput,
         // TODO: rename to verify_witness?
         debug: bool,
+        prev_challenges: Vec<kimchi::proof::RecursionChallenge<Circuit::Curve>>,
     ) -> SnarkyResult<(Proof<Circuit>, Box<Output<Circuit>>)>
     where
         <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
@@ -158,17 +162,46 @@ where
         let group_map = <Circuit::Curve as CommitmentCurve>::Map::setup();
 
         // TODO: return error instead of panicking
-        let proof: Proof<Circuit> = ProverProof::create::<EFqSponge, EFrSponge, _>(
+        let proof: Proof<Circuit> = ProverProof::create_recursive::<EFqSponge, EFrSponge, _>(
             &group_map,
             witness.0,
             &[],
             &self.index,
+            prev_challenges,
+            None,
             &mut rand::rngs::OsRng,
         )
         .unwrap();
 
         // return proof + public output
         Ok((proof, Box::new(public_output)))
+    }
+
+    /// Produces a proof for the given public and private inputs.
+    pub fn prove<EFqSponge, EFrSponge>(
+        &mut self,
+        public_input: <Circuit::PublicInput as SnarkyType<ScalarField<Circuit::Curve>>>::OutOfCircuit,
+        private_input: Circuit::PrivateInput,
+        debug: bool,
+    ) -> SnarkyResult<(Proof<Circuit>, Box<Output<Circuit>>)>
+    where
+        <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
+        EFqSponge: Clone
+            + FqSponge<
+                BaseField<Circuit::Curve>,
+                Circuit::Curve,
+                ScalarField<Circuit::Curve>,
+                FULL_ROUNDS,
+            >,
+        EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
+    {
+        self.prove_with_recursion::<EFqSponge, EFrSponge>(
+            public_input,
+            private_input,
+            debug,
+            vec![],
+        )
     }
 }
 
