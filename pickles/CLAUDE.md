@@ -143,14 +143,31 @@ digests finaux en `Packed(255)`. Test de layout ajouté. Prochaine étape :
 construire le `WrapWitnessData` d'un `RecursiveStepProof` et brancher
 l'unfinalized réel dans `wrap_main`.
 
+### Mise à jour : UNFINALIZED CÔTÉ WRAP
+
+`api::WrapWitnessData` porte maintenant `unfinalized:
+Vec<WrapUnfinalizedWitnessData>` et `WrapCircuit` construit les
+`wrap_main::PerUnfinalized` réels : params de finalisation Type2, évaluations,
+challenges raw, représentants Type2, anciens challenges/sg et dummies
+`Wrap_hack`. Le cas base continue à passer avec `unfinalized=[]`.
+
+`recursive_step::wrap_unfinalized_from_base` prépare l'unfinalized exact de la
+preuve wrap du cas base, en rejouant les oracles Pallas, `step_witness`, les
+evals, le `perm` et les dummies. Le test récursif vérifie désormais que cet
+unfinalized reconstruit bien `base.statement[11]`
+(`messages_for_next_wrap_proof`). Prochaine étape concrète : construire le
+`WrapWitnessData` complet d'un `RecursiveStepProof` avec cet unfinalized, puis
+prouver le wrap récursif.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
   `prove_base_case + prove_recursive_step` en API générique capable de
   chaîner plusieurs steps/wraps et plusieurs branches. La première brique
   d'API est maintenant portée et le commitment de statement générique côté
-  wrap est prêt ; il reste le témoin wrap complet d'un step proof width>0,
-  puis le bouclage step→wrap répété.
+  wrap est prêt ; la plomberie `PerUnfinalized` côté wrap est branchée. Il
+  reste le témoin wrap complet d'un step proof width>0, puis le bouclage
+  step→wrap répété.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.

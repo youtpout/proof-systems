@@ -17,7 +17,7 @@
 //! surrounding data plumbing lands with the recursive API.
 
 use ark_ff::{BigInteger, One, PrimeField};
-use kimchi::circuits::wires::PERMUTS;
+use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
@@ -29,17 +29,23 @@ use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
+use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
 use crate::plonk_curve_ops::ShiftedScalar;
 use crate::scalar_challenge::ScalarChallenge;
-use crate::step_verifier::Claimed;
-use crate::wrap_main::{wrap_main, StepStatementElement};
+use crate::step_verifier::{Claimed, FinalizeEvals};
+use crate::wrap_main::{wrap_main, PerUnfinalized, StepStatementElement};
 
 type VestaBase = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type PallasBase =
     DefaultFqSponge<mina_curves::pasta::PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+pub type WrapPolishToken = kimchi::circuits::expr::PolishToken<
+    Fq,
+    kimchi::circuits::berkeley_columns::Column,
+    kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm,
+>;
 
 /// An application circuit hosted by a base-case step proof.
 pub trait StepApp {
@@ -119,6 +125,34 @@ pub enum WrapStepStatementSlot {
     Bool(bool),
 }
 
+/// One previous proof-state carried by a recursive step statement and
+/// finalized by the wrap circuit before it verifies the step proof.
+pub struct WrapUnfinalizedWitnessData {
+    pub finalize_tokens: Vec<WrapPolishToken>,
+    pub finalize_domain: ark_poly::Radix2EvaluationDomain<Fq>,
+    pub finalize_srs_log2: u32,
+    pub finalize_endo: Fq,
+    pub finalize_endo_r: Fq,
+    pub finalize_shifts: Vec<Fq>,
+    pub ft_eval1: Fq,
+    pub public_evals: [Vec<Fq>; 2],
+    pub evals_flat: Vec<(Fq, Fq)>,
+    pub alpha: Fq,
+    pub beta: Fq,
+    pub gamma: Fq,
+    pub zeta: Fq,
+    pub xi: Fq,
+    pub cip_repr: Fq,
+    pub b_repr: Fq,
+    pub perm_repr: Fq,
+    pub bulletproof_challenges: Vec<Fq>,
+    pub sponge_digest_before_evaluations: Fq,
+    pub should_finalize: bool,
+    pub old_bulletproof_challenges: Vec<Vec<Fq>>,
+    pub prev_step_acc: (Fq, Fq),
+    pub hash_dummy_challenges: Vec<Vec<Fq>>,
+}
+
 pub struct WrapWitnessData {
     pub step_vk_digest: Fq,
     pub generic: (Fq, Fq),
@@ -138,6 +172,7 @@ pub struct WrapWitnessData {
     pub sg: (Fq, Fq),
     pub z1_repr: Fq,
     pub z2_repr: Fq,
+    pub unfinalized: Vec<WrapUnfinalizedWitnessData>,
     pub step_statement: Vec<WrapStepStatementSlot>,
     pub step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))>,
     pub h: (Fq, Fq),
@@ -181,6 +216,14 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
             Ok(out)
         };
+        let w1 = |sys: &mut RunState<Fq>, v: Fq| sys.compute(loc!(), move |_| v);
+        let wvec = |sys: &mut RunState<Fq>, vs: &[Fq]| -> SnarkyResult<Vec<FieldVar<Fq>>> {
+            let mut out = vec![];
+            for &v in vs {
+                out.push(w1(sys, v)?);
+            }
+            Ok(out)
+        };
         let cpt = |p: (Fq, Fq)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
 
         // destructure the statement (to_data order)
@@ -198,7 +241,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
 
-        let vk_digest: FieldVar<Fq> = sys.compute(loc!(), |_| w.step_vk_digest)?;
+        let vk_digest: FieldVar<Fq> = w1(sys, w.step_vk_digest)?;
         let vk = VerificationKeyComm {
             generic: mkpt(sys, w.generic)?,
             psm: mkpt(sys, w.psm)?,
@@ -232,8 +275,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let openings = OpeningProof {
             lr,
             delta: mkpt(sys, w.delta)?,
-            z1: t1(sys.compute(loc!(), |_| w.z1_repr)?),
-            z2: t1(sys.compute(loc!(), |_| w.z2_repr)?),
+            z1: t1(w1(sys, w.z1_repr)?),
+            z2: t1(w1(sys, w.z2_repr)?),
             challenge_polynomial_commitment: mkpt(sys, w.sg)?,
             h_generator: h.clone(),
         };
@@ -252,6 +295,82 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sponge_digest_before_evaluations: sponge_digest,
             bulletproof_challenges: bp,
         };
+
+        let mds: Vec<Vec<Fq>> = Pallas::sponge_params()
+            .mds
+            .iter()
+            .map(|r| r.to_vec())
+            .collect();
+        let mut unfinalized = Vec::with_capacity(w.unfinalized.len());
+        for u in &w.unfinalized {
+            let mut fe = u.evals_flat.iter();
+            let mut next_pe =
+                |sys: &mut RunState<Fq>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fq>> {
+                    let &(a, b) = fe.next().unwrap();
+                    Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+                };
+            let evals = crate::fr_sponge::AbsorbEvalsVar {
+                z: next_pe(sys)?,
+                generic_selector: next_pe(sys)?,
+                poseidon_selector: next_pe(sys)?,
+                complete_add_selector: next_pe(sys)?,
+                mul_selector: next_pe(sys)?,
+                emul_selector: next_pe(sys)?,
+                endomul_scalar_selector: next_pe(sys)?,
+                w: (0..COLUMNS)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+                coefficients: (0..COLUMNS)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+                s: (0..PERMUTS - 1)
+                    .map(|_| next_pe(sys))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+            };
+            let finalize_evals = FinalizeEvals {
+                ft_eval1: w1(sys, u.ft_eval1)?,
+                public_evals: [
+                    wvec(sys, &u.public_evals[0])?,
+                    wvec(sys, &u.public_evals[1])?,
+                ],
+                evals,
+            };
+            let finalize_params = FinalizeParams {
+                tokens: &u.finalize_tokens,
+                domain: u.finalize_domain,
+                srs_log2: u.finalize_srs_log2,
+                endo: u.finalize_endo,
+                shifts: &u.finalize_shifts,
+                endo_r: u.finalize_endo_r,
+                mds: &mds,
+                shift: ShiftKind::Type2,
+            };
+            let old_bulletproof_challenges = u
+                .old_bulletproof_challenges
+                .iter()
+                .map(|chals| wvec(sys, chals))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            let should_finalize: snarky::Boolean<Fq> =
+                sys.compute(loc!(), |_| u.should_finalize)?;
+            unfinalized.push(PerUnfinalized {
+                finalize_params,
+                finalize_evals,
+                alpha: w1(sys, u.alpha)?,
+                beta: w1(sys, u.beta)?,
+                gamma: w1(sys, u.gamma)?,
+                zeta: w1(sys, u.zeta)?,
+                xi: w1(sys, u.xi)?,
+                cip_repr: w1(sys, u.cip_repr)?,
+                b_repr: w1(sys, u.b_repr)?,
+                perm_repr: w1(sys, u.perm_repr)?,
+                bulletproof_challenges: wvec(sys, &u.bulletproof_challenges)?,
+                sponge_digest_before_evaluations: w1(sys, u.sponge_digest_before_evaluations)?,
+                should_finalize,
+                old_bulletproof_challenges,
+                prev_step_acc: mkpt(sys, u.prev_step_acc)?,
+                hash_dummy_challenges: u.hash_dummy_challenges.clone(),
+            });
+        }
 
         assert_eq!(
             w.step_statement.len(),
@@ -284,7 +403,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let _out = wrap_main::<Fq, VestaParameters>(
             sys,
             loc!(),
-            &[],
+            &unfinalized,
             &vk_digest,
             &vk,
             &elements,
@@ -511,6 +630,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         sg: co(&sg_pt),
         z1_repr: fp_to_fq(ww.z1_repr),
         z2_repr: fp_to_fq(ww.z2_repr),
+        unfinalized: vec![],
         step_statement: vec![WrapStepStatementSlot::Packed {
             value: fp_to_fq(digest),
             num_bits: 255,

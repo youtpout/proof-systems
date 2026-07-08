@@ -6,11 +6,14 @@
 //! Lagrange basis, and asserting the bulletproof equation — with
 //! `must_verify = true`, so every check is real.
 
+use kimchi::curve::KimchiCurve;
 use mina_curves::pasta::Fp;
 use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
-use pickles::recursive_step::{prove_recursive_step, width1_step_statement_len};
+use pickles::recursive_step::{
+    prove_recursive_step, width1_step_statement_len, wrap_unfinalized_from_base,
+};
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
 const ROUNDS: usize = 9;
@@ -51,6 +54,15 @@ fn pickles_recursive_step() {
         Fp::from(7u64),
         wrap_vk_pts.clone(),
     );
+    let unfinalized = wrap_unfinalized_from_base(&base);
+    let prev_wrap_digest = pickles::hash_messages::hash_messages_for_next_wrap_proof_ref(
+        mina_curves::pasta::Pallas::sponge_params(),
+        &unfinalized.hash_dummy_challenges,
+        &unfinalized.old_bulletproof_challenges,
+        unfinalized.prev_step_acc,
+    );
+    assert_eq!(prev_wrap_digest, base.statement[11]);
+
     let prev_app_state = vec![Fp::from(49u64)];
 
     let proof2 = prove_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(

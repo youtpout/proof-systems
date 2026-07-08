@@ -15,7 +15,7 @@ use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::api::{BaseCaseProof, StepApp, WrapStepStatementSlot};
+use crate::api::{BaseCaseProof, StepApp, WrapStepStatementSlot, WrapUnfinalizedWitnessData};
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, Features};
 use crate::finalize::{FinalizeParams, ShiftKind};
@@ -49,6 +49,15 @@ pub fn embed_fp_to_fq(x: Fp) -> Fq {
 
 pub fn type2_pair_to_fields(p: (Fp, bool)) -> [Fp; 2] {
     [p.0, if p.1 { Fp::one() } else { Fp::from(0u64) }]
+}
+
+pub fn type2_pair_to_fq_repr(p: (Fp, bool)) -> Fq {
+    let mut repr = embed_fp_to_fq(p.0);
+    repr += repr;
+    if p.1 {
+        repr += Fq::one();
+    }
+    repr
 }
 
 pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>(
@@ -148,6 +157,25 @@ pub fn flatten_proof_evaluations(
     out
 }
 
+pub fn flatten_wrap_proof_evaluations(
+    evals: &kimchi::proof::ProofEvaluations<kimchi::proof::PointEvaluations<Vec<Fq>>>,
+) -> Vec<(Fq, Fq)> {
+    let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fq>>| (p.zeta[0], p.zeta_omega[0]);
+    let mut out = vec![
+        pair(&evals.z),
+        pair(&evals.generic_selector),
+        pair(&evals.poseidon_selector),
+        pair(&evals.complete_add_selector),
+        pair(&evals.mul_selector),
+        pair(&evals.emul_selector),
+        pair(&evals.endomul_scalar_selector),
+    ];
+    out.extend(evals.w.iter().map(pair));
+    out.extend(evals.coefficients.iter().map(pair));
+    out.extend(evals.s.iter().map(pair));
+    out
+}
+
 pub fn wrap_x_hat_lagranges(
     lagrange_basis: &[PolyComm<Pallas>],
     prev_rounds: usize,
@@ -194,6 +222,121 @@ pub fn recursion_challenge(
         comm: PolyComm {
             chunks: vec![step_proof.proof.sg],
         },
+    }
+}
+
+/// Builds the wrap-side unfinalized witness for the base wrap proof carried by
+/// the first recursive step statement.
+pub fn wrap_unfinalized_from_base<
+    A: StepApp,
+    const PREV_ROUNDS: usize,
+    const PREV_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, PREV_ROUNDS, PREV_STMT_LEN>,
+) -> WrapUnfinalizedWitnessData {
+    let wvi = &base.wrap_verifier.index;
+    let wrap_proof = &base.proof;
+    let wlgr = wvi.srs().get_lagrange_basis(wvi.domain);
+    let wcom: Vec<_> = wlgr.iter().take(wvi.public).collect();
+    let welm: Vec<_> = base.statement.iter().map(|s| -*s).collect();
+    let wpc = PolyComm::<Pallas>::multi_scalar_mul(&wcom, &welm);
+    let wrap_public_comm = wvi
+        .srs()
+        .mask_custom(wpc.clone(), &wpc.map(|_| Fq::one()))
+        .unwrap()
+        .commitment;
+    let wo = wrap_proof
+        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(&base.statement))
+        .unwrap();
+    let woracles = &wo.oracles;
+
+    let wcombined = wrap_proof
+        .evals
+        .combine(&wo.powers_of_eval_points_for_chunks);
+    let wrap_srs_log2 = u64::BITS - 1 - (wvi.max_poly_size as u64).leading_zeros();
+    let wdomain = crate::plonk_checks::Domain::<Fq> {
+        log2_size: wvi.domain.log_size_of_group,
+        generator: wvi.domain.group_gen,
+    };
+    let wminimal = plonk::Minimal::<Fq, Fq, bool> {
+        alpha: woracles.alpha,
+        beta: woracles.beta,
+        gamma: woracles.gamma,
+        zeta: woracles.zeta,
+        joint_combiner: None,
+        feature_flags: Features::none(),
+    };
+    let wenv = crate::plonk_checks::scalars_env::<Fq, bool>(&wdomain, wrap_srs_log2, &wminimal);
+    let wevals = crate::plonk_checks::Evals {
+        w: wcombined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        s: wcombined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        z: (wcombined.z.zeta, wcombined.z.zeta_omega),
+    };
+    let wperm = crate::plonk_checks::perm_scalar(&wenv, &wevals);
+
+    let sw = crate::step_witness::step_witness(
+        wvi.max_poly_size as u64,
+        wvi.domain.size,
+        wvi.domain.group_gen,
+        wrap_proof,
+        &wrap_public_comm,
+        wvi.digest::<PallasBase>(),
+        wo.combined_inner_product,
+        woracles.zeta,
+        woracles.u,
+        wperm,
+    );
+
+    let xi_raw: Fq = {
+        use kimchi::plonk_sponge::FrSponge as _;
+        let params = Pallas::sponge_params();
+        let mut fr = PallasScalar::from(params);
+        fr.absorb(&wo.digest);
+        let pcd = PallasScalar::from(params).digest();
+        fr.absorb(&pcd);
+        fr.absorb(&wrap_proof.ft_eval1);
+        fr.absorb_multiple(&wo.public_evals[0]);
+        fr.absorb_multiple(&wo.public_evals[1]);
+        fr.absorb_evaluations(&wrap_proof.evals);
+        fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
+    };
+
+    let dummy_wrap_chals: Vec<Vec<Fq>> = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
+    };
+    let (_, endo_r) = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos();
+
+    WrapUnfinalizedWitnessData {
+        finalize_tokens: wvi.linearization.constant_term.clone(),
+        finalize_domain: wvi.domain,
+        finalize_srs_log2: wrap_srs_log2,
+        finalize_endo: wvi.endo,
+        finalize_endo_r: *endo_r,
+        finalize_shifts: wvi.shift.to_vec(),
+        ft_eval1: wrap_proof.ft_eval1,
+        public_evals: wo.public_evals.clone(),
+        evals_flat: flatten_wrap_proof_evaluations(&wrap_proof.evals),
+        alpha: embed_fp_to_fq(sw.alpha_raw),
+        beta: embed_fp_to_fq(sw.beta_raw),
+        gamma: embed_fp_to_fq(sw.gamma_raw),
+        zeta: embed_fp_to_fq(sw.zeta_raw),
+        xi: xi_raw,
+        cip_repr: type2_pair_to_fq_repr(sw.cip),
+        b_repr: type2_pair_to_fq_repr(sw.b),
+        perm_repr: type2_pair_to_fq_repr(sw.perm),
+        bulletproof_challenges: sw
+            .bulletproof_prechallenges
+            .iter()
+            .copied()
+            .map(embed_fp_to_fq)
+            .collect(),
+        sponge_digest_before_evaluations: sw.sponge_digest,
+        should_finalize: true,
+        old_bulletproof_challenges: vec![],
+        prev_step_acc: (base.step_proof.proof.sg.x, base.step_proof.proof.sg.y),
+        hash_dummy_challenges: dummy_wrap_chals,
     }
 }
 
