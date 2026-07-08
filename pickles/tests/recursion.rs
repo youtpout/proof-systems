@@ -613,9 +613,12 @@ fn pickles_recursive_step() {
         // the verified proof's challenge-polynomial commitment
         s.absorb(&[d.sg.0]);
         s.absorb(&[d.sg.1]);
-        // its freshly-derived bulletproof challenges (field form)
+        // the finalize-output challenges: the field images of the *statement's*
+        // bulletproof challenges (the base step proof's), exactly what
+        // step_main's accumulator hash absorbs (fin.challenges)
         let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        for &raw in &sw.bulletproof_prechallenges {
+        for &raw_fq in &base.statement[13..13 + ROUNDS] {
+            let raw = fq_to_fp(raw_fq);
             let f = pickles::scalar_challenge::ScalarChallenge(raw).to_field(endo_p);
             s.absorb(&[f]);
         }
