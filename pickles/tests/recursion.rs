@@ -1,0 +1,631 @@
+//! The first recursive step (proofs_verified = 1): a second step circuit runs
+//! [`pickles::step_main::step_main`] over the base-case wrap proof —
+//! finalizing the wrap statement's deferred values (the base step proof's
+//! scalars) against that proof's evaluations, re-deriving the wrap proof's
+//! whole transcript, recommitting the wrap statement through the real Pallas
+//! Lagrange basis, and asserting the bulletproof equation — with
+//! `must_verify = true`, so every check is real.
+
+use ark_ff::{BigInteger, One, PrimeField};
+use kimchi::circuits::wires::{COLUMNS, PERMUTS};
+use kimchi::curve::KimchiCurve;
+use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta};
+use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
+use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
+use poly_commitment::commitment::PolyComm;
+use poly_commitment::ipa::OpeningProof as IpaProof;
+use poly_commitment::SRS;
+use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
+
+use pickles::api::{prove_base_case, StepApp};
+use pickles::composition_types::{plonk, Features};
+use pickles::finalize::{FinalizeParams, ShiftKind};
+use pickles::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
+use pickles::plonk_curve_ops::ShiftedScalar;
+use pickles::step_main::{step_main, PerProofInput};
+use pickles::step_verifier::{Claimed, FinalizeEvals, WrapStatementVars};
+
+const FULL_ROUNDS: usize = snarky::FULL_ROUNDS;
+
+type VestaBase = DefaultFqSponge<
+    mina_curves::pasta::VestaParameters,
+    PlonkSpongeConstantsKimchi,
+    FULL_ROUNDS,
+>;
+type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type PallasBase = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+
+/// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
+const ROUNDS: usize = 9;
+const STMT_LEN: usize = 13 + ROUNDS + 9;
+
+struct SquareApp;
+impl StepApp for SquareApp {
+    type Witness = Fp;
+    fn main(
+        &self,
+        sys: &mut RunState<Fp>,
+        witness: Option<&Self::Witness>,
+    ) -> SnarkyResult<Vec<FieldVar<Fp>>> {
+        let x: FieldVar<Fp> = sys.compute(loc!(), |_| *witness.unwrap())?;
+        let z = x.mul(&x, None, loc!(), sys)?;
+        Ok(vec![z])
+    }
+    fn state(&self, witness: &Self::Witness) -> Vec<Fp> {
+        vec![*witness * *witness]
+    }
+}
+
+fn fq_to_fp(x: Fq) -> Fp {
+    Fp::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
+}
+
+/// Everything the recursive step circuit witnesses (plain values).
+struct Step2Data {
+    // ---- finalize: the base step proof's deferred values + evaluations ----
+    finalize_tokens: Vec<
+        kimchi::circuits::expr::PolishToken<
+            Fp,
+            kimchi::circuits::berkeley_columns::Column,
+            kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm,
+        >,
+    >,
+    finalize_domain: ark_poly::Radix2EvaluationDomain<Fp>,
+    finalize_srs_log2: u32,
+    finalize_endo: Fp,
+    finalize_shifts: Vec<Fp>,
+    ft_eval1: Fp,
+    public_evals: [Vec<Fp>; 2],
+    evals_flat: Vec<(Fp, Fp)>, // z, 6 selectors, 15 w, 15 coeff, 6 s
+    // ---- the wrap statement (Fq values converted to Fp — all fit whp) ----
+    stmt: Vec<Fp>, // STMT_LEN values in to_data order
+    // ---- the previous accumulator (base case: app state + placeholder VK) ----
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+    // ---- the wrap proof (Pallas: Fp coordinates) ----
+    wrap_vk_digest: Fp,
+    generic: (Fp, Fp),
+    psm: (Fp, Fp),
+    complete_add: (Fp, Fp),
+    mul: (Fp, Fp),
+    emul: (Fp, Fp),
+    endomul_scalar: (Fp, Fp),
+    coefficients: Vec<(Fp, Fp)>,
+    sigma_init: Vec<(Fp, Fp)>,
+    sigma_last: Vec<(Fp, Fp)>,
+    w_comm: Vec<(Fp, Fp)>,
+    z_comm: (Fp, Fp),
+    t_comm: Vec<(Fp, Fp)>,
+    lr: Vec<((Fp, Fp), (Fp, Fp))>,
+    delta: (Fp, Fp),
+    sg: (Fp, Fp),
+    h: (Fp, Fp),
+    // Type2 split pairs from step_witness
+    z1: (Fp, bool),
+    z2: (Fp, bool),
+    cip: (Fp, bool),
+    b: (Fp, bool),
+    perm2: (Fp, bool),
+    zsl2: (Fp, bool),
+    zds2: (Fp, bool),
+    // wrap proof transcript claims (raw 128-bit, from step_witness)
+    claimed_beta: Fp,
+    claimed_gamma: Fp,
+    claimed_alpha: Fp,
+    claimed_zeta: Fp,
+    claimed_digest: Fp, // Fq digest converted (fits whp)
+    claimed_bp: Vec<Fp>,
+    xi2: Fp, // the wrap proof's raw polyscale challenge
+    // x_hat constants: (L, correction) per packed slot + flag lagranges
+    packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))>,
+    flag_lagranges: Vec<(Fp, Fp)>,
+}
+
+struct Step2Circuit {
+    d: Step2Data,
+}
+
+impl SnarkyCircuit for Step2Circuit {
+    type Curve = Vesta;
+    type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
+    type PrivateInput = ();
+    /// the new accumulator digest (the width-1 statement, digest part)
+    type PublicInput = FieldVar<Fp>;
+    type PublicOutput = ();
+
+    fn circuit(
+        &self,
+        sys: &mut RunState<Fp>,
+        new_digest: Self::PublicInput,
+        _private: Option<&Self::PrivateInput>,
+    ) -> SnarkyResult<()> {
+        use groupmap::GroupMap;
+        use pickles::composition_types::PlonkVerificationKeyEvals;
+        use snarky::gadgets::curve::Point;
+
+        let d = &self.d;
+        let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+            Ok(Point::new(
+                sys.compute(loc!(), move |_| p.0)?,
+                sys.compute(loc!(), move |_| p.1)?,
+            ))
+        };
+        let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
+            let mut out = vec![];
+            for &p in ps {
+                out.push(mkpt(sys, p)?);
+            }
+            Ok(out)
+        };
+        let w1 = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
+        let wvec = |sys: &mut RunState<Fp>, vs: &[Fp]| -> SnarkyResult<Vec<FieldVar<Fp>>> {
+            let mut out = vec![];
+            for &v in vs {
+                out.push(sys.compute(loc!(), move |_| v)?);
+            }
+            Ok(out)
+        };
+        let cpt = |p: (Fp, Fp)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
+        let t2 = |sys: &mut RunState<Fp>,
+                  p: (Fp, bool)|
+         -> SnarkyResult<ShiftedScalar<Fp>> {
+            let half = sys.compute(loc!(), move |_| p.0)?;
+            let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+            Ok(ShiftedScalar::Type2(half, odd))
+        };
+
+        // ---- finalize params + evals ----
+        let mds: Vec<Vec<Fp>> = Vesta::sponge_params()
+            .mds
+            .iter()
+            .map(|r| r.to_vec())
+            .collect();
+        let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
+        let finalize_params = FinalizeParams {
+            tokens: &d.finalize_tokens,
+            domain: d.finalize_domain,
+            srs_log2: d.finalize_srs_log2,
+            endo: d.finalize_endo,
+            shifts: &d.finalize_shifts,
+            endo_r: *endo_p,
+            mds: &mds,
+            shift: ShiftKind::Type1,
+        };
+        let mut fe = d.evals_flat.iter();
+        let mut next_pe =
+            |sys: &mut RunState<Fp>| -> SnarkyResult<pickles::fr_sponge::PointEvalVar<Fp>> {
+                let &(a, b) = fe.next().unwrap();
+                Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+            };
+        let evals = pickles::fr_sponge::AbsorbEvalsVar {
+            z: next_pe(sys)?,
+            generic_selector: next_pe(sys)?,
+            poseidon_selector: next_pe(sys)?,
+            complete_add_selector: next_pe(sys)?,
+            mul_selector: next_pe(sys)?,
+            emul_selector: next_pe(sys)?,
+            endomul_scalar_selector: next_pe(sys)?,
+            w: (0..COLUMNS)
+                .map(|_| next_pe(sys))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            coefficients: (0..COLUMNS)
+                .map(|_| next_pe(sys))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            s: (0..PERMUTS - 1)
+                .map(|_| next_pe(sys))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        let finalize_evals = FinalizeEvals {
+            ft_eval1: w1(sys, d.ft_eval1)?,
+            public_evals: [wvec(sys, &d.public_evals[0])?, wvec(sys, &d.public_evals[1])?],
+            evals,
+        };
+
+        // ---- the wrap statement vars (to_data order) ----
+        let sv = wvec(sys, &d.stmt)?;
+        let stmt = WrapStatementVars {
+            combined_inner_product: sv[0].clone(),
+            b: sv[1].clone(),
+            zeta_to_srs_length: sv[2].clone(),
+            zeta_to_domain_size: sv[3].clone(),
+            perm: sv[4].clone(),
+            beta: sv[5].clone(),
+            gamma: sv[6].clone(),
+            alpha: sv[7].clone(),
+            zeta: sv[8].clone(),
+            xi: sv[9].clone(),
+            sponge_digest_before_evaluations: sv[10].clone(),
+            messages_for_next_wrap_proof_digest: sv[11].clone(),
+            bulletproof_challenges: sv[13..13 + ROUNDS].to_vec(),
+            branch_data: sv[13 + ROUNDS].clone(),
+            feature_flags: {
+                let mut v = vec![];
+                for _ in 0..8 {
+                    let b: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+                    v.push(b);
+                }
+                v
+            },
+        };
+        // note: sv[12] (the previous messages_for_next_step_proof digest) is
+        // recomputed in-circuit by verify_one from the accumulator below.
+
+        // ---- previous accumulator ----
+        let mut vk_pts = vec![];
+        for i in 0..28 {
+            let (px, py) = (
+                sys.compute(loc!(), move |_| d.wrap_vk_pts[i].0)?,
+                sys.compute(loc!(), move |_| d.wrap_vk_pts[i].1)?,
+            );
+            vk_pts.push(Point::new(px, py));
+        }
+        let mut it = vk_pts.into_iter();
+        let dlog_index = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
+            coefficients_comm: (0..15).map(|_| it.next().unwrap()).collect(),
+            generic_comm: it.next().unwrap(),
+            psm_comm: it.next().unwrap(),
+            complete_add_comm: it.next().unwrap(),
+            mul_comm: it.next().unwrap(),
+            emul_comm: it.next().unwrap(),
+            endomul_scalar_comm: it.next().unwrap(),
+        };
+        let after_index = pickles::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
+        let prev_app_state = wvec(sys, &d.prev_app_state)?;
+
+        // ---- the wrap proof pieces ----
+        let wrap_vk_digest = w1(sys, d.wrap_vk_digest)?;
+        let vk = VerificationKeyComm {
+            generic: mkpt(sys, d.generic)?,
+            psm: mkpt(sys, d.psm)?,
+            complete_add: mkpt(sys, d.complete_add)?,
+            mul: mkpt(sys, d.mul)?,
+            emul: mkpt(sys, d.emul)?,
+            endomul_scalar: mkpt(sys, d.endomul_scalar)?,
+            coefficients: mkpts(sys, &d.coefficients)?,
+            sigma_init: mkpts(sys, &d.sigma_init)?,
+            sigma_last: mkpts(sys, &d.sigma_last)?,
+        };
+        let messages = Messages {
+            w_comm: d
+                .w_comm
+                .iter()
+                .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            z_comm: vec![mkpt(sys, d.z_comm)?],
+            t_comm: d
+                .t_comm
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        let mut lr = vec![];
+        for &(l, r) in &d.lr {
+            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+        }
+        let h = cpt(d.h);
+        let openings = OpeningProof {
+            lr,
+            delta: mkpt(sys, d.delta)?,
+            z1: t2(sys, d.z1)?,
+            z2: t2(sys, d.z2)?,
+            challenge_polynomial_commitment: mkpt(sys, d.sg)?,
+            h_generator: h.clone(),
+        };
+        let advice = Advice {
+            combined_inner_product: t2(sys, d.cip)?,
+            b: t2(sys, d.b)?,
+            perm: t2(sys, d.perm2)?,
+            zeta_to_srs_length: t2(sys, d.zsl2)?,
+            zeta_to_domain_size: t2(sys, d.zds2)?,
+        };
+        let claimed = Claimed {
+            beta: w1(sys, d.claimed_beta)?,
+            gamma: w1(sys, d.claimed_gamma)?,
+            alpha: w1(sys, d.claimed_alpha)?,
+            zeta: w1(sys, d.claimed_zeta)?,
+            sponge_digest_before_evaluations: w1(sys, d.claimed_digest)?,
+            bulletproof_challenges: wvec(sys, &d.claimed_bp)?,
+        };
+        let xi2 = w1(sys, d.xi2)?;
+        let tru: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
+        let fals: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+
+        let packed_lagranges: Vec<(Point<Fp>, Point<Fp>)> = d
+            .packed_lagranges
+            .iter()
+            .map(|&(l, c)| (cpt(l), cpt(c)))
+            .collect();
+        let flag_lagranges: Vec<Point<Fp>> = d.flag_lagranges.iter().map(|&l| cpt(l)).collect();
+
+        let per_proof = PerProofInput {
+            finalize_params,
+            finalize_evals,
+            stmt,
+            sponge_after_index: after_index,
+            prev_app_state,
+            prev_challenge_polynomial_commitments: vec![],
+            prev_challenges: vec![],
+            vk_digest: wrap_vk_digest,
+            vk,
+            packed_lagranges,
+            flag_lagranges,
+            h_generator: h,
+            messages,
+            openings,
+            advice,
+            xi: xi2,
+            claimed,
+            should_finalize: tru.clone(),
+            must_verify: tru.clone(),
+            is_base_case: fals,
+        };
+
+        use pickles::composition_types::PlonkVerificationKeyEvals as _PVK;
+        let params = groupmap::BWParameters::<PallasParameters>::setup();
+        // the recursive step's own app state: reuse the previous one
+        let app_state = wvec(sys, &d.prev_app_state)?;
+        let digest = step_main::<Fp, PallasParameters>(
+            sys,
+            loc!(),
+            &app_state,
+            &dlog_index,
+            std::slice::from_ref(&per_proof),
+            &params,
+            pickles::endo::tick::base(),
+            <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
+            255,
+        )?;
+        digest.assert_equals(sys, loc!(), &new_digest)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn pickles_recursive_step() {
+    use mina_poseidon::poseidon::Sponge as _;
+    type FpSponge = mina_poseidon::poseidon::ArithmeticSponge<
+        Fp,
+        PlonkSpongeConstantsKimchi,
+        FULL_ROUNDS,
+    >;
+
+    // ---- 1. the base-case pickles proof ----
+    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
+        .map(|i| (Fp::from(1000 + i), Fp::from(2000 + i)))
+        .collect();
+    let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(7u64),
+        wrap_vk_pts.clone(),
+    );
+    let prev_app_state = vec![Fp::from(49u64)];
+
+    // ---- 2. finalize data: the base step proof's oracles + evaluations ----
+    let svi = &base.step_verifier.index;
+    let step_proof = &base.step_proof;
+    let step_public = vec![{
+        // the base statement digest, as the step proof's public input
+        fq_to_fp(base.statement[12])
+    }];
+    let lgr = svi.srs().get_lagrange_basis(svi.domain);
+    let com: Vec<_> = lgr.iter().take(svi.public).collect();
+    let elm: Vec<_> = step_public.iter().map(|s| -*s).collect();
+    let pc = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+    let step_public_comm = svi
+        .srs()
+        .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
+        .unwrap()
+        .commitment;
+    let so = step_proof
+        .oracles::<VestaBase, VestaScalar, _>(svi, &step_public_comm, Some(&step_public))
+        .unwrap();
+    let e = &step_proof.evals;
+    let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| {
+        (p.zeta[0], p.zeta_omega[0])
+    };
+    let mut evals_flat: Vec<(Fp, Fp)> = vec![
+        pair(&e.z),
+        pair(&e.generic_selector),
+        pair(&e.poseidon_selector),
+        pair(&e.complete_add_selector),
+        pair(&e.mul_selector),
+        pair(&e.emul_selector),
+        pair(&e.endomul_scalar_selector),
+    ];
+    evals_flat.extend(e.w.iter().map(pair));
+    evals_flat.extend(e.coefficients.iter().map(pair));
+    evals_flat.extend(e.s.iter().map(pair));
+    let step_srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
+
+    // ---- 3. the wrap proof's transcript witness (step_witness) ----
+    let wvi = &base.wrap_verifier.index;
+    let wrap_proof = &base.proof;
+    let wlgr = wvi.srs().get_lagrange_basis(wvi.domain);
+    let wcom: Vec<_> = wlgr.iter().take(wvi.public).collect();
+    let welm: Vec<_> = base.statement.iter().map(|s| -*s).collect();
+    let wpc = PolyComm::<Pallas>::multi_scalar_mul(&wcom, &welm);
+    let wrap_public_comm = wvi
+        .srs()
+        .mask_custom(wpc.clone(), &wpc.map(|_| Fq::one()))
+        .unwrap()
+        .commitment;
+    let wo = wrap_proof
+        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(&base.statement))
+        .unwrap();
+    let woracles = &wo.oracles;
+
+    // the wrap proof's perm scalar (over Fq)
+    let wcombined = wrap_proof.evals.combine(&wo.powers_of_eval_points_for_chunks);
+    let wrap_srs_log2 = u64::BITS - 1 - (wvi.max_poly_size as u64).leading_zeros();
+    let wdomain = pickles::plonk_checks::Domain::<Fq> {
+        log2_size: wvi.domain.log_size_of_group,
+        generator: wvi.domain.group_gen,
+    };
+    let wminimal = plonk::Minimal::<Fq, Fq, bool> {
+        alpha: woracles.alpha,
+        beta: woracles.beta,
+        gamma: woracles.gamma,
+        zeta: woracles.zeta,
+        joint_combiner: None,
+        feature_flags: Features::none(),
+    };
+    let wenv = pickles::plonk_checks::scalars_env::<Fq, bool>(&wdomain, wrap_srs_log2, &wminimal);
+    let wevals = pickles::plonk_checks::Evals {
+        w: wcombined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        s: wcombined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        z: (wcombined.z.zeta, wcombined.z.zeta_omega),
+    };
+    let wperm = pickles::plonk_checks::perm_scalar(&wenv, &wevals);
+
+    let sw = pickles::step_witness::step_witness(
+        wvi.max_poly_size as u64,
+        wvi.domain.size,
+        wvi.domain.group_gen,
+        wrap_proof,
+        &wrap_public_comm,
+        wvi.digest::<PallasBase>(),
+        wo.combined_inner_product,
+        woracles.zeta,
+        woracles.u,
+        wperm,
+    );
+
+    // the wrap proof's raw polyscale challenge (Fr-sponge replay over Fq)
+    let xi2_raw: Fq = {
+        use kimchi::plonk_sponge::FrSponge as _;
+        let params = Pallas::sponge_params();
+        let mut fr = PallasScalar::from(params);
+        fr.absorb(&wo.digest);
+        let pcd = PallasScalar::from(params).digest();
+        fr.absorb(&pcd);
+        fr.absorb(&wrap_proof.ft_eval1);
+        fr.absorb_multiple(&wo.public_evals[0]);
+        fr.absorb_multiple(&wo.public_evals[1]);
+        fr.absorb_evaluations(&wrap_proof.evals);
+        fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
+    };
+
+    // ---- 4. x_hat lagrange constants over the wrap domain ----
+    // widths for the wrap statement at ROUNDS=9, with the digest terms as
+    // 255-bit packed slots and 8 flag slots
+    let widths = pickles::step_verifier::wrap_statement_packed_widths(ROUNDS);
+    let packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            let l = wlgr[i].chunks[0];
+            let c = pickles::public_input::lagrange_correction(&l, n);
+            ((l.x, l.y), (c.x, c.y))
+        })
+        .collect();
+    let flag_lagranges: Vec<(Fp, Fp)> = (0..8)
+        .map(|i| {
+            let l = wlgr[widths.len() + i].chunks[0];
+            (l.x, l.y)
+        })
+        .collect();
+
+    // ---- 5. assemble the circuit data ----
+    let co = |p: &Pallas| (p.x, p.y);
+    let wh = wvi.srs().h;
+    let d = Step2Data {
+        finalize_tokens: svi.linearization.constant_term.clone(),
+        finalize_domain: svi.domain,
+        finalize_srs_log2: step_srs_log2,
+        finalize_endo: svi.endo,
+        finalize_shifts: svi.shift.to_vec(),
+        ft_eval1: step_proof.ft_eval1,
+        public_evals: so.public_evals.clone(),
+        evals_flat,
+        stmt: base.statement.iter().map(|&v| fq_to_fp(v)).collect(),
+        wrap_vk_pts,
+        prev_app_state: prev_app_state.clone(),
+        wrap_vk_digest: wvi.digest::<PallasBase>(),
+        generic: co(&wvi.generic_comm.chunks[0]),
+        psm: co(&wvi.psm_comm.chunks[0]),
+        complete_add: co(&wvi.complete_add_comm.chunks[0]),
+        mul: co(&wvi.mul_comm.chunks[0]),
+        emul: co(&wvi.emul_comm.chunks[0]),
+        endomul_scalar: co(&wvi.endomul_scalar_comm.chunks[0]),
+        coefficients: wvi
+            .coefficients_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_init: wvi.sigma_comm[..PERMUTS - 1]
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_last: vec![co(&wvi.sigma_comm[PERMUTS - 1].chunks[0])],
+        w_comm: wrap_proof
+            .commitments
+            .w_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        z_comm: co(&wrap_proof.commitments.z_comm.chunks[0]),
+        t_comm: wrap_proof
+            .commitments
+            .t_comm
+            .chunks
+            .iter()
+            .map(co)
+            .collect(),
+        lr: wrap_proof
+            .proof
+            .lr
+            .iter()
+            .map(|(l, r)| (co(l), co(r)))
+            .collect(),
+        delta: co(&wrap_proof.proof.delta),
+        sg: co(&wrap_proof.proof.sg),
+        h: (wh.x, wh.y),
+        z1: sw.z1,
+        z2: sw.z2,
+        cip: sw.cip,
+        b: sw.b,
+        perm2: sw.perm,
+        zsl2: sw.zeta_to_srs_length,
+        zds2: sw.zeta_to_domain_size,
+        claimed_beta: sw.beta_raw,
+        claimed_gamma: sw.gamma_raw,
+        claimed_alpha: sw.alpha_raw,
+        claimed_zeta: sw.zeta_raw,
+        claimed_digest: fq_to_fp(sw.sponge_digest),
+        claimed_bp: sw.bulletproof_prechallenges.clone(),
+        xi2: fq_to_fp(xi2_raw),
+        packed_lagranges,
+        flag_lagranges,
+    };
+
+    // ---- 6. the new accumulator digest (prover mirror) ----
+    let new_digest = {
+        let mut s = FpSponge::new(Vesta::sponge_params());
+        for (px, py) in &d.wrap_vk_pts {
+            s.absorb(&[*px]);
+            s.absorb(&[*py]);
+        }
+        for v in &prev_app_state {
+            s.absorb(&[*v]);
+        }
+        // the verified proof's challenge-polynomial commitment
+        s.absorb(&[d.sg.0]);
+        s.absorb(&[d.sg.1]);
+        // its freshly-derived bulletproof challenges (field form)
+        let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        for &raw in &sw.bulletproof_prechallenges {
+            let f = pickles::scalar_challenge::ScalarChallenge(raw).to_field(endo_p);
+            s.absorb(&[f]);
+        }
+        s.squeeze()
+    };
+
+    // ---- 7. prove the recursive step ----
+    let (mut pi2, ver2) = Step2Circuit { d }.compile_to_indexes().unwrap();
+    let (proof2, _) = pi2
+        .prove::<VestaBase, VestaScalar>(new_digest, (), true)
+        .unwrap();
+    ver2.verify::<VestaBase, VestaScalar>(proof2, new_digest, ());
+}
