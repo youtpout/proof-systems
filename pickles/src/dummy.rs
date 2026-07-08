@@ -251,14 +251,15 @@ mod tests {
 
     }
 
-    /// KNOWN FAILURE (root cause of the recursive-step folding failure):
-    /// folding an accumulator whose challenge polynomial is *smaller* than the
-    /// host proof's SRS fails kimchi's batch verification with `OpenProof`,
-    /// while same-size folding round-trips. To debug next: compare the batch
-    /// MSM terms (prover's padded b_poly vs the verifier's b0 / <s, G>
-    /// accounting) between the same-size and cross-size cases.
+    /// Regression test: folding an accumulator whose challenge polynomial is
+    /// *smaller* than the host proof's SRS used to fail kimchi's batch
+    /// verification — `RecursionChallenge::evals` returned two chunks
+    /// `[full, 0]` when `b_len < max_poly_size` (the `(max..b_len)` diff range
+    /// is empty) while the prover opened a single chunk, shifting the
+    /// polyscale powers. Fixed by returning a single chunk whenever the
+    /// polynomial fits (`max_poly_size >= b_len`); mina never hits this case
+    /// because its padded domains keep `b_len == max_poly_size`.
     #[test]
-    #[ignore = "cross-size accumulator folding fails in kimchi batch verify — under investigation"]
     fn recursion_challenge_cross_size_folding() {
         use ark_ff::One;
         use poly_commitment::commitment::PolyComm;

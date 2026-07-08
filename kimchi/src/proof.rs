@@ -467,7 +467,10 @@ impl<G: AffineRepr> RecursionChallenge<G> {
         (0..2)
             .map(|i| {
                 let full = b_poly(chals, evaluation_points[i]);
-                if max_poly_size == b_len {
+                if max_poly_size >= b_len {
+                    // the challenge polynomial fits in a single chunk (its
+                    // degree 2^rounds is at most the SRS size) — matching the
+                    // single-chunk commitment the prover opened
                     return vec![full];
                 }
                 let mut betaacc = G::ScalarField::one();

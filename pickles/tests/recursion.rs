@@ -123,9 +123,7 @@ struct Step2Circuit {
 
 impl SnarkyCircuit for Step2Circuit {
     type Curve = Vesta;
-    // TODO: raise to 1 and fold the accumulator once kimchi's cross-size
-    // folding is fixed (see dummy::tests::recursion_challenge_cross_size_folding)
-    const PREV_CHALLENGES: usize = 0;
+    const PREV_CHALLENGES: usize = 1;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     type PrivateInput = ();
     /// the width-1 step statement (see [`K2`])
@@ -660,12 +658,11 @@ fn pickles_recursive_step() {
     assert_eq!(stmt2.len(), K2);
     let stmt2_arr: [Fp; K2] = stmt2.try_into().unwrap();
 
-    // ---- 8. prove the recursive step ----
-    // The accumulator (sg_step1, chals_step1) is validated here out of
-    // circuit; folding it into the step2 proof's opening awaits the kimchi
-    // cross-size folding fix (see
-    // dummy::tests::recursion_challenge_cross_size_folding) — the in-circuit
-    // verification above is complete either way.
+    // ---- 8. prove the recursive step, folding the accumulator ----
+    // The step2 proof opens the base step proof's challenge-polynomial
+    // commitment (sg) with its field-form challenges: kimchi absorbs the
+    // commitment into the transcript and folds b(X) into the opening — the
+    // term the next wrap circuit's combined commitment covers as sg_old.
     let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
     let chals_step1: Vec<Fp> = base.statement[13..13 + ROUNDS]
         .iter()
@@ -680,9 +677,15 @@ fn pickles_recursive_step() {
             "sg_step1 == commit(b_poly(chals_step1))"
         );
     }
+    let recursion = kimchi::proof::RecursionChallenge {
+        chals: chals_step1,
+        comm: PolyComm {
+            chunks: vec![base.step_proof.proof.sg],
+        },
+    };
     let (mut pi2, ver2) = Step2Circuit { d }.compile_to_indexes().unwrap();
     let (proof2, _) = pi2
-        .prove::<VestaBase, VestaScalar>(stmt2_arr, (), true)
+        .prove_with_recursion::<VestaBase, VestaScalar>(stmt2_arr, (), true, vec![recursion])
         .unwrap();
     ver2.verify::<VestaBase, VestaScalar>(proof2, stmt2_arr, ());
 }
