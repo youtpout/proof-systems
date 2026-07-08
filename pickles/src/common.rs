@@ -1,5 +1,7 @@
 //! Common constants and helpers (port of pickles' `common.ml`).
 
+use crate::composition_types::ProofsVerified;
+
 /// The maximum number of previous proofs a step circuit can verify.
 /// (OCaml: `Nat.N2` — pickles is specialized to width 2.)
 pub const MAX_PROOFS_VERIFIED: usize = 2;
@@ -36,6 +38,20 @@ pub fn wrap_domain_log2(proofs_verified: usize) -> u32 {
     }
 }
 
+/// Inverse of [`wrap_domain_log2`] (`Common.actual_wrap_domain_size`): recovers
+/// the number of proofs verified by a padded wrap circuit domain.
+///
+/// # Panics
+/// Panics if `log2_domain_size` is not one of 13, 14 or 15.
+pub fn actual_wrap_domain_size(log2_domain_size: u32) -> ProofsVerified {
+    match log2_domain_size {
+        13 => ProofsVerified::N0,
+        14 => ProofsVerified::N1,
+        15 => ProofsVerified::N2,
+        _ => panic!("actual_wrap_domain_size: log2 domain size must be 13, 14 or 15"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +68,19 @@ mod tests {
     #[should_panic(expected = "proofs_verified must be 0, 1 or 2")]
     fn wrap_domain_log2_rejects_width_3() {
         let _ = wrap_domain_log2(3);
+    }
+
+    /// `actual_wrap_domain_size` reproduces `Common.actual_wrap_domain_size`.
+    #[test]
+    fn actual_wrap_domain_size_matches_ocaml() {
+        assert_eq!(actual_wrap_domain_size(13), ProofsVerified::N0);
+        assert_eq!(actual_wrap_domain_size(14), ProofsVerified::N1);
+        assert_eq!(actual_wrap_domain_size(15), ProofsVerified::N2);
+    }
+
+    #[test]
+    #[should_panic(expected = "log2 domain size must be 13, 14 or 15")]
+    fn actual_wrap_domain_size_rejects_other_domains() {
+        let _ = actual_wrap_domain_size(12);
     }
 }
