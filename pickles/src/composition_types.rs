@@ -453,6 +453,53 @@ pub struct MessagesForNextStepProof<Comm, S, Comms, BpChals> {
     pub old_bulletproof_challenges: BpChals,
 }
 
+impl<Comm, S, F: Clone> MessagesForNextStepProof<Comm, S, Vec<Comm>, Vec<Vec<F>>> {
+    /// `Messages_for_next_step_proof.to_field_elements`: verification key
+    /// commitments first, then app state, then each challenge-polynomial
+    /// commitment followed by its bulletproof challenges.
+    pub fn to_field_elements(
+        &self,
+        app_state_to_field_elements: impl Fn(&S) -> Vec<F>,
+        index_comm_to_field_elements: impl Fn(&Comm) -> Vec<F>,
+        comm_to_field_elements: impl Fn(&Comm) -> Vec<F>,
+    ) -> Vec<F> {
+        let mut out = Vec::new();
+        for comm in self.dlog_plonk_index.to_list() {
+            out.extend(index_comm_to_field_elements(comm));
+        }
+        out.extend(
+            self.to_field_elements_without_index(
+                app_state_to_field_elements,
+                comm_to_field_elements,
+            ),
+        );
+        out
+    }
+
+    /// `Messages_for_next_step_proof.to_field_elements_without_index`.
+    pub fn to_field_elements_without_index(
+        &self,
+        app_state_to_field_elements: impl Fn(&S) -> Vec<F>,
+        comm_to_field_elements: impl Fn(&Comm) -> Vec<F>,
+    ) -> Vec<F> {
+        assert_eq!(
+            self.challenge_polynomial_commitments.len(),
+            self.old_bulletproof_challenges.len(),
+            "MessagesForNextStepProof: one challenge vector per commitment"
+        );
+        let mut out = app_state_to_field_elements(&self.app_state);
+        for (comm, chals) in self
+            .challenge_polynomial_commitments
+            .iter()
+            .zip(&self.old_bulletproof_challenges)
+        {
+            out.extend(comm_to_field_elements(comm));
+            out.extend(chals.iter().cloned());
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,6 +586,61 @@ mod tests {
     }
 
     #[test]
+    fn messages_for_next_step_to_field_elements_order() {
+        let comm = |i| (Fq::from(i), Fq::from(100 + i));
+        let msg = MessagesForNextStepProof {
+            app_state: vec![Fq::from(1u64), Fq::from(2u64)],
+            dlog_plonk_index: PlonkVerificationKeyEvals {
+                sigma_comm: (10..17).map(comm).collect(),
+                coefficients_comm: (20..35).map(comm).collect(),
+                generic_comm: comm(40),
+                psm_comm: comm(41),
+                complete_add_comm: comm(42),
+                mul_comm: comm(43),
+                emul_comm: comm(44),
+                endomul_scalar_comm: comm(45),
+            },
+            challenge_polynomial_commitments: vec![comm(50), comm(51)],
+            old_bulletproof_challenges: vec![
+                vec![Fq::from(3u64), Fq::from(4u64)],
+                vec![Fq::from(5u64), Fq::from(6u64)],
+            ],
+        };
+        let app = |xs: &Vec<Fq>| xs.clone();
+        let point = |(x, y): &(Fq, Fq)| vec![*x, *y];
+
+        let without = msg.to_field_elements_without_index(app, point);
+        assert_eq!(
+            without,
+            vec![
+                Fq::from(1u64),
+                Fq::from(2u64),
+                Fq::from(50u64),
+                Fq::from(150u64),
+                Fq::from(3u64),
+                Fq::from(4u64),
+                Fq::from(51u64),
+                Fq::from(151u64),
+                Fq::from(5u64),
+                Fq::from(6u64),
+            ]
+        );
+
+        let with = msg.to_field_elements(app, point, point);
+        let index_len = (7 + 15 + 6) * 2;
+        assert_eq!(&with[index_len..], without.as_slice());
+        assert_eq!(
+            &with[..4],
+            &[
+                Fq::from(10u64),
+                Fq::from(110u64),
+                Fq::from(11u64),
+                Fq::from(111u64)
+            ]
+        );
+    }
+
+    #[test]
     fn branch_data_pack_unpack_round_trips() {
         for proofs_verified in [ProofsVerified::N0, ProofsVerified::N1, ProofsVerified::N2] {
             let branch = BranchData {
@@ -579,8 +681,8 @@ mod tests {
         };
         let fe = wrap::wrap_statement_to_field_elements(
             &plonk,
-            Fq::from(100u64), // combined_inner_product
-            Fq::from(101u64), // b
+            Fq::from(100u64),                   // combined_inner_product
+            Fq::from(101u64),                   // b
             &ScalarChallenge(Fq::from(109u64)), // xi
             &bp,
             &branch,
@@ -647,7 +749,10 @@ mod tests {
         expected.extend((200..200 + crate::common::TOCK_ROUNDS as u64).map(Fq::from));
         expected.push(Fq::from(1u64)); // should_finalize
         assert_eq!(unfinalized, expected);
-        assert_eq!(unfinalized.len(), 5 + 1 + 2 + 3 + crate::common::TOCK_ROUNDS + 1);
+        assert_eq!(
+            unfinalized.len(),
+            5 + 1 + 2 + 3 + crate::common::TOCK_ROUNDS + 1
+        );
 
         // statement = unfinalized[N] ++ msgs_next_step ++ msgs_next_wrap[N]
         let stmt = step::step_statement_to_field_elements(
