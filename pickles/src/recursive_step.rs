@@ -119,41 +119,42 @@ pub fn build_step_statement<const WRAP_ROUNDS: usize>(
 pub fn width1_step_statement_slots<const WRAP_ROUNDS: usize>(
     statement: &[Fp],
 ) -> Vec<WrapStepStatementSlot> {
-    assert_eq!(statement.len(), width1_step_statement_len(WRAP_ROUNDS));
+    step_statement_slots::<WRAP_ROUNDS>(statement, 1)
+}
 
+pub fn step_statement_slots<const WRAP_ROUNDS: usize>(
+    statement: &[Fp],
+    proofs: usize,
+) -> Vec<WrapStepStatementSlot> {
+    assert_eq!(statement.len(), step_statement_len(proofs, WRAP_ROUNDS));
     let mut slots = Vec::with_capacity(statement.len());
-    let mut push_type2 = |i: usize| {
+    let per_proof = 17 + WRAP_ROUNDS;
+    for proof in 0..proofs {
+        let base = proof * per_proof;
+        for i in (base..base + 10).step_by(2) {
+            slots.push(WrapStepStatementSlot::Packed {
+                value: embed_fp_to_fq(statement[i]),
+                num_bits: 255,
+            });
+            slots.push(WrapStepStatementSlot::Bool(!statement[i + 1].is_zero()));
+        }
         slots.push(WrapStepStatementSlot::Packed {
-            value: embed_fp_to_fq(statement[i]),
+            value: embed_fp_to_fq(statement[base + 10]),
             num_bits: 255,
         });
-        slots.push(WrapStepStatementSlot::Bool(!statement[i + 1].is_zero()));
-    };
-    for i in (0..10).step_by(2) {
-        push_type2(i);
+        for i in base + 11..base + 16 + WRAP_ROUNDS {
+            slots.push(WrapStepStatementSlot::Packed {
+                value: embed_fp_to_fq(statement[i]),
+                num_bits: 128,
+            });
+        }
+        slots.push(WrapStepStatementSlot::Bool(
+            !statement[base + 16 + WRAP_ROUNDS].is_zero(),
+        ));
     }
-    slots.push(WrapStepStatementSlot::Packed {
-        value: embed_fp_to_fq(statement[10]),
-        num_bits: 255,
-    });
-    for &i in &[11usize, 12, 13, 14, 15] {
+    for &value in &statement[proofs * per_proof..] {
         slots.push(WrapStepStatementSlot::Packed {
-            value: embed_fp_to_fq(statement[i]),
-            num_bits: 128,
-        });
-    }
-    for i in 16..16 + WRAP_ROUNDS {
-        slots.push(WrapStepStatementSlot::Packed {
-            value: embed_fp_to_fq(statement[i]),
-            num_bits: 128,
-        });
-    }
-    slots.push(WrapStepStatementSlot::Bool(
-        !statement[16 + WRAP_ROUNDS].is_zero(),
-    ));
-    for i in 17 + WRAP_ROUNDS..19 + WRAP_ROUNDS {
-        slots.push(WrapStepStatementSlot::Packed {
-            value: embed_fp_to_fq(statement[i]),
+            value: embed_fp_to_fq(value),
             num_bits: 255,
         });
     }
@@ -1913,5 +1914,24 @@ mod tests {
                 }
             );
         }
+
+        let width2_statement: Vec<Fp> = (0..step_statement_len(2, WRAP_ROUNDS))
+            .map(|i| Fp::from((i + 1) as u64))
+            .collect();
+        let width2 = step_statement_slots::<WRAP_ROUNDS>(&width2_statement, 2);
+        let segment = 17 + WRAP_ROUNDS;
+        assert_eq!(width2.len(), width2_statement.len());
+        assert!(matches!(
+            width2[segment],
+            WrapStepStatementSlot::Packed { num_bits: 255, .. }
+        ));
+        assert!(matches!(
+            width2[segment + 1],
+            WrapStepStatementSlot::Bool(true)
+        ));
+        assert!(matches!(
+            width2[2 * segment],
+            WrapStepStatementSlot::Packed { num_bits: 255, .. }
+        ));
     }
 }
