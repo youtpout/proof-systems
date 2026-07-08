@@ -17,11 +17,12 @@
 //! # Cross-field embedding
 //!
 //! The scalars belong to the *other* curve's scalar field, but the shifted
-//! representative is carried in the verifier circuit's field. For the Pasta
-//! cycle this is lossless in the wrap→step direction: `Fp`'s modulus is larger
-//! than `Fq`'s, so any `Fq` representative (an integer `< q < p`) embeds into
-//! `Fp` without reduction. [`embed_repr`] performs that integer-preserving
-//! embedding.
+//! representative is carried in the verifier circuit's field. On the Pasta
+//! cycle **Fq (Tock) > Fp (Tick)**: a Tick (`Fp`) representative always fits
+//! in `Fq` (Type1, single element — the wrap side), while a Tock (`Fq`) value
+//! does *not* fit in `Fp` and is carried as the Type2 split pair
+//! `(s_div_2, s_odd)` on the step side ([`split_repr`]). [`embed_repr`] is
+//! the integer-preserving embedding for values known to fit.
 
 use ark_ff::{BigInteger, PrimeField};
 
@@ -52,12 +53,31 @@ pub fn type2_of_field<F: PrimeField>(s: F) -> F {
     s - two_to_size::<F>()
 }
 
-/// Embed a shifted representative from a smaller field `S` into the circuit
-/// field `F` by preserving its integer value. Sound when `S`'s modulus is at
-/// most `F`'s (e.g. `Fq` → `Fp` on the Pasta cycle), which holds for every
-/// shifted representative crossing wrap→step.
+/// Embed a representative from field `S` into field `F` by preserving its
+/// integer value. Sound when the value is below `F`'s modulus: always for
+/// `Fp` → `Fq` (p < q on Pasta); for `Fq` → `Fp` only when the value happens
+/// to fit (a uniformly random `Fq` element exceeds `p` with probability
+/// `(q-p)/q ≈ 2^-158` — Tock values that must cross reliably use
+/// [`split_repr`] instead).
 pub fn embed_repr<S: PrimeField, F: PrimeField>(repr: S) -> F {
     F::from_le_bytes_mod_order(&repr.into_bigint().to_bytes_le())
+}
+
+/// Split a value of the *bigger* field `S` into the Type2 carry pair for the
+/// smaller circuit field `F`: `(bits[1..] packed, bit 0)` — i.e.
+/// `value = 2·s_div_2 + s_odd` with `s_div_2 < 2^254` always fitting `F`.
+/// This is kimchi's `absorb_fr` split and pickles' `Shifted_value.Type2`
+/// in-circuit representation.
+pub fn split_repr<S: PrimeField, F: PrimeField>(value: S) -> (F, bool) {
+    let bits = value.into_bigint().to_bits_le();
+    let mut half = F::zero();
+    for &b in bits[1..].iter().rev() {
+        half = half + half;
+        if b {
+            half += F::one();
+        }
+    }
+    (half, bits[0])
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ pub mod shifted_value;
 pub mod sponge;
 pub mod step_main;
 pub mod step_verifier;
+pub mod step_witness;
 pub mod wrap;
 pub mod wrap_deferred_values;
 pub mod wrap_main;
