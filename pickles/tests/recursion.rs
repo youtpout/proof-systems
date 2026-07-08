@@ -123,6 +123,9 @@ struct Step2Circuit {
 
 impl SnarkyCircuit for Step2Circuit {
     type Curve = Vesta;
+    // TODO: raise to 1 and fold the accumulator once kimchi's cross-size
+    // folding is fixed (see dummy::tests::recursion_challenge_cross_size_folding)
+    const PREV_CHALLENGES: usize = 0;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     type PrivateInput = ();
     /// the width-1 step statement (see [`K2`])
@@ -384,7 +387,6 @@ impl SnarkyCircuit for Step2Circuit {
             is_base_case: fals,
         };
 
-        use pickles::composition_types::PlonkVerificationKeyEvals as _PVK;
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         // the recursive step's own app state: reuse the previous one
         let app_state = wvec(sys, &d.prev_app_state)?;
@@ -659,9 +661,28 @@ fn pickles_recursive_step() {
     let stmt2_arr: [Fp; K2] = stmt2.try_into().unwrap();
 
     // ---- 8. prove the recursive step ----
+    // The accumulator (sg_step1, chals_step1) is validated here out of
+    // circuit; folding it into the step2 proof's opening awaits the kimchi
+    // cross-size folding fix (see
+    // dummy::tests::recursion_challenge_cross_size_folding) — the in-circuit
+    // verification above is complete either way.
+    let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+    let chals_step1: Vec<Fp> = base.statement[13..13 + ROUNDS]
+        .iter()
+        .map(|&raw| {
+            pickles::scalar_challenge::ScalarChallenge(fq_to_fp(raw)).to_field(endo_p)
+        })
+        .collect();
+    {
+        let sg_check = pickles::dummy::compute_sg(svi.srs(), &chals_step1);
+        assert_eq!(
+            sg_check, base.step_proof.proof.sg,
+            "sg_step1 == commit(b_poly(chals_step1))"
+        );
+    }
     let (mut pi2, ver2) = Step2Circuit { d }.compile_to_indexes().unwrap();
     let (proof2, _) = pi2
-        .prove::<VestaBase, VestaScalar>(stmt2_arr.clone(), (), true)
+        .prove::<VestaBase, VestaScalar>(stmt2_arr, (), true)
         .unwrap();
     ver2.verify::<VestaBase, VestaScalar>(proof2, stmt2_arr, ());
 }

@@ -326,6 +326,12 @@ pub trait SnarkyCircuit: Sized {
     type Curve: KimchiCurve<FULL_ROUNDS>;
     type Proof: OpenProof<Self::Curve, FULL_ROUNDS>;
 
+    /// The number of recursion challenges (accumulated challenge-polynomial
+    /// commitments) every proof of this circuit carries — baked into the
+    /// verifier index. Proofs must pass exactly this many to
+    /// [`ProverIndexWrapper::prove_with_recursion`].
+    const PREV_CHALLENGES: usize = 0;
+
     /// The private input used by the circuit.
     type PrivateInput;
 
@@ -364,6 +370,7 @@ pub trait SnarkyCircuit: Sized {
         // create constraint system
         let cs = ConstraintSystem::create(compiled_circuit.gates.clone())
             .public(compiled_circuit.public_input_size)
+            .prev_challenges(Self::PREV_CHALLENGES)
             .build()
             .unwrap();
 

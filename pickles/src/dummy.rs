@@ -97,4 +97,225 @@ mod tests {
         assert_eq!(sg, expected.into_affine());
         assert!(sg.is_on_curve());
     }
+
+    use mina_curves::pasta::VestaParameters;
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+
+    type BaseSponge = DefaultFqSponge<
+        VestaParameters,
+        PlonkSpongeConstantsKimchi,
+        { crate::common::FULL_ROUNDS },
+    >;
+    type ScalarSponge =
+        DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, { crate::common::FULL_ROUNDS }>;
+
+    struct SmallCircuit {}
+    impl SnarkyCircuit for SmallCircuit {
+        type Curve = Vesta;
+        const PREV_CHALLENGES: usize = 1;
+        type Proof = poly_commitment::ipa::OpeningProof<Self::Curve, { crate::common::FULL_ROUNDS }>;
+        type PrivateInput = Fp;
+        type PublicInput = FieldVar<Fp>;
+        type PublicOutput = ();
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<()> {
+            let x: FieldVar<Fp> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let _ = sys.poseidon(loc!(), (x, z));
+            Ok(())
+        }
+    }
+
+    /// A proof carrying a dummy recursion challenge (Ro challenges + their
+    /// challenge-polynomial commitment) proves and verifies — the accumulator
+    /// folding pipeline (`prove_with_recursion` -> `create_recursive` ->
+    /// kimchi batch verification) works end-to-end.
+    #[test]
+    fn recursion_challenge_folding_round_trips() {
+        use poly_commitment::commitment::PolyComm;
+
+        let (mut pi, ver) = SmallCircuit {}.compile_to_indexes().unwrap();
+        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
+            { crate::common::FULL_ROUNDS },
+        >>::endos()
+        .1;
+        // as many dummy challenges as the prover SRS supports (the challenge
+        // polynomial has 2^rounds coefficients and must fit in one chunk)
+        let rounds = {
+            use poly_commitment::SRS as _;
+            (u32::BITS - 1 - (pi.index.srs.size() as u32).leading_zeros()) as usize
+        };
+        let mut chal = crate::ro::Ro::chal();
+        let dummy = ipa_challenges::<Fp>(&mut chal, rounds, endo_step);
+        let sg = compute_sg(&pi.index.srs, &dummy.challenges_computed);
+        let recursion = kimchi::proof::RecursionChallenge {
+            chals: dummy.challenges_computed,
+            comm: PolyComm { chunks: vec![sg] },
+        };
+
+        let x = Fp::from(3u64);
+        let z = x * x;
+        let (proof, _) = pi
+            .prove_with_recursion::<BaseSponge, ScalarSponge>(z, x, true, vec![recursion])
+            .unwrap();
+        ver.verify::<BaseSponge, ScalarSponge>(proof, z, ());
+    }
+
+    /// Same, but the accumulator comes from a *real* previous proof of the
+    /// same circuit: its transcript-replayed IPA challenges and its sg —
+    /// exactly the recursive-step scenario.
+    #[test]
+    fn recursion_challenge_from_real_proof_round_trips() {
+        use ark_ff::{BigInteger, One, PrimeField};
+        use poly_commitment::commitment::{shift_scalar, PolyComm};
+        use poly_commitment::SRS as _;
+
+        let (mut pi, ver) = SmallCircuit {}.compile_to_indexes().unwrap();
+        let vi = &ver.index;
+        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
+            { crate::common::FULL_ROUNDS },
+        >>::endos()
+        .1;
+
+        // proof #0 (no accumulator)
+        let x = Fp::from(5u64);
+        let z = x * x;
+        let (proof0, _) = pi
+            .prove_with_recursion::<BaseSponge, ScalarSponge>(z, x, true, vec![])
+            .unwrap();
+
+        // hmm: the index expects 1 prev challenge — proof #0 with zero would
+        // fail verification, so give it a dummy accumulator too
+        let _ = proof0;
+        let rounds = (u32::BITS - 1 - (pi.index.srs.size() as u32).leading_zeros()) as usize;
+        let mut chal = crate::ro::Ro::chal();
+        let dummy = ipa_challenges::<Fp>(&mut chal, rounds, endo_step);
+        let sg0 = compute_sg(&pi.index.srs, &dummy.challenges_computed);
+        let rec0 = kimchi::proof::RecursionChallenge {
+            chals: dummy.challenges_computed.clone(),
+            comm: PolyComm { chunks: vec![sg0] },
+        };
+        let (proof0, _) = pi
+            .prove_with_recursion::<BaseSponge, ScalarSponge>(z, x, true, vec![rec0])
+            .unwrap();
+
+        // extract proof #0's real IPA challenges via the kimchi transcript
+        let public_input = vec![z];
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let pc = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
+            .unwrap()
+            .commitment;
+        let o = proof0
+            .oracles::<BaseSponge, ScalarSponge, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+        let chals = {
+            use mina_poseidon::FqSponge as _;
+            let mut sp = o.fq_sponge.clone();
+            sp.absorb_fr(&[shift_scalar::<Vesta>(o.combined_inner_product)]);
+            let _t = sp.challenge_fq();
+            proof0.proof.challenges::<BaseSponge>(&endo_step, &mut sp).chal
+        };
+        // consistency: sg == commit(b_poly(chals))
+        assert_eq!(
+            compute_sg(&pi.index.srs, &chals),
+            proof0.proof.sg,
+            "sg0 == commit(b_poly(chals))"
+        );
+        let recursion = kimchi::proof::RecursionChallenge {
+            chals,
+            comm: PolyComm {
+                chunks: vec![proof0.proof.sg],
+            },
+        };
+
+        // proof #1 folds proof #0's accumulator
+        let (proof1, _) = pi
+            .prove_with_recursion::<BaseSponge, ScalarSponge>(z, x, true, vec![recursion])
+            .unwrap();
+        ver.verify::<BaseSponge, ScalarSponge>(proof1, z, ());
+        let _ = Fp::from_le_bytes_mod_order(&Fp::one().into_bigint().to_bytes_le());
+
+    }
+
+    /// KNOWN FAILURE (root cause of the recursive-step folding failure):
+    /// folding an accumulator whose challenge polynomial is *smaller* than the
+    /// host proof's SRS fails kimchi's batch verification with `OpenProof`,
+    /// while same-size folding round-trips. To debug next: compare the batch
+    /// MSM terms (prover's padded b_poly vs the verifier's b0 / <s, G>
+    /// accounting) between the same-size and cross-size cases.
+    #[test]
+    #[ignore = "cross-size accumulator folding fails in kimchi batch verify — under investigation"]
+    fn recursion_challenge_cross_size_folding() {
+        use ark_ff::One;
+        use poly_commitment::commitment::PolyComm;
+        use poly_commitment::SRS as _;
+
+        let (pi, _ver) = SmallCircuit {}.compile_to_indexes().unwrap();
+        let endo_step = <Vesta as kimchi::curve::KimchiCurve<
+            { crate::common::FULL_ROUNDS },
+        >>::endos()
+        .1;
+        let rounds = (u32::BITS - 1 - (pi.index.srs.size() as u32).leading_zeros()) as usize;
+        let mut chal = crate::ro::Ro::chal();
+        let dummy = ipa_challenges::<Fp>(&mut chal, rounds, endo_step);
+        let sg0 = compute_sg(&pi.index.srs, &dummy.challenges_computed);
+        let recursion = kimchi::proof::RecursionChallenge {
+            chals: dummy.challenges_computed,
+            comm: PolyComm { chunks: vec![sg0] },
+        };
+
+        let (mut big_pi, big_ver) = BiggerCircuit {}.compile_to_indexes().unwrap();
+        assert!(
+            big_pi.index.srs.size() > pi.index.srs.size(),
+            "bigger circuit must have a bigger SRS"
+        );
+        let x = Fp::from(5u64);
+        let z = x * x;
+        let _ = Fp::one();
+        let (big_proof, _) = big_pi
+            .prove_with_recursion::<BaseSponge, ScalarSponge>(z, x, true, vec![recursion])
+            .unwrap();
+        big_ver.verify::<BaseSponge, ScalarSponge>(big_proof, z, ());
+    }
+
+    /// Same statement, more rows (a bigger domain/SRS than [`SmallCircuit`]).
+    struct BiggerCircuit {}
+    impl SnarkyCircuit for BiggerCircuit {
+        type Curve = Vesta;
+        const PREV_CHALLENGES: usize = 1;
+        type Proof =
+            poly_commitment::ipa::OpeningProof<Self::Curve, { crate::common::FULL_ROUNDS }>;
+        type PrivateInput = Fp;
+        type PublicInput = FieldVar<Fp>;
+        type PublicOutput = ();
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            z: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<()> {
+            let x: FieldVar<Fp> = sys.compute(loc!(), |_| *private.unwrap())?;
+            let xx = x.mul(&x, None, loc!(), sys)?;
+            xx.assert_equals(sys, loc!(), &z)?;
+            let mut acc = (x, z);
+            for _ in 0..60 {
+                acc = sys.poseidon(loc!(), acc);
+            }
+            Ok(())
+        }
+    }
 }

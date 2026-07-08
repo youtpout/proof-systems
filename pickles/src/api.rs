@@ -374,6 +374,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         &step_proof,
         &public_comm,
         svi.digest::<VestaBase>(),
+        &[],
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,

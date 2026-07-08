@@ -75,6 +75,7 @@ pub fn wrap_witness(
     proof: &ProverProof<Vesta, OpeningProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
     public_comm: &poly_commitment::commitment::PolyComm<Vesta>,
     vk_digest: Fq,
+    sg_olds: &[Vesta],
     combined_inner_product: Fp,
     zeta: Fp,
     evalscale: Fp,
@@ -89,8 +90,13 @@ pub fn wrap_witness(
         s.absorb(&[p.y]);
     };
 
-    // oracle transcript (base subset: no recursion commitments, no lookups)
+    // oracle transcript: vk digest, then the accumulated challenge-polynomial
+    // commitments (kimchi absorbs the recursion challenges' commitments right
+    // after the index digest), then the public commitment and the messages
     s.absorb(&[vk_digest]);
+    for sg in sg_olds {
+        abpt(&mut s, sg);
+    }
     for c in &public_comm.chunks {
         abpt(&mut s, c);
     }
@@ -258,6 +264,7 @@ mod tests {
             &proof,
             &public_comm,
             vi.digest::<BaseSponge>(),
+            &[],
             o.combined_inner_product,
             oracles.zeta,
             oracles.u,
