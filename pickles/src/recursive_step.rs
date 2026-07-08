@@ -43,6 +43,43 @@ pub fn embed_fq_to_fp(x: Fq) -> Fp {
     Fp::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
 }
 
+pub fn type2_pair_to_fields(p: (Fp, bool)) -> [Fp; 2] {
+    [p.0, if p.1 { Fp::one() } else { Fp::from(0u64) }]
+}
+
+pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>(
+    witness: &crate::step_witness::StepWitness,
+    xi_raw: Fq,
+    messages_for_next_step_digest: Fp,
+    messages_for_next_wrap_digest: Fp,
+    should_finalize: bool,
+) -> [Fp; PUBLIC_INPUT_LEN] {
+    assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
+    assert_eq!(witness.bulletproof_prechallenges.len(), WRAP_ROUNDS);
+
+    let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
+    statement.extend(type2_pair_to_fields(witness.cip));
+    statement.extend(type2_pair_to_fields(witness.b));
+    statement.extend(type2_pair_to_fields(witness.zeta_to_srs_length));
+    statement.extend(type2_pair_to_fields(witness.zeta_to_domain_size));
+    statement.extend(type2_pair_to_fields(witness.perm));
+    statement.push(embed_fq_to_fp(witness.sponge_digest));
+    statement.push(witness.beta_raw);
+    statement.push(witness.gamma_raw);
+    statement.push(witness.alpha_raw);
+    statement.push(witness.zeta_raw);
+    statement.push(embed_fq_to_fp(xi_raw));
+    statement.extend(witness.bulletproof_prechallenges.iter().copied());
+    statement.push(if should_finalize {
+        Fp::one()
+    } else {
+        Fp::from(0u64)
+    });
+    statement.push(messages_for_next_step_digest);
+    statement.push(messages_for_next_wrap_digest);
+    statement.try_into().unwrap_or_else(|_| unreachable!())
+}
+
 /// Plain witness data for a recursive step circuit that verifies one wrap
 /// proof and folds it into the next step accumulator.
 pub struct RecursiveStepData {
@@ -304,24 +341,13 @@ pub fn prepare_recursive_step<
         &[chals_step1.clone()],
     );
 
-    let pair = |p: (Fp, bool)| [p.0, if p.1 { Fp::one() } else { Fp::from(0u64) }];
-    let mut statement: Vec<Fp> = vec![];
-    statement.extend(pair(sw.cip));
-    statement.extend(pair(sw.b));
-    statement.extend(pair(sw.zeta_to_srs_length));
-    statement.extend(pair(sw.zeta_to_domain_size));
-    statement.extend(pair(sw.perm));
-    statement.push(embed_fq_to_fp(sw.sponge_digest));
-    statement.push(sw.beta_raw);
-    statement.push(sw.gamma_raw);
-    statement.push(sw.alpha_raw);
-    statement.push(sw.zeta_raw);
-    statement.push(embed_fq_to_fp(xi2_raw));
-    statement.extend(sw.bulletproof_prechallenges.iter().copied());
-    statement.push(Fp::one());
-    statement.push(new_digest);
-    statement.push(Fp::from(0u64));
-    assert_eq!(statement.len(), PUBLIC_INPUT_LEN);
+    let statement = build_width1_step_statement::<WRAP_ROUNDS, PUBLIC_INPUT_LEN>(
+        &sw,
+        xi2_raw,
+        new_digest,
+        Fp::from(0u64),
+        true,
+    );
 
     let recursion = kimchi::proof::RecursionChallenge {
         chals: chals_step1,
@@ -332,7 +358,7 @@ pub fn prepare_recursive_step<
 
     PreparedRecursiveStep {
         data,
-        statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        statement,
         recursion,
     }
 }
@@ -607,5 +633,68 @@ impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN:
         )?;
         digest.assert_equals(sys, loc!(), &stmt2[17 + WRAP_ROUNDS])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::step_witness::StepWitness;
+
+    #[test]
+    fn width1_step_statement_layout() {
+        const WRAP_ROUNDS: usize = 3;
+        const LEN: usize = width1_step_statement_len(WRAP_ROUNDS);
+        let witness = StepWitness {
+            cip: (Fp::from(1u64), false),
+            b: (Fp::from(2u64), true),
+            zeta_to_srs_length: (Fp::from(3u64), false),
+            zeta_to_domain_size: (Fp::from(4u64), true),
+            perm: (Fp::from(5u64), false),
+            sponge_digest: Fq::from(6u64),
+            beta_raw: Fp::from(7u64),
+            gamma_raw: Fp::from(8u64),
+            alpha_raw: Fp::from(9u64),
+            zeta_raw: Fp::from(10u64),
+            bulletproof_prechallenges: vec![Fp::from(11u64), Fp::from(12u64), Fp::from(13u64)],
+            z1: (Fp::from(14u64), false),
+            z2: (Fp::from(15u64), true),
+        };
+
+        let statement = build_width1_step_statement::<WRAP_ROUNDS, LEN>(
+            &witness,
+            Fq::from(16u64),
+            Fp::from(17u64),
+            Fp::from(18u64),
+            true,
+        );
+
+        assert_eq!(
+            statement,
+            [
+                Fp::from(1u64),
+                Fp::from(0u64),
+                Fp::from(2u64),
+                Fp::one(),
+                Fp::from(3u64),
+                Fp::from(0u64),
+                Fp::from(4u64),
+                Fp::one(),
+                Fp::from(5u64),
+                Fp::from(0u64),
+                Fp::from(6u64),
+                Fp::from(7u64),
+                Fp::from(8u64),
+                Fp::from(9u64),
+                Fp::from(10u64),
+                Fp::from(16u64),
+                Fp::from(11u64),
+                Fp::from(12u64),
+                Fp::from(13u64),
+                Fp::one(),
+                Fp::from(17u64),
+                Fp::from(18u64),
+            ]
+        );
     }
 }
