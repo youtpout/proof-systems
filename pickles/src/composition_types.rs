@@ -46,6 +46,45 @@ impl<Bool: Clone> Features<Bool> {
             runtime_tables: f(&self.runtime_tables),
         }
     }
+
+    /// `Plonk_types.Features.to_data` order.
+    pub fn to_data(&self) -> [Bool; 8] {
+        [
+            self.range_check0.clone(),
+            self.range_check1.clone(),
+            self.foreign_field_add.clone(),
+            self.foreign_field_mul.clone(),
+            self.xor.clone(),
+            self.rot.clone(),
+            self.lookup.clone(),
+            self.runtime_tables.clone(),
+        ]
+    }
+
+    /// Inverse of [`Features::to_data`].
+    pub fn from_data(
+        [
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup,
+            runtime_tables,
+        ]: [Bool; 8],
+    ) -> Self {
+        Self {
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup,
+            runtime_tables,
+        }
+    }
 }
 
 impl Features<bool> {
@@ -246,17 +285,7 @@ pub mod wrap {
         // index (1): branch_data
         out.push(branch_data.pack::<F>());
         // feature_flags (8) — Plonk_types.Features.to_data order
-        let ff = &plonk.feature_flags;
-        for flag in [
-            ff.range_check0,
-            ff.range_check1,
-            ff.foreign_field_add,
-            ff.foreign_field_mul,
-            ff.xor,
-            ff.rot,
-            ff.lookup,
-            ff.runtime_tables,
-        ] {
+        for flag in plonk.feature_flags.to_data() {
             out.push(if flag { F::one() } else { F::zero() });
         }
         out
@@ -463,6 +492,25 @@ mod tests {
         };
         assert_eq!(dv.bulletproof_challenges.len(), crate::common::TOCK_ROUNDS);
         assert_eq!(dv.plonk.feature_flags, Features::none());
+    }
+
+    #[test]
+    fn features_to_data_order_round_trips() {
+        let features = Features {
+            range_check0: true,
+            range_check1: false,
+            foreign_field_add: true,
+            foreign_field_mul: false,
+            xor: true,
+            rot: false,
+            lookup: true,
+            runtime_tables: false,
+        };
+        assert_eq!(
+            features.to_data(),
+            [true, false, true, false, true, false, true, false]
+        );
+        assert_eq!(Features::from_data(features.to_data()), features);
     }
 
     #[test]
