@@ -159,6 +159,21 @@ unfinalized reconstruit bien `base.statement[11]`
 `WrapWitnessData` complet d'un `RecursiveStepProof` avec cet unfinalized, puis
 prouver le wrap récursif.
 
+### Mise à jour : TÉMOIN WRAP DU STEP RÉCURSIF
+
+`recursive_step::prepare_recursive_wrap` assemble maintenant le
+`WrapWitnessData` complet pour envelopper un `RecursiveStepProof` : public
+input commitment du statement width-1, `wrap_witness` du step proof avec le
+`sg_old` de récursion, `ProofsVerified::N1`, nouveau
+`messages_for_next_wrap_proof`, Lagrange slots du statement générique, et
+l'unfinalized préparé depuis le base wrap proof. Point important découvert :
+le step récursif vérifie un wrap proof à 13 rounds, mais sa propre preuve
+Vesta compile ici à 14 rounds ; les const generics sont donc séparées
+(`VERIFIED_WRAP_ROUNDS` vs `STEP_PROOF_ROUNDS`). Le test récursif valide la
+forme du statement wrap préparé et la présence de l'unfinalized. Prochaine
+étape : appeler `WrapCircuit::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>` avec ce
+témoin et résoudre les éventuels écarts de transcript/finalize en circuit.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
@@ -166,8 +181,8 @@ prouver le wrap récursif.
   chaîner plusieurs steps/wraps et plusieurs branches. La première brique
   d'API est maintenant portée et le commitment de statement générique côté
   wrap est prêt ; la plomberie `PerUnfinalized` côté wrap est branchée. Il
-  reste le témoin wrap complet d'un step proof width>0, puis le bouclage
-  step→wrap répété.
+  reste à prouver le wrap d'un step proof width>0 avec le témoin désormais
+  préparé, puis le bouclage step→wrap répété.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.

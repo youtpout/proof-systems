@@ -15,12 +15,15 @@ use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::api::{BaseCaseProof, StepApp, WrapStepStatementSlot, WrapUnfinalizedWitnessData};
+use crate::api::{
+    BaseCaseProof, StepApp, WrapStepStatementSlot, WrapUnfinalizedWitnessData, WrapWitnessData,
+};
 use crate::common::FULL_ROUNDS;
-use crate::composition_types::{plonk, Features};
+use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
 use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
 use crate::plonk_curve_ops::ShiftedScalar;
+use crate::scalar_challenge::ScalarChallenge;
 use crate::step_main::{step_main, PerProofInput};
 use crate::step_verifier::{Claimed, FinalizeEvals, WrapStatementVars};
 
@@ -405,6 +408,11 @@ pub struct RecursiveStepProof<
     >,
 }
 
+pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
+    pub data: WrapWitnessData,
+    pub statement: [Fq; WRAP_STMT_LEN],
+}
+
 /// Builds the witness, width-1 statement and recursion challenge for the first
 /// recursive step over a base-case wrap proof.
 #[allow(clippy::too_many_lines)]
@@ -637,6 +645,218 @@ pub fn prove_recursive_step<
         statement: prepared.statement,
         proof,
         verifier,
+    }
+}
+
+pub fn prepare_recursive_wrap<
+    A: StepApp,
+    const BASE_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const BASE_STMT_LEN: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    step: &RecursiveStepProof<BASE_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
+) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
+    assert_eq!(STEP_STMT_LEN, width1_step_statement_len(VERIFIED_WRAP_ROUNDS));
+    assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 9);
+    assert_eq!(step.proof.proof.lr.len(), STEP_PROOF_ROUNDS);
+
+    let svi = &step.verifier.index;
+    let step_public = step.statement.to_vec();
+    let lgr = svi.srs().get_lagrange_basis(svi.domain);
+    let com: Vec<_> = lgr.iter().take(svi.public).collect();
+    let elm: Vec<_> = step_public.iter().map(|s| -*s).collect();
+    let pc = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+    let public_comm = svi
+        .srs()
+        .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
+        .unwrap()
+        .commitment;
+    let o = step
+        .proof
+        .oracles::<VestaBase, VestaScalar, _>(svi, &public_comm, Some(&step_public))
+        .unwrap();
+    let oracles = &o.oracles;
+
+    let combined = step.proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+    let srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
+    let domain = crate::plonk_checks::Domain::<Fp> {
+        log2_size: svi.domain.log_size_of_group,
+        generator: svi.domain.group_gen,
+    };
+    let minimal = plonk::Minimal::<Fp, Fp, bool> {
+        alpha: oracles.alpha,
+        beta: oracles.beta,
+        gamma: oracles.gamma,
+        zeta: oracles.zeta,
+        joint_combiner: None,
+        feature_flags: Features::none(),
+    };
+    let env = crate::plonk_checks::scalars_env::<Fp, bool>(&domain, srs_log2, &minimal);
+    let evals = crate::plonk_checks::Evals {
+        w: combined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        s: combined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        z: (combined.z.zeta, combined.z.zeta_omega),
+    };
+    let perm = crate::plonk_checks::perm_scalar(&env, &evals);
+
+    let sg_olds = vec![base.step_proof.proof.sg];
+    let ww = crate::wrap::wrap_witness(
+        svi.max_poly_size as u64,
+        svi.domain.size,
+        svi.domain.group_gen,
+        &step.proof,
+        &public_comm,
+        svi.digest::<VestaBase>(),
+        &sg_olds,
+        o.combined_inner_product,
+        oracles.zeta,
+        oracles.u,
+        perm,
+    );
+
+    let claimed_xi_raw: Fp = {
+        use kimchi::plonk_sponge::FrSponge as _;
+        let params = Vesta::sponge_params();
+        let mut fr = VestaScalar::from(params);
+        fr.absorb(&o.digest);
+        let pcd = VestaScalar::from(params).digest();
+        fr.absorb(&pcd);
+        fr.absorb(&step.proof.ft_eval1);
+        fr.absorb_multiple(&o.public_evals[0]);
+        fr.absorb_multiple(&o.public_evals[1]);
+        fr.absorb_evaluations(&step.proof.evals);
+        fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
+    };
+
+    let unfinalized = wrap_unfinalized_from_base(base);
+    let raw_unfinalized_bp: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = unfinalized
+        .bulletproof_challenges
+        .iter()
+        .copied()
+        .map(|c| BulletproofChallenge {
+            prechallenge: ScalarChallenge(c),
+        })
+        .collect();
+    let new_chals =
+        crate::ipa::compute_challenges(&raw_unfinalized_bp, unfinalized.finalize_endo_r);
+    let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
+        Pallas::sponge_params(),
+        &[],
+        &[new_chals],
+        (step.proof.proof.sg.x, step.proof.proof.sg.y),
+    );
+
+    let plonk_vals = plonk::InCircuit::<Fq, ScalarChallenge<Fq>, bool> {
+        alpha: ScalarChallenge(ww.alpha_raw),
+        beta: ww.beta_raw,
+        gamma: ww.gamma_raw,
+        zeta: ScalarChallenge(ww.zeta_raw),
+        zeta_to_srs_length: embed_fp_to_fq(ww.zeta_to_srs_length_repr),
+        zeta_to_domain_size: embed_fp_to_fq(ww.zeta_to_domain_size_repr),
+        perm: embed_fp_to_fq(ww.perm_repr),
+        feature_flags: Features::none(),
+        joint_combiner: None,
+    };
+    let bp_chals: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = ww
+        .bulletproof_prechallenges
+        .iter()
+        .map(|&c| BulletproofChallenge {
+            prechallenge: ScalarChallenge(c),
+        })
+        .collect();
+    let branch = BranchData {
+        proofs_verified: ProofsVerified::N1,
+        domain_log2: svi.domain.log_size_of_group as u8,
+    };
+    let statement = crate::composition_types::wrap::wrap_statement_to_field_elements(
+        &plonk_vals,
+        embed_fp_to_fq(ww.cip_repr),
+        embed_fp_to_fq(ww.b_repr),
+        &ScalarChallenge(embed_fp_to_fq(claimed_xi_raw)),
+        &bp_chals,
+        &branch,
+        embed_fp_to_fq(ww.sponge_digest),
+        msgs_wrap_digest,
+        embed_fp_to_fq(step.statement[17 + VERIFIED_WRAP_ROUNDS]),
+    );
+    assert_eq!(statement.len(), WRAP_STMT_LEN);
+
+    let co = |p: &Vesta| (p.x, p.y);
+    let step_statement = width1_step_statement_slots::<VERIFIED_WRAP_ROUNDS>(&step.statement);
+    let step_statement_lagranges = step_statement
+        .iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let l = lgr[i].chunks[0];
+            let c = match slot {
+                WrapStepStatementSlot::Packed { num_bits, .. } => {
+                    crate::public_input::lagrange_correction(&l, *num_bits)
+                }
+                WrapStepStatementSlot::Bool(_) => l,
+            };
+            ((l.x, l.y), (c.x, c.y))
+        })
+        .collect();
+    let srs_h = svi.srs().h;
+    let data = WrapWitnessData {
+        step_vk_digest: svi.digest::<VestaBase>(),
+        generic: co(&svi.generic_comm.chunks[0]),
+        psm: co(&svi.psm_comm.chunks[0]),
+        complete_add: co(&svi.complete_add_comm.chunks[0]),
+        mul: co(&svi.mul_comm.chunks[0]),
+        emul: co(&svi.emul_comm.chunks[0]),
+        endomul_scalar: co(&svi.endomul_scalar_comm.chunks[0]),
+        coefficients: svi
+            .coefficients_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_init: svi.sigma_comm[..PERMUTS - 1]
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_last: vec![co(&svi.sigma_comm[PERMUTS - 1].chunks[0])],
+        w_comm: step
+            .proof
+            .commitments
+            .w_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        z_comm: co(&step.proof.commitments.z_comm.chunks[0]),
+        t_comm: step
+            .proof
+            .commitments
+            .t_comm
+            .chunks
+            .iter()
+            .map(co)
+            .collect(),
+        lr: step
+            .proof
+            .proof
+            .lr
+            .iter()
+            .map(|(l, r)| (co(l), co(r)))
+            .collect(),
+        delta: co(&step.proof.proof.delta),
+        sg: co(&step.proof.proof.sg),
+        z1_repr: embed_fp_to_fq(ww.z1_repr),
+        z2_repr: embed_fp_to_fq(ww.z2_repr),
+        unfinalized: vec![unfinalized],
+        step_statement,
+        step_statement_lagranges,
+        h: (srs_h.x, srs_h.y),
+        new_acc_dummies: vec![],
+    };
+
+    PreparedRecursiveWrap {
+        data,
+        statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
     }
 }
 

@@ -12,7 +12,8 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
 use pickles::recursive_step::{
-    prove_recursive_step, width1_step_statement_len, wrap_unfinalized_from_base,
+    prepare_recursive_wrap, prove_recursive_step, width1_step_statement_len,
+    wrap_unfinalized_from_base,
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -21,11 +22,13 @@ const STMT_LEN: usize = 13 + ROUNDS + 9;
 /// the wrap circuit's IPA rounds (its domain is 2^13 — matching pickles'
 /// `wrap_domains(0)`).
 const WROUNDS: usize = 13;
+const R2: usize = 14;
 /// the width-1 step statement: 5 Type2 pairs (cip, b, zsl, zds, perm of the
 /// wrap proof), the wrap proof's sponge digest, beta/gamma, alpha/zeta/xi,
 /// WROUNDS bulletproof challenges, should_finalize, then the new
 /// messages_for_next_step digest and the messages_for_next_wrap digest.
 const K2: usize = width1_step_statement_len(WROUNDS);
+const WRAP2_STMT_LEN: usize = 13 + R2 + 9;
 
 struct SquareApp;
 impl StepApp for SquareApp {
@@ -71,4 +74,12 @@ fn pickles_recursive_step() {
         prev_app_state,
     );
     assert_eq!(proof2.statement.len(), K2);
+
+    let prepared_wrap =
+        prepare_recursive_wrap::<SquareApp, ROUNDS, WROUNDS, R2, STMT_LEN, K2, WRAP2_STMT_LEN>(
+            &base, &proof2,
+        );
+    assert_eq!(prepared_wrap.statement.len(), WRAP2_STMT_LEN);
+    assert_eq!(prepared_wrap.data.unfinalized.len(), 1);
+    assert_eq!(prepared_wrap.data.step_statement.len(), K2);
 }
