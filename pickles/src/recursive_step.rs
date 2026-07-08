@@ -3,20 +3,31 @@
 //! This module keeps the recursion test focused on witness construction while
 //! the step circuit plumbing lives in the crate.
 
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::{BigInteger, One, PrimeField};
 use groupmap::GroupMap;
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
-use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta};
+use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
+use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
+use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
+use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
+use poly_commitment::SRS;
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
+use crate::api::{BaseCaseProof, StepApp};
 use crate::common::FULL_ROUNDS;
+use crate::composition_types::{plonk, Features};
 use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
 use crate::plonk_curve_ops::ShiftedScalar;
 use crate::step_main::{step_main, PerProofInput};
 use crate::step_verifier::{Claimed, FinalizeEvals, WrapStatementVars};
+
+type VestaBase = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type PallasBase = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
 pub type StepPolishToken = kimchi::circuits::expr::PolishToken<
     Fp,
@@ -75,6 +86,255 @@ pub struct RecursiveStepCircuit<
     const PUBLIC_INPUT_LEN: usize,
 > {
     pub d: RecursiveStepData,
+}
+
+pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
+    pub data: RecursiveStepData,
+    pub statement: [Fp; PUBLIC_INPUT_LEN],
+    pub recursion: kimchi::proof::RecursionChallenge<Vesta>,
+}
+
+/// Builds the witness, width-1 statement and recursion challenge for the first
+/// recursive step over a base-case wrap proof.
+#[allow(clippy::too_many_lines)]
+pub fn prepare_recursive_step<
+    A: StepApp,
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PREV_STMT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, PREV_ROUNDS, PREV_STMT_LEN>,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
+
+    let svi = &base.step_verifier.index;
+    let step_proof = &base.step_proof;
+    let step_public = vec![embed_fq_to_fp(base.statement[12])];
+    let lgr = svi.srs().get_lagrange_basis(svi.domain);
+    let com: Vec<_> = lgr.iter().take(svi.public).collect();
+    let elm: Vec<_> = step_public.iter().map(|s| -*s).collect();
+    let pc = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+    let step_public_comm = svi
+        .srs()
+        .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
+        .unwrap()
+        .commitment;
+    let so = step_proof
+        .oracles::<VestaBase, VestaScalar, _>(svi, &step_public_comm, Some(&step_public))
+        .unwrap();
+    let e = &step_proof.evals;
+    let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta[0], p.zeta_omega[0]);
+    let mut evals_flat: Vec<(Fp, Fp)> = vec![
+        pair(&e.z),
+        pair(&e.generic_selector),
+        pair(&e.poseidon_selector),
+        pair(&e.complete_add_selector),
+        pair(&e.mul_selector),
+        pair(&e.emul_selector),
+        pair(&e.endomul_scalar_selector),
+    ];
+    evals_flat.extend(e.w.iter().map(pair));
+    evals_flat.extend(e.coefficients.iter().map(pair));
+    evals_flat.extend(e.s.iter().map(pair));
+    let step_srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
+
+    let wvi = &base.wrap_verifier.index;
+    let wrap_proof = &base.proof;
+    let wlgr = wvi.srs().get_lagrange_basis(wvi.domain);
+    let wcom: Vec<_> = wlgr.iter().take(wvi.public).collect();
+    let welm: Vec<_> = base.statement.iter().map(|s| -*s).collect();
+    let wpc = PolyComm::<Pallas>::multi_scalar_mul(&wcom, &welm);
+    let wrap_public_comm = wvi
+        .srs()
+        .mask_custom(wpc.clone(), &wpc.map(|_| Fq::one()))
+        .unwrap()
+        .commitment;
+    let wo = wrap_proof
+        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(&base.statement))
+        .unwrap();
+    let woracles = &wo.oracles;
+
+    let wcombined = wrap_proof
+        .evals
+        .combine(&wo.powers_of_eval_points_for_chunks);
+    let wrap_srs_log2 = u64::BITS - 1 - (wvi.max_poly_size as u64).leading_zeros();
+    let wdomain = crate::plonk_checks::Domain::<Fq> {
+        log2_size: wvi.domain.log_size_of_group,
+        generator: wvi.domain.group_gen,
+    };
+    let wminimal = plonk::Minimal::<Fq, Fq, bool> {
+        alpha: woracles.alpha,
+        beta: woracles.beta,
+        gamma: woracles.gamma,
+        zeta: woracles.zeta,
+        joint_combiner: None,
+        feature_flags: Features::none(),
+    };
+    let wenv = crate::plonk_checks::scalars_env::<Fq, bool>(&wdomain, wrap_srs_log2, &wminimal);
+    let wevals = crate::plonk_checks::Evals {
+        w: wcombined.w.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        s: wcombined.s.iter().map(|p| (p.zeta, p.zeta_omega)).collect(),
+        z: (wcombined.z.zeta, wcombined.z.zeta_omega),
+    };
+    let wperm = crate::plonk_checks::perm_scalar(&wenv, &wevals);
+
+    let sw = crate::step_witness::step_witness(
+        wvi.max_poly_size as u64,
+        wvi.domain.size,
+        wvi.domain.group_gen,
+        wrap_proof,
+        &wrap_public_comm,
+        wvi.digest::<PallasBase>(),
+        wo.combined_inner_product,
+        woracles.zeta,
+        woracles.u,
+        wperm,
+    );
+
+    let xi2_raw: Fq = {
+        use kimchi::plonk_sponge::FrSponge as _;
+        let params = Pallas::sponge_params();
+        let mut fr = PallasScalar::from(params);
+        fr.absorb(&wo.digest);
+        let pcd = PallasScalar::from(params).digest();
+        fr.absorb(&pcd);
+        fr.absorb(&wrap_proof.ft_eval1);
+        fr.absorb_multiple(&wo.public_evals[0]);
+        fr.absorb_multiple(&wo.public_evals[1]);
+        fr.absorb_evaluations(&wrap_proof.evals);
+        fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
+    };
+
+    let widths = crate::step_verifier::wrap_statement_packed_widths(PREV_ROUNDS);
+    let packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            let l = wlgr[i].chunks[0];
+            let c = crate::public_input::lagrange_correction(&l, n);
+            ((l.x, l.y), (c.x, c.y))
+        })
+        .collect();
+    let flag_lagranges: Vec<(Fp, Fp)> = (0..8)
+        .map(|i| {
+            let l = wlgr[widths.len() + i].chunks[0];
+            (l.x, l.y)
+        })
+        .collect();
+
+    let co = |p: &Pallas| (p.x, p.y);
+    let wh = wvi.srs().h;
+    let data = RecursiveStepData {
+        finalize_tokens: svi.linearization.constant_term.clone(),
+        finalize_domain: svi.domain,
+        finalize_srs_log2: step_srs_log2,
+        finalize_endo: svi.endo,
+        finalize_shifts: svi.shift.to_vec(),
+        ft_eval1: step_proof.ft_eval1,
+        public_evals: so.public_evals.clone(),
+        evals_flat,
+        stmt: base.statement.iter().map(|&v| embed_fq_to_fp(v)).collect(),
+        wrap_vk_pts,
+        prev_app_state: prev_app_state.clone(),
+        wrap_vk_digest: wvi.digest::<PallasBase>(),
+        generic: co(&wvi.generic_comm.chunks[0]),
+        psm: co(&wvi.psm_comm.chunks[0]),
+        complete_add: co(&wvi.complete_add_comm.chunks[0]),
+        mul: co(&wvi.mul_comm.chunks[0]),
+        emul: co(&wvi.emul_comm.chunks[0]),
+        endomul_scalar: co(&wvi.endomul_scalar_comm.chunks[0]),
+        coefficients: wvi
+            .coefficients_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_init: wvi.sigma_comm[..PERMUTS - 1]
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_last: vec![co(&wvi.sigma_comm[PERMUTS - 1].chunks[0])],
+        w_comm: wrap_proof
+            .commitments
+            .w_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        z_comm: co(&wrap_proof.commitments.z_comm.chunks[0]),
+        t_comm: wrap_proof
+            .commitments
+            .t_comm
+            .chunks
+            .iter()
+            .map(co)
+            .collect(),
+        lr: wrap_proof
+            .proof
+            .lr
+            .iter()
+            .map(|(l, r)| (co(l), co(r)))
+            .collect(),
+        delta: co(&wrap_proof.proof.delta),
+        sg: co(&wrap_proof.proof.sg),
+        h: (wh.x, wh.y),
+        z1: sw.z1,
+        z2: sw.z2,
+        packed_lagranges,
+        flag_lagranges,
+    };
+
+    let endo_p = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+    let chals_step1: Vec<Fp> = base.statement[13..13 + PREV_ROUNDS]
+        .iter()
+        .map(|&raw| crate::scalar_challenge::ScalarChallenge(embed_fq_to_fp(raw)).to_field(endo_p))
+        .collect();
+    let sg_check = crate::dummy::compute_sg(svi.srs(), &chals_step1);
+    assert_eq!(
+        sg_check, base.step_proof.proof.sg,
+        "sg_step1 == commit(b_poly(chals_step1))"
+    );
+
+    let new_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+        Vesta::sponge_params(),
+        &data.wrap_vk_pts,
+        &prev_app_state,
+        &[data.sg],
+        &[chals_step1.clone()],
+    );
+
+    let pair = |p: (Fp, bool)| [p.0, if p.1 { Fp::one() } else { Fp::from(0u64) }];
+    let mut statement: Vec<Fp> = vec![];
+    statement.extend(pair(sw.cip));
+    statement.extend(pair(sw.b));
+    statement.extend(pair(sw.zeta_to_srs_length));
+    statement.extend(pair(sw.zeta_to_domain_size));
+    statement.extend(pair(sw.perm));
+    statement.push(embed_fq_to_fp(sw.sponge_digest));
+    statement.push(sw.beta_raw);
+    statement.push(sw.gamma_raw);
+    statement.push(sw.alpha_raw);
+    statement.push(sw.zeta_raw);
+    statement.push(embed_fq_to_fp(xi2_raw));
+    statement.extend(sw.bulletproof_prechallenges.iter().copied());
+    statement.push(Fp::one());
+    statement.push(new_digest);
+    statement.push(Fp::from(0u64));
+    assert_eq!(statement.len(), PUBLIC_INPUT_LEN);
+
+    let recursion = kimchi::proof::RecursionChallenge {
+        chals: chals_step1,
+        comm: PolyComm {
+            chunks: vec![base.step_proof.proof.sg],
+        },
+    };
+
+    PreparedRecursiveStep {
+        data,
+        statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        recursion,
+    }
 }
 
 impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>
