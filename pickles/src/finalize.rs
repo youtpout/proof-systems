@@ -26,7 +26,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::fr_sponge::{FrSpongeInputs, squeeze_xi_r};
+use crate::fr_sponge::{squeeze_xi_r, FrSpongeInputs};
 use crate::ipa::{challenge_polynomial_circuit, combined_inner_product_circuit};
 use crate::scalar_challenge::scalar_to_field;
 
@@ -166,12 +166,7 @@ pub fn finalize_all<F: PrimeField>(
     let b_correct = b_derived.equal(sys, loc.clone(), b_claimed)?;
     let perm_correct = perm_derived.equal(sys, loc.clone(), perm_claimed)?;
     Boolean::all(
-        &[
-            xi_correct.clone(),
-            cip_correct,
-            b_correct,
-            perm_correct,
-        ],
+        &[xi_correct.clone(), cip_correct, b_correct, perm_correct],
         sys,
         loc,
     )
@@ -203,8 +198,22 @@ pub fn finalize_other_proof<F: PrimeField>(
     perm_claimed_repr: &FieldVar<F>,
     endo: F,
 ) -> SnarkyResult<Boolean<F>> {
-    let core = finalize_core(sys, loc.clone(), sponge_inputs, claimed_xi, cip_entries, endo)?;
-    let b_derived = b_actual(sys, loc.clone(), b_chals, zeta, domain_generator, &core.r_field)?;
+    let core = finalize_core(
+        sys,
+        loc.clone(),
+        sponge_inputs,
+        claimed_xi,
+        cip_entries,
+        endo,
+    )?;
+    let b_derived = b_actual(
+        sys,
+        loc.clone(),
+        b_chals,
+        zeta,
+        domain_generator,
+        &core.r_field,
+    )?;
     let cip_claimed = type1_to_field(cip_claimed_repr);
     let b_claimed = type1_to_field(b_claimed_repr);
     let perm_claimed = type1_to_field(perm_claimed_repr);
@@ -302,6 +311,9 @@ pub struct FinalizedDeferred<F: PrimeField> {
     pub combined_inner_product: FieldVar<F>,
     /// The raw 128-bit `xi` comparison conjunct.
     pub xi_correct: Boolean<F>,
+    pub cip_correct: Boolean<F>,
+    pub b_correct: Boolean<F>,
+    pub perm_correct: Boolean<F>,
 }
 
 /// Resolves a linearization column to its `(zeta, zeta_omega)` evaluation
@@ -410,7 +422,8 @@ pub fn finalize_deferred<F: PrimeField>(
     )?;
 
     // the deferred permutation scalar
-    let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
+    let perm_derived =
+        crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
 
     // compute_challenges ~scalar: prechallenges -> field form
     let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
@@ -418,14 +431,30 @@ pub fn finalize_deferred<F: PrimeField>(
         challenges.push(scalar_to_field(sys, loc.clone(), pre, params.endo_r)?);
     }
 
-    // inner-product entries: public, [ft0, ft1], mandatory columns
-    let mut cip_entries = vec![
+    // Inner-product entries: evaluations of the accumulated challenge
+    // polynomials come first, then public, [ft0, ft1], mandatory columns.
+    // The first-recursion/base case has no previous challenges, which is why
+    // this prefix was previously invisible.
+    let zetaw = witness.zeta.scale(params.domain.group_gen);
+    let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
+    for old_challenges in &witness.prev_challenges {
+        let at_zeta = crate::ipa::challenge_polynomial_circuit(
+            sys,
+            loc.clone(),
+            old_challenges,
+            &witness.zeta,
+        )?;
+        let at_zetaw =
+            crate::ipa::challenge_polynomial_circuit(sys, loc.clone(), old_challenges, &zetaw)?;
+        cip_entries.push((at_zeta, at_zetaw));
+    }
+    cip_entries.extend([
         (
             witness.public_evals[0][0].clone(),
             witness.public_evals[1][0].clone(),
         ),
         (ft_eval0, witness.ft_eval1.clone()),
-    ];
+    ]);
     for col in crate::ipa::mandatory_columns() {
         cip_entries.push(chunk0(column_eval(evals, &col)));
     }
@@ -458,6 +487,11 @@ pub fn finalize_deferred<F: PrimeField>(
     let cip_claimed = params.shift.to_field(&witness.cip_repr);
     let b_claimed = params.shift.to_field(&witness.b_repr);
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
+    let cip_correct = core
+        .combined_inner_product
+        .equal(sys, loc.clone(), &cip_claimed)?;
+    let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
+    let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
     let finalized = finalize_all(
         sys,
         loc,
@@ -477,6 +511,9 @@ pub fn finalize_deferred<F: PrimeField>(
         r_field: core.r_field,
         combined_inner_product: core.combined_inner_product,
         xi_correct: core.xi_correct,
+        cip_correct,
+        b_correct,
+        perm_correct,
     })
 }
 
@@ -827,14 +864,17 @@ mod tests {
         let zetaw_v = zeta_v * vi.domain.group_gen;
         use ark_ff::UniformRand;
         let mut rng = o1_utils::tests::make_test_rng(None);
-        let prechallenges: Vec<crate::composition_types::BulletproofChallenge<crate::scalar_challenge::ScalarChallenge<Fp>>> =
-            (0..16)
-                .map(|_| crate::composition_types::BulletproofChallenge {
-                    prechallenge: crate::scalar_challenge::ScalarChallenge(Fp::from(
-                        u128::rand(&mut rng),
-                    )),
-                })
-                .collect();
+        let prechallenges: Vec<
+            crate::composition_types::BulletproofChallenge<
+                crate::scalar_challenge::ScalarChallenge<Fp>,
+            >,
+        > = (0..16)
+            .map(|_| crate::composition_types::BulletproofChallenge {
+                prechallenge: crate::scalar_challenge::ScalarChallenge(Fp::from(u128::rand(
+                    &mut rng,
+                ))),
+            })
+            .collect();
         let dv = crate::wrap_deferred_values::expand_deferred(
             oracles.v,
             oracles.u,
@@ -905,11 +945,18 @@ mod tests {
 
         assert_eq!(xi_field, oracles.v, "xi (field) matches kimchi");
         assert_eq!(r_field, oracles.u, "r (field) matches kimchi");
-        assert_eq!(cip, o.combined_inner_product, "combined inner product matches");
+        assert_eq!(
+            cip, o.combined_inner_product,
+            "combined inner product matches"
+        );
         assert_eq!(xi_correct, Fp::one(), "xi_correct is true");
         // full finalize_other_proof accepts: derived == claimed for all four
         // conjuncts (cip/b/perm recovered from expand_deferred's Type1 reprs)
-        assert_eq!(finalized, Fp::one(), "finalize_other_proof accepts a real proof");
+        assert_eq!(
+            finalized,
+            Fp::one(),
+            "finalize_other_proof accepts a real proof"
+        );
 
         fver.verify::<BaseSponge, ScalarSponge>(fproof, (), *out);
     }
@@ -989,13 +1036,25 @@ mod tests {
         assert_eq!(run(base_clone(&base)), Fp::one());
 
         // tamper each conjunct in turn -> false
-        let mut c = CombineCircuit { xi_claimed: Fp::from(99u64), ..base_clone(&base) };
+        let mut c = CombineCircuit {
+            xi_claimed: Fp::from(99u64),
+            ..base_clone(&base)
+        };
         assert_eq!(run(c), Fp::zero(), "xi mismatch rejects");
-        c = CombineCircuit { cip_claimed: Fp::from(99u64), ..base_clone(&base) };
+        c = CombineCircuit {
+            cip_claimed: Fp::from(99u64),
+            ..base_clone(&base)
+        };
         assert_eq!(run(c), Fp::zero(), "cip mismatch rejects");
-        c = CombineCircuit { b_claimed: Fp::from(99u64), ..base_clone(&base) };
+        c = CombineCircuit {
+            b_claimed: Fp::from(99u64),
+            ..base_clone(&base)
+        };
         assert_eq!(run(c), Fp::zero(), "b mismatch rejects");
-        c = CombineCircuit { perm_claimed: Fp::from(99u64), ..base_clone(&base) };
+        c = CombineCircuit {
+            perm_claimed: Fp::from(99u64),
+            ..base_clone(&base)
+        };
         assert_eq!(run(c), Fp::zero(), "perm mismatch rejects");
     }
 

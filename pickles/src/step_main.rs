@@ -40,6 +40,9 @@ pub struct PerProofInput<'a, F: PrimeField> {
     // the previous accumulator hashed into the wrap statement
     pub sponge_after_index: crate::sponge::PoseidonSponge<F>,
     pub prev_app_state: Vec<FieldVar<F>>,
+    /// Accumulators committed by `messages_for_next_step_proof`.
+    pub messages_for_next_step_accumulators: Vec<Point<F>>,
+    /// Commitments folded into the wrap proof's IPA equation.
     pub prev_challenge_polynomial_commitments: Vec<Point<F>>,
     pub prev_challenges: Vec<Vec<FieldVar<F>>>,
     // the wrap proof itself
@@ -84,7 +87,7 @@ where
     let mut chalss: Vec<Vec<FieldVar<F>>> = Vec::with_capacity(proofs.len());
     let mut oks: Vec<Boolean<F>> = Vec::with_capacity(proofs.len());
     for p in proofs {
-        let (chals, ok) = verify_one::<F, C>(
+        let (chals, verified, finalized) = verify_one::<F, C>(
             sys,
             loc.clone(),
             &p.finalize_params,
@@ -92,6 +95,7 @@ where
             &p.stmt,
             &p.sponge_after_index,
             &p.prev_app_state,
+            &p.messages_for_next_step_accumulators,
             &p.prev_challenge_polynomial_commitments,
             &p.prev_challenges,
             &p.vk_digest,
@@ -112,8 +116,23 @@ where
             endo_scalar,
             num_bits,
         )?;
+        let not_must_verify = p.must_verify.not();
+        let verified_or_skipped =
+            verified.or(&not_must_verify, Cow::Borrowed("wrap proof verified"), sys);
+        let finalized_or_skipped =
+            finalized.or(&not_must_verify, Cow::Borrowed("step proof finalized"), sys);
+        verified_or_skipped.to_field_var().assert_equals(
+            sys,
+            Cow::Borrowed("step_main: wrap proof verified"),
+            &FieldVar::constant(F::one()),
+        )?;
+        finalized_or_skipped.to_field_var().assert_equals(
+            sys,
+            Cow::Borrowed("step_main: step proof finalized"),
+            &FieldVar::constant(F::one()),
+        )?;
         chalss.push(chals);
-        oks.push(ok);
+        oks.push(verified_or_skipped.and(&finalized_or_skipped, sys, loc.clone()));
     }
 
     // Boolean.Assert.all vs

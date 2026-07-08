@@ -96,11 +96,7 @@ where
     )?;
 
     // == step 4a: the sponge digest must match the claimed one ==
-    sponge_digest.assert_equals(
-        sys,
-        loc.clone(),
-        &claimed.sponge_digest_before_evaluations,
-    )?;
+    sponge_digest.assert_equals(sys, loc.clone(), &claimed.sponge_digest_before_evaluations)?;
 
     // == step 4b: bulletproof challenges must match (base case bypassed) ==
     assert_eq!(
@@ -119,7 +115,9 @@ where
     }
 
     // == assert_eq_plonk: sampled raw challenges == statement's ==
-    oracles.beta.assert_equals(sys, loc.clone(), &claimed.beta)?;
+    oracles
+        .beta
+        .assert_equals(sys, loc.clone(), &claimed.beta)?;
     oracles
         .gamma
         .assert_equals(sys, loc.clone(), &claimed.gamma)?;
@@ -214,12 +212,14 @@ pub fn wrap_statement_terms<F: PrimeField>(
         .into_iter()
         .zip(&widths)
         .zip(packed_lagranges)
-        .map(|((value, &num_bits), (lagrange, correction))| Term::Packed {
-            value,
-            num_bits,
-            lagrange: lagrange.clone(),
-            correction: correction.clone(),
-        })
+        .map(
+            |((value, &num_bits), (lagrange, correction))| Term::Packed {
+                value,
+                num_bits,
+                lagrange: lagrange.clone(),
+                correction: correction.clone(),
+            },
+        )
         .collect();
     for (bit, lagrange) in stmt.feature_flags.iter().zip(flag_lagranges) {
         terms.push(Term::Cond {
@@ -257,6 +257,7 @@ pub fn verify_one<F, C>(
     // accumulator digest
     sponge_after_index: &crate::sponge::PoseidonSponge<F>,
     app_state: &[FieldVar<F>],
+    messages_for_next_step_accumulators: &[Point<F>],
     prev_challenge_polynomial_commitments: &[Point<F>],
     prev_challenges: &[Vec<FieldVar<F>>],
     // wrap proof verification
@@ -279,7 +280,7 @@ pub fn verify_one<F, C>(
     endo_base: F,
     endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
     num_bits: usize,
-) -> SnarkyResult<(Vec<FieldVar<F>>, Boolean<F>)>
+) -> SnarkyResult<(Vec<FieldVar<F>>, Boolean<F>, Boolean<F>)>
 where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
@@ -314,6 +315,17 @@ where
         evals: finalize_evals.evals.clone(),
     };
     let fin = finalize_deferred(sys, loc.clone(), finalize_params, &witness)?;
+    for (label, check) in [
+        ("finalize: xi", &fin.xi_correct),
+        ("finalize: cip", &fin.cip_correct),
+        ("finalize: b", &fin.b_correct),
+        ("finalize: perm", &fin.perm_correct),
+    ] {
+        check
+            .or(&must_verify.not(), Cow::Borrowed(label), sys)
+            .to_field_var()
+            .assert_equals(sys, Cow::Borrowed(label), &FieldVar::constant(F::one()))?;
+    }
 
     // the previous accumulator digest, recomputed in-circuit
     let msgs_step_digest = hash_messages_for_next_step_proof(
@@ -321,7 +333,7 @@ where
         loc.clone(),
         sponge_after_index,
         app_state,
-        prev_challenge_polynomial_commitments,
+        messages_for_next_step_accumulators,
         prev_challenges,
     )?;
 
@@ -347,10 +359,7 @@ where
         num_bits,
     )?;
 
-    // verified && finalized || !must_verify
-    let both = verified.and(&fin.finalized, sys, loc.clone());
-    let ok = both.or(&must_verify.not(), loc, sys);
-    Ok((fin.challenges, ok))
+    Ok((fin.challenges, verified, fin.finalized))
 }
 
 /// The previous step proof's evaluations consumed by the finalize half of
@@ -713,8 +722,8 @@ mod tests {
         delta: (Fp, Fp),
         cpc: (Fp, Fp),
         h: (Fp, Fp),
-        advice_scalars: [u128; 5], // cip, b, perm, z2srs, z2dom
-        opening_scalars: [u128; 3], // xi, z1, z2
+        advice_scalars: [u128; 5],     // cip, b, perm, z2srs, z2dom
+        opening_scalars: [u128; 3],    // xi, z1, z2
         claimed: (Fp, Fp, Fp, Fp, Fp), // beta, gamma, alpha, zeta, digest
         claimed_bp: Vec<Fp>,
     }
@@ -830,10 +839,11 @@ mod tests {
                 shift: crate::finalize::ShiftKind::Type1,
             };
             let mut fe = self.evals_flat.iter();
-            let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
-                let &(a, b) = fe.next().unwrap();
-                Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
-            };
+            let mut next_pe =
+                |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
+                    let &(a, b) = fe.next().unwrap();
+                    Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+                };
             let evals = crate::fr_sponge::AbsorbEvalsVar {
                 z: next_pe(sys)?,
                 generic_selector: next_pe(sys)?,
@@ -929,6 +939,7 @@ mod tests {
                 stmt,
                 sponge_after_index: after_index,
                 prev_app_state: app_state.clone(),
+                messages_for_next_step_accumulators: prev_cpcs.clone(),
                 prev_challenge_polynomial_commitments: prev_cpcs,
                 prev_challenges: prev_chals,
                 vk_digest,

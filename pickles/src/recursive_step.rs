@@ -7,6 +7,7 @@ use ark_ff::{AdditiveGroup, BigInteger, Field, One, PrimeField, Zero};
 use groupmap::GroupMap;
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
+use kimchi::verifier_index::VerifierIndex;
 use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
@@ -40,7 +41,11 @@ pub type StepPolishToken = kimchi::circuits::expr::PolishToken<
 >;
 
 pub const fn width1_step_statement_len(wrap_rounds: usize) -> usize {
-    10 + 1 + 2 + 3 + wrap_rounds + 1 + 2
+    step_statement_len(1, wrap_rounds)
+}
+
+pub const fn step_statement_len(proofs: usize, wrap_rounds: usize) -> usize {
+    proofs * (17 + wrap_rounds) + 2
 }
 
 pub fn embed_fq_to_fp(x: Fq) -> Fp {
@@ -72,29 +77,43 @@ pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_
     should_finalize: bool,
 ) -> [Fp; PUBLIC_INPUT_LEN] {
     assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-    assert_eq!(witness.bulletproof_prechallenges.len(), WRAP_ROUNDS);
+    let statement = build_step_statement::<WRAP_ROUNDS>(
+        &[(witness, xi_raw, should_finalize)],
+        messages_for_next_step_digest,
+        messages_for_next_wrap_digest,
+    );
+    statement.try_into().unwrap_or_else(|_| unreachable!())
+}
 
-    let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
-    statement.extend(type2_pair_to_fields(witness.cip));
-    statement.extend(type2_pair_to_fields(witness.b));
-    statement.extend(type2_pair_to_fields(witness.zeta_to_srs_length));
-    statement.extend(type2_pair_to_fields(witness.zeta_to_domain_size));
-    statement.extend(type2_pair_to_fields(witness.perm));
-    statement.push(embed_fq_to_fp(witness.sponge_digest));
-    statement.push(witness.beta_raw);
-    statement.push(witness.gamma_raw);
-    statement.push(witness.alpha_raw);
-    statement.push(witness.zeta_raw);
-    statement.push(embed_fq_to_fp(xi_raw));
-    statement.extend(witness.bulletproof_prechallenges.iter().copied());
-    statement.push(if should_finalize {
-        Fp::one()
-    } else {
-        Fp::from(0u64)
-    });
+pub fn build_step_statement<const WRAP_ROUNDS: usize>(
+    proofs: &[(&crate::step_witness::StepWitness, Fq, bool)],
+    messages_for_next_step_digest: Fp,
+    messages_for_next_wrap_digest: Fp,
+) -> Vec<Fp> {
+    let mut statement = Vec::with_capacity(step_statement_len(proofs.len(), WRAP_ROUNDS));
+    for &(witness, xi_raw, should_finalize) in proofs {
+        assert_eq!(witness.bulletproof_prechallenges.len(), WRAP_ROUNDS);
+        statement.extend(type2_pair_to_fields(witness.cip));
+        statement.extend(type2_pair_to_fields(witness.b));
+        statement.extend(type2_pair_to_fields(witness.zeta_to_srs_length));
+        statement.extend(type2_pair_to_fields(witness.zeta_to_domain_size));
+        statement.extend(type2_pair_to_fields(witness.perm));
+        statement.push(embed_fq_to_fp(witness.sponge_digest));
+        statement.push(witness.beta_raw);
+        statement.push(witness.gamma_raw);
+        statement.push(witness.alpha_raw);
+        statement.push(witness.zeta_raw);
+        statement.push(embed_fq_to_fp(xi_raw));
+        statement.extend(witness.bulletproof_prechallenges.iter().copied());
+        statement.push(if should_finalize {
+            Fp::one()
+        } else {
+            Fp::zero()
+        });
+    }
     statement.push(messages_for_next_step_digest);
     statement.push(messages_for_next_wrap_digest);
-    statement.try_into().unwrap_or_else(|_| unreachable!())
+    statement
 }
 
 pub fn width1_step_statement_slots<const WRAP_ROUNDS: usize>(
@@ -238,11 +257,32 @@ pub fn wrap_unfinalized_from_base<
 >(
     base: &BaseCaseProof<A, PREV_ROUNDS, PREV_STMT_LEN>,
 ) -> WrapUnfinalizedWitnessData {
-    let wvi = &base.wrap_verifier.index;
-    let wrap_proof = &base.proof;
+    let dummy_wrap_chals: Vec<Vec<Fq>> = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
+    };
+    wrap_unfinalized_from_parts(
+        &base.wrap_verifier.index,
+        &base.proof,
+        &base.statement,
+        (base.step_proof.proof.sg.x, base.step_proof.proof.sg.y),
+        dummy_wrap_chals,
+        vec![],
+    )
+}
+
+fn wrap_unfinalized_from_parts(
+    wvi: &VerifierIndex<FULL_ROUNDS, Pallas, poly_commitment::ipa::SRS<Pallas>>,
+    wrap_proof: &kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    wrap_statement: &[Fq],
+    prev_step_acc: (Fq, Fq),
+    hash_dummy_challenges: Vec<Vec<Fq>>,
+    hash_old_bulletproof_challenges: Vec<Vec<Fq>>,
+) -> WrapUnfinalizedWitnessData {
     let wlgr = wvi.srs().get_lagrange_basis(wvi.domain);
     let wcom: Vec<_> = wlgr.iter().take(wvi.public).collect();
-    let welm: Vec<_> = base.statement.iter().map(|s| -*s).collect();
+    let welm: Vec<_> = wrap_statement.iter().map(|s| -*s).collect();
     let wpc = PolyComm::<Pallas>::multi_scalar_mul(&wcom, &welm);
     let wrap_public_comm = wvi
         .srs()
@@ -250,7 +290,7 @@ pub fn wrap_unfinalized_from_base<
         .unwrap()
         .commitment;
     let wo = wrap_proof
-        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(&base.statement))
+        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(wrap_statement))
         .unwrap();
     let woracles = &wo.oracles;
 
@@ -305,11 +345,6 @@ pub fn wrap_unfinalized_from_base<
         fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
     };
 
-    let dummy_wrap_chals: Vec<Vec<Fq>> = {
-        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
-    };
     let (_, endo_r) = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos();
 
     WrapUnfinalizedWitnessData {
@@ -339,8 +374,9 @@ pub fn wrap_unfinalized_from_base<
         sponge_digest_before_evaluations: sw.sponge_digest,
         should_finalize: true,
         old_bulletproof_challenges: vec![],
-        prev_step_acc: (base.step_proof.proof.sg.x, base.step_proof.proof.sg.y),
-        hash_dummy_challenges: dummy_wrap_chals,
+        prev_step_acc,
+        hash_dummy_challenges,
+        hash_old_bulletproof_challenges,
     }
 }
 
@@ -358,6 +394,9 @@ pub struct RecursiveStepData {
     pub stmt: Vec<Fp>,
     pub wrap_vk_pts: Vec<(Fp, Fp)>,
     pub prev_app_state: Vec<Fp>,
+    pub messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
+    pub prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
+    pub prev_challenges: Vec<Vec<Fp>>,
     pub wrap_vk_digest: Fp,
     pub generic: (Fp, Fp),
     pub psm: (Fp, Fp),
@@ -393,6 +432,8 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
     pub data: RecursiveStepData,
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub recursion: kimchi::proof::RecursionChallenge<Vesta>,
+    pub verified_wrap_accumulator: (Fp, Fp),
+    pub finalized_step_challenges: Vec<Fp>,
 }
 
 /// A proved width-1 recursive step, ready to be wrapped by the next Pickles
@@ -407,18 +448,36 @@ pub struct RecursiveStepProof<
     pub verifier: snarky::api::VerifierIndexWrapper<
         RecursiveStepCircuit<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>,
     >,
+    pub verified_wrap_accumulator: (Fp, Fp),
+    pub finalized_step_challenges: Vec<Fp>,
 }
 
 pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub data: WrapWitnessData,
     pub statement: [Fq; WRAP_STMT_LEN],
+    pub next_wrap_old_challenges: Vec<Vec<Fq>>,
+    pub next_wrap_dummy_challenges: Vec<Vec<Fq>>,
 }
 
 pub struct RecursiveWrapProof<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub statement: [Fq; WRAP_STMT_LEN],
     pub proof: kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
-    pub verifier:
-        snarky::api::VerifierIndexWrapper<WrapCircuit<STEP_ROUNDS, WRAP_STMT_LEN>>,
+    pub verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<STEP_ROUNDS, WRAP_STMT_LEN>>,
+    pub next_wrap_old_challenges: Vec<Vec<Fq>>,
+    pub next_wrap_dummy_challenges: Vec<Vec<Fq>>,
+}
+
+/// One complete recursive Pickles cycle: a step proof that verifies the
+/// previous wrap proof, followed by the wrap proof for that new step.
+pub struct RecursiveCycleProof<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+> {
+    pub step: RecursiveStepProof<PREV_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
+    pub wrap: RecursiveWrapProof<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>,
 }
 
 /// Builds the witness, width-1 statement and recursion challenge for the first
@@ -435,11 +494,42 @@ pub fn prepare_recursive_step<
     wrap_vk_pts: Vec<(Fp, Fp)>,
     prev_app_state: Vec<Fp>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    let step_public = [embed_fq_to_fp(base.statement[12])];
+    prepare_recursive_step_from_parts::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>(
+        &base.step_verifier.index,
+        &base.step_proof,
+        &step_public,
+        &base.wrap_verifier.index,
+        &base.proof,
+        &base.statement,
+        vec![],
+        vec![],
+        vec![],
+        wrap_vk_pts,
+        prev_app_state,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn prepare_recursive_step_from_parts<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    svi: &VerifierIndex<FULL_ROUNDS, Vesta, poly_commitment::ipa::SRS<Vesta>>,
+    step_proof: &kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    step_public: &[Fp],
+    wvi: &VerifierIndex<FULL_ROUNDS, Pallas, poly_commitment::ipa::SRS<Pallas>>,
+    wrap_proof: &kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    wrap_statement: &[Fq],
+    messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
+    prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
+    prev_challenges: Vec<Vec<Fp>>,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
     assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
 
-    let svi = &base.step_verifier.index;
-    let step_proof = &base.step_proof;
-    let step_public = vec![embed_fq_to_fp(base.statement[12])];
     let lgr = svi.srs().get_lagrange_basis(svi.domain);
     let com: Vec<_> = lgr.iter().take(svi.public).collect();
     let elm: Vec<_> = step_public.iter().map(|s| -*s).collect();
@@ -455,11 +545,9 @@ pub fn prepare_recursive_step<
     let evals_flat = flatten_proof_evaluations(&step_proof.evals);
     let step_srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
 
-    let wvi = &base.wrap_verifier.index;
-    let wrap_proof = &base.proof;
     let wlgr = wvi.srs().get_lagrange_basis(wvi.domain);
     let wcom: Vec<_> = wlgr.iter().take(wvi.public).collect();
-    let welm: Vec<_> = base.statement.iter().map(|s| -*s).collect();
+    let welm: Vec<_> = wrap_statement.iter().map(|s| -*s).collect();
     let wpc = PolyComm::<Pallas>::multi_scalar_mul(&wcom, &welm);
     let wrap_public_comm = wvi
         .srs()
@@ -467,7 +555,7 @@ pub fn prepare_recursive_step<
         .unwrap()
         .commitment;
     let wo = wrap_proof
-        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(&base.statement))
+        .oracles::<PallasBase, PallasScalar, _>(wvi, &wrap_public_comm, Some(wrap_statement))
         .unwrap();
     let woracles = &wo.oracles;
 
@@ -535,9 +623,12 @@ pub fn prepare_recursive_step<
         ft_eval1: step_proof.ft_eval1,
         public_evals: so.public_evals.clone(),
         evals_flat,
-        stmt: base.statement.iter().map(|&v| embed_fq_to_fp(v)).collect(),
+        stmt: wrap_statement.iter().map(|&v| embed_fq_to_fp(v)).collect(),
         wrap_vk_pts,
         prev_app_state: prev_app_state.clone(),
+        messages_for_next_step_accumulators,
+        prev_challenge_polynomial_commitments,
+        prev_challenges,
         wrap_vk_digest: wvi.digest::<PallasBase>(),
         generic: co(&wvi.generic_comm.chunks[0]),
         psm: co(&wvi.psm_comm.chunks[0]),
@@ -584,14 +675,35 @@ pub fn prepare_recursive_step<
         flag_lagranges,
     };
 
-    let chals_step1 = statement_challenges_to_field::<PREV_ROUNDS>(&base.statement);
+    let raw_step_challenges: Vec<BulletproofChallenge<ScalarChallenge<Fp>>> = wrap_statement
+        [13..13 + PREV_ROUNDS]
+        .iter()
+        .map(|&raw| BulletproofChallenge {
+            prechallenge: ScalarChallenge(embed_fq_to_fp(raw)),
+        })
+        .collect();
+    let prepared_messages = crate::reduced_messages::Step {
+        app_state: prev_app_state.clone(),
+        challenge_polynomial_commitments: vec![data.sg],
+        old_bulletproof_challenges: vec![raw_step_challenges],
+    }
+    .prepare(
+        crate::reduced_messages::plonk_verification_key_from_list(&data.wrap_vk_pts),
+        <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
+    );
+    let chals_step1 = prepared_messages.old_bulletproof_challenges[0].clone();
 
     let new_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
-        &data.wrap_vk_pts,
-        &prev_app_state,
-        &[data.sg],
-        &[chals_step1.clone()],
+        &prepared_messages
+            .dlog_plonk_index
+            .to_list()
+            .into_iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        &prepared_messages.app_state,
+        &prepared_messages.challenge_polynomial_commitments,
+        &prepared_messages.old_bulletproof_challenges,
     );
 
     let statement = build_width1_step_statement::<WRAP_ROUNDS, PUBLIC_INPUT_LEN>(
@@ -603,11 +715,14 @@ pub fn prepare_recursive_step<
     );
 
     let recursion = recursion_challenge(svi.srs(), step_proof, chals_step1);
+    let verified_wrap_accumulator = data.sg;
 
     PreparedRecursiveStep {
         data,
         statement,
         recursion,
+        verified_wrap_accumulator,
+        finalized_step_challenges: statement_challenges_to_field::<PREV_ROUNDS>(wrap_statement),
     }
 }
 
@@ -635,6 +750,8 @@ pub fn prove_recursive_step<
             prev_app_state,
         );
 
+    let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
+    let finalized_step_challenges = prepared.finalized_step_challenges.clone();
     let (mut prover, verifier) =
         RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> { d: prepared.data }
             .compile_to_indexes()
@@ -653,6 +770,8 @@ pub fn prove_recursive_step<
         statement: prepared.statement,
         proof,
         verifier,
+        verified_wrap_accumulator,
+        finalized_step_challenges,
     }
 }
 
@@ -667,6 +786,30 @@ pub fn prepare_recursive_wrap<
 >(
     base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
     step: &RecursiveStepProof<BASE_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
+) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
+    prepare_recursive_wrap_from_parts::<
+        BASE_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        STEP_PROOF_ROUNDS,
+        STEP_STMT_LEN,
+        WRAP_STMT_LEN,
+    >(
+        step,
+        wrap_unfinalized_from_base(base),
+        vec![base.step_proof.proof.sg],
+    )
+}
+
+fn prepare_recursive_wrap_from_parts<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    step: &RecursiveStepProof<PREV_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
+    unfinalized: WrapUnfinalizedWitnessData,
+    sg_olds: Vec<Vesta>,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     assert_eq!(
         STEP_STMT_LEN,
@@ -717,7 +860,6 @@ pub fn prepare_recursive_wrap<
     };
     let perm = crate::plonk_checks::perm_scalar(&env, &evals);
 
-    let sg_olds = vec![base.step_proof.proof.sg];
     let ww = crate::wrap::wrap_witness(
         svi.max_poly_size as u64,
         svi.domain.size,
@@ -752,7 +894,6 @@ pub fn prepare_recursive_wrap<
         fr.squeeze(mina_poseidon::sponge::CHALLENGE_LENGTH_IN_LIMBS)
     };
 
-    let unfinalized = wrap_unfinalized_from_base(base);
     let raw_unfinalized_bp: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = unfinalized
         .bulletproof_challenges
         .iter()
@@ -761,13 +902,24 @@ pub fn prepare_recursive_wrap<
             prechallenge: ScalarChallenge(c),
         })
         .collect();
-    let new_chals =
-        crate::ipa::compute_challenges(&raw_unfinalized_bp, unfinalized.finalize_endo_r);
+    let prepared_wrap_messages = crate::reduced_messages::Wrap {
+        challenge_polynomial_commitment: (step.proof.proof.sg.x, step.proof.proof.sg.y),
+        old_bulletproof_challenges: vec![raw_unfinalized_bp],
+    }
+    .prepare(unfinalized.finalize_endo_r);
+    let new_chals = prepared_wrap_messages.old_bulletproof_challenges[0].clone();
+    let padded_wrap_challenges = crate::dummy::pad_wrap_challenges::<Fq, Fp>(
+        std::slice::from_ref(&new_chals),
+        <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
+        <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
+    );
+    let next_wrap_dummy_challenges =
+        padded_wrap_challenges[..crate::common::MAX_PROOFS_VERIFIED - 1].to_vec();
     let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
         Pallas::sponge_params(),
-        &[],
-        &[new_chals],
-        (step.proof.proof.sg.x, step.proof.proof.sg.y),
+        &next_wrap_dummy_challenges,
+        &prepared_wrap_messages.old_bulletproof_challenges,
+        prepared_wrap_messages.challenge_polynomial_commitment,
     );
 
     let plonk_vals = plonk::InCircuit::<Fq, ScalarChallenge<Fq>, bool> {
@@ -877,12 +1029,14 @@ pub fn prepare_recursive_wrap<
         step_statement,
         step_statement_lagranges,
         h: (srs_h.x, srs_h.y),
-        new_acc_dummies: vec![],
+        new_acc_dummies: next_wrap_dummy_challenges.clone(),
     };
 
     PreparedRecursiveWrap {
         data,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        next_wrap_old_challenges: vec![new_chals],
+        next_wrap_dummy_challenges,
     }
 }
 
@@ -890,6 +1044,8 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
     prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
 ) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
     let statement = prepared.statement;
+    let next_wrap_old_challenges = prepared.next_wrap_old_challenges;
+    let next_wrap_dummy_challenges = prepared.next_wrap_dummy_challenges;
     let circuit = WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> { w: prepared.data };
     let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
     let (proof, _) = prover
@@ -901,7 +1057,304 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
         statement,
         proof,
         verifier,
+        next_wrap_old_challenges,
+        next_wrap_dummy_challenges,
     }
+}
+
+/// Proves and locally verifies the first complete recursive step→wrap cycle.
+///
+/// This is the current high-level recursion primitive while the general
+/// multi-rule compiler is still being ported. The returned step proof is kept
+/// because its evaluations and accumulator are required by the next cycle.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_first_recursive_cycle<
+    A: StepApp,
+    const BASE_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const BASE_STMT_LEN: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> RecursiveCycleProof<
+    BASE_ROUNDS,
+    VERIFIED_WRAP_ROUNDS,
+    STEP_PROOF_ROUNDS,
+    STEP_STMT_LEN,
+    WRAP_STMT_LEN,
+> {
+    let step =
+        prove_recursive_step::<A, BASE_ROUNDS, VERIFIED_WRAP_ROUNDS, BASE_STMT_LEN, STEP_STMT_LEN>(
+            base,
+            wrap_vk_pts,
+            prev_app_state,
+        );
+    let prepared_wrap = prepare_recursive_wrap::<
+        A,
+        BASE_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        STEP_PROOF_ROUNDS,
+        BASE_STMT_LEN,
+        STEP_STMT_LEN,
+        WRAP_STMT_LEN,
+    >(base, &step);
+    assert!(
+        recursive_wrap_ipa_equation_holds(&prepared_wrap),
+        "prepared recursive wrap IPA equation"
+    );
+    let wrap = prove_recursive_wrap(prepared_wrap);
+
+    RecursiveCycleProof { step, wrap }
+}
+
+/// Prepares the next step after a complete recursive cycle.
+///
+/// Unlike [`prepare_recursive_step`], both the finalized step proof and the
+/// wrap proof being verified come from the previous recursive cycle.
+pub fn prepare_next_recursive_step<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    assert_eq!(previous.wrap.proof.proof.lr.len(), WRAP_PROOF_ROUNDS);
+    prepare_recursive_step_from_parts::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN>(
+        &previous.step.verifier.index,
+        &previous.step.proof,
+        &previous.step.statement,
+        &previous.wrap.verifier.index,
+        &previous.wrap.proof,
+        &previous.wrap.statement,
+        vec![previous.step.verified_wrap_accumulator],
+        vec![],
+        vec![previous.step.finalized_step_challenges.clone()],
+        wrap_vk_pts,
+        prev_app_state,
+    )
+}
+
+/// Reconstructs the wrap-side unfinalized witness carried into the wrap after
+/// the next recursive step.
+pub fn wrap_unfinalized_from_recursive_cycle<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        STEP_PROOF_ROUNDS,
+        STEP_STMT_LEN,
+        WRAP_STMT_LEN,
+    >,
+) -> WrapUnfinalizedWitnessData {
+    wrap_unfinalized_from_parts(
+        &previous.wrap.verifier.index,
+        &previous.wrap.proof,
+        &previous.wrap.statement,
+        (
+            previous.step.proof.proof.sg.x,
+            previous.step.proof.proof.sg.y,
+        ),
+        previous.wrap.next_wrap_dummy_challenges.clone(),
+        previous.wrap.next_wrap_old_challenges.clone(),
+    )
+}
+
+pub fn prepare_next_recursive_wrap<
+    const CYCLE_PREV_ROUNDS: usize,
+    const CYCLE_VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const NEXT_STEP_STMT_LEN: usize,
+    const NEXT_STEP_PROOF_ROUNDS: usize,
+    const NEXT_WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    step: &RecursiveStepProof<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, NEXT_STEP_STMT_LEN>,
+) -> PreparedRecursiveWrap<NEXT_STEP_PROOF_ROUNDS, NEXT_WRAP_STMT_LEN> {
+    let sg_olds: Vec<Vesta> = step
+        .proof
+        .prev_challenges
+        .iter()
+        .flat_map(|challenge| challenge.comm.chunks.iter().copied())
+        .collect();
+    prepare_recursive_wrap_from_parts::<
+        PREV_STEP_PROOF_ROUNDS,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+        NEXT_WRAP_STMT_LEN,
+    >(
+        step,
+        wrap_unfinalized_from_recursive_cycle(previous),
+        sg_olds,
+    )
+}
+
+pub fn prove_next_recursive_step<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> RecursiveStepProof<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
+    let prepared = prepare_next_recursive_step::<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        PUBLIC_INPUT_LEN,
+    >(previous, wrap_vk_pts, prev_app_state);
+    let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
+    let finalized_step_challenges = prepared.finalized_step_challenges.clone();
+    let (mut prover, verifier) =
+        RecursiveStepCircuit::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
+            d: prepared.data,
+        }
+        .compile_to_indexes()
+        .unwrap();
+    let (proof, _) = prover
+        .prove_with_recursion::<VestaBase, VestaScalar>(
+            prepared.statement,
+            (),
+            true,
+            vec![prepared.recursion],
+        )
+        .unwrap();
+    verifier.verify::<VestaBase, VestaScalar>(proof.clone(), prepared.statement, ());
+    RecursiveStepProof {
+        statement: prepared.statement,
+        proof,
+        verifier,
+        verified_wrap_accumulator,
+        finalized_step_challenges,
+    }
+}
+
+pub fn prove_next_recursive_cycle<
+    const CYCLE_PREV_ROUNDS: usize,
+    const CYCLE_VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const NEXT_STEP_STMT_LEN: usize,
+    const NEXT_STEP_PROOF_ROUNDS: usize,
+    const NEXT_WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+) -> RecursiveCycleProof<
+    PREV_STEP_PROOF_ROUNDS,
+    WRAP_PROOF_ROUNDS,
+    NEXT_STEP_PROOF_ROUNDS,
+    NEXT_STEP_STMT_LEN,
+    NEXT_WRAP_STMT_LEN,
+> {
+    let step = prove_next_recursive_step::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+    >(previous, wrap_vk_pts, prev_app_state);
+    let prepared_wrap = prepare_next_recursive_wrap::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_WRAP_STMT_LEN,
+    >(previous, &step);
+    assert!(
+        recursive_wrap_ipa_equation_holds(&prepared_wrap),
+        "prepared next recursive wrap IPA equation"
+    );
+    let wrap = prove_recursive_wrap(prepared_wrap);
+    RecursiveCycleProof { step, wrap }
+}
+
+/// Repeats recursive step→wrap cycles once the compiled domains and statement
+/// lengths have stabilized. Pickles reaches this fixed shape after the first
+/// growing transition in the current width-1 harness.
+pub fn prove_stable_recursive_cycles<
+    const ROUNDS: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    mut cycle: RecursiveCycleProof<ROUNDS, ROUNDS, ROUNDS, STEP_STMT_LEN, WRAP_STMT_LEN>,
+    count: usize,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    app_state: Vec<Fp>,
+) -> RecursiveCycleProof<ROUNDS, ROUNDS, ROUNDS, STEP_STMT_LEN, WRAP_STMT_LEN> {
+    for _ in 0..count {
+        cycle = prove_next_recursive_cycle::<
+            ROUNDS,
+            ROUNDS,
+            ROUNDS,
+            STEP_STMT_LEN,
+            WRAP_STMT_LEN,
+            ROUNDS,
+            STEP_STMT_LEN,
+            ROUNDS,
+            WRAP_STMT_LEN,
+        >(&cycle, wrap_vk_pts.clone(), app_state.clone());
+    }
+    cycle
 }
 
 pub fn reconstruct_step_statement_commitment(
@@ -1292,8 +1745,21 @@ impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN:
             stmt,
             sponge_after_index: after_index,
             prev_app_state,
-            prev_challenge_polynomial_commitments: vec![],
-            prev_challenges: vec![],
+            messages_for_next_step_accumulators: d
+                .messages_for_next_step_accumulators
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            prev_challenge_polynomial_commitments: d
+                .prev_challenge_polynomial_commitments
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            prev_challenges: d
+                .prev_challenges
+                .iter()
+                .map(|chals| wvec(sys, chals))
+                .collect::<SnarkyResult<Vec<_>>>()?,
             vk_digest: wrap_vk_digest,
             vk,
             packed_lagranges,
@@ -1387,6 +1853,20 @@ mod tests {
                 Fp::from(18u64),
             ]
         );
+
+        let width2 = build_step_statement::<WRAP_ROUNDS>(
+            &[
+                (&witness, Fq::from(16u64), false),
+                (&witness, Fq::from(16u64), true),
+            ],
+            Fp::from(17u64),
+            Fp::from(18u64),
+        );
+        assert_eq!(width2.len(), step_statement_len(2, WRAP_ROUNDS));
+        assert_eq!(&width2[..19], &statement[..19]);
+        assert_eq!(width2[19], Fp::zero());
+        assert_eq!(&width2[20..40], &statement[..20]);
+        assert_eq!(&width2[40..], &statement[20..]);
     }
 
     #[test]

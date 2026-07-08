@@ -151,6 +151,7 @@ pub struct WrapUnfinalizedWitnessData {
     pub old_bulletproof_challenges: Vec<Vec<Fq>>,
     pub prev_step_acc: (Fq, Fq),
     pub hash_dummy_challenges: Vec<Vec<Fq>>,
+    pub hash_old_bulletproof_challenges: Vec<Vec<Fq>>,
 }
 
 pub struct WrapWitnessData {
@@ -369,6 +370,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 old_bulletproof_challenges,
                 prev_step_acc: mkpt(sys, u.prev_step_acc)?,
                 hash_dummy_challenges: u.hash_dummy_challenges.clone(),
+                hash_old_bulletproof_challenges: u
+                    .hash_old_bulletproof_challenges
+                    .iter()
+                    .map(|chals| wvec(sys, chals))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
             });
         }
 
@@ -483,7 +489,9 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         .unwrap();
     let oracles = &o.oracles;
 
-    let combined = step_proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+    let combined = step_proof
+        .evals
+        .combine(&o.powers_of_eval_points_for_chunks);
     let srs_log2 = u64::BITS - 1 - (svi.max_poly_size as u64).leading_zeros();
     let domain = crate::plonk_checks::Domain::<Fp> {
         log2_size: svi.domain.log_size_of_group,
@@ -640,7 +648,10 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         new_acc_dummies: dummy_wrap_chals,
     };
 
-    let stmt_arr: [Fq; STMT_LEN] = statement.clone().try_into().unwrap_or_else(|_| unreachable!());
+    let stmt_arr: [Fq; STMT_LEN] = statement
+        .clone()
+        .try_into()
+        .unwrap_or_else(|_| unreachable!());
     let (mut wrap_pi, wrap_ver) = WrapCircuit::<ROUNDS, STMT_LEN> { w: wdata }
         .compile_to_indexes()
         .unwrap();

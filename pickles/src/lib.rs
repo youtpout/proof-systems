@@ -33,6 +33,7 @@ pub mod plonk_checks;
 pub mod plonk_curve_ops;
 pub mod public_input;
 pub mod recursive_step;
+pub mod reduced_messages;
 pub mod ro;
 pub mod scalar_challenge;
 pub mod shifted_value;

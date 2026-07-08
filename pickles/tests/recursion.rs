@@ -12,8 +12,9 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
 use pickles::recursive_step::{
-    prepare_recursive_wrap, prove_recursive_step, prove_recursive_wrap,
-    recursive_wrap_ipa_equation_holds, width1_step_statement_len, wrap_unfinalized_from_base,
+    prepare_next_recursive_step, prove_first_recursive_cycle, prove_next_recursive_cycle,
+    prove_stable_recursive_cycles, width1_step_statement_len, wrap_unfinalized_from_base,
+    wrap_unfinalized_from_recursive_cycle,
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -29,6 +30,14 @@ const R2: usize = 14;
 /// messages_for_next_step digest and the messages_for_next_wrap digest.
 const K2: usize = width1_step_statement_len(WROUNDS);
 const WRAP2_STMT_LEN: usize = 13 + R2 + 9;
+const WRAP2_PROOF_ROUNDS: usize = 14;
+const K3: usize = width1_step_statement_len(WRAP2_PROOF_ROUNDS);
+const R3: usize = 14;
+const WRAP3_STMT_LEN: usize = 13 + R3 + 9;
+const WRAP3_PROOF_ROUNDS: usize = 14;
+const K4: usize = width1_step_statement_len(WRAP3_PROOF_ROUNDS);
+const R4: usize = 14;
+const WRAP4_STMT_LEN: usize = 13 + R4 + 9;
 
 struct SquareApp;
 impl StepApp for SquareApp {
@@ -68,26 +77,72 @@ fn pickles_recursive_step() {
 
     let prev_app_state = vec![Fp::from(49u64)];
 
-    let proof2 = prove_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
-        &base,
+    let cycle = prove_first_recursive_cycle::<
+        SquareApp,
+        ROUNDS,
+        WROUNDS,
+        R2,
+        STMT_LEN,
+        K2,
+        WRAP2_STMT_LEN,
+    >(&base, wrap_vk_pts.clone(), prev_app_state);
+    assert_eq!(cycle.step.statement.len(), K2);
+    assert_eq!(cycle.wrap.statement.len(), WRAP2_STMT_LEN);
+    assert_eq!(cycle.wrap.proof.proof.lr.len(), R2);
+
+    let prepared3 = prepare_next_recursive_step::<
+        ROUNDS,
+        WROUNDS,
+        R2,
+        K2,
+        WRAP2_STMT_LEN,
+        WRAP2_PROOF_ROUNDS,
+        K3,
+    >(&cycle, wrap_vk_pts.clone(), vec![Fp::from(49u64)]);
+    assert_eq!(prepared3.statement.len(), K3);
+    assert_eq!(
+        prepared3.data.messages_for_next_step_accumulators,
+        vec![cycle.step.verified_wrap_accumulator]
+    );
+    assert!(prepared3
+        .data
+        .prev_challenge_polynomial_commitments
+        .is_empty());
+    assert_eq!(
+        prepared3.data.prev_challenges,
+        vec![cycle.step.finalized_step_challenges.clone()]
+    );
+
+    let cycle2 = prove_next_recursive_cycle::<
+        ROUNDS,
+        WROUNDS,
+        R2,
+        K2,
+        WRAP2_STMT_LEN,
+        WRAP2_PROOF_ROUNDS,
+        K3,
+        R3,
+        WRAP3_STMT_LEN,
+    >(&cycle, wrap_vk_pts.clone(), vec![Fp::from(49u64)]);
+
+    let unfinalized2 = wrap_unfinalized_from_recursive_cycle(&cycle);
+    let wrap2_digest = pickles::hash_messages::hash_messages_for_next_wrap_proof_ref(
+        mina_curves::pasta::Pallas::sponge_params(),
+        &unfinalized2.hash_dummy_challenges,
+        &unfinalized2.hash_old_bulletproof_challenges,
+        unfinalized2.prev_step_acc,
+    );
+    assert_eq!(wrap2_digest, cycle.wrap.statement[11]);
+
+    assert_eq!(cycle2.step.statement.len(), K3);
+    assert_eq!(cycle2.wrap.statement.len(), WRAP3_STMT_LEN);
+
+    let cycle3 = prove_stable_recursive_cycles::<R3, K3, WRAP3_STMT_LEN>(
+        cycle2,
+        1,
         wrap_vk_pts,
-        prev_app_state,
+        vec![Fp::from(49u64)],
     );
-    assert_eq!(proof2.statement.len(), K2);
-
-    let prepared_wrap =
-        prepare_recursive_wrap::<SquareApp, ROUNDS, WROUNDS, R2, STMT_LEN, K2, WRAP2_STMT_LEN>(
-            &base, &proof2,
-        );
-    assert_eq!(prepared_wrap.statement.len(), WRAP2_STMT_LEN);
-    assert_eq!(prepared_wrap.data.unfinalized.len(), 1);
-    assert_eq!(prepared_wrap.data.step_statement.len(), K2);
-    assert!(
-        recursive_wrap_ipa_equation_holds(&prepared_wrap),
-        "prepared recursive wrap IPA equation"
-    );
-
-    let wrap2 = prove_recursive_wrap(prepared_wrap);
-    assert_eq!(wrap2.statement.len(), WRAP2_STMT_LEN);
-    assert_eq!(wrap2.proof.proof.lr.len(), R2);
+    assert_eq!(cycle3.step.statement.len(), K4);
+    assert_eq!(cycle3.wrap.statement.len(), WRAP4_STMT_LEN);
 }

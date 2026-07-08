@@ -195,6 +195,68 @@ digest `Wrap_hack`. `prove_recursive_wrap` expose maintenant cette étape et le
 test couvre le pipeline base step/wrap -> step récursif -> équation IPA
 préparée -> wrap récursif prouvé et vérifié.
 
+`recursive_step::prove_first_recursive_cycle` expose maintenant ce pipeline
+step récursif → wrap récursif comme une seule primitive réutilisable et
+retourne les deux preuves (la preuve step reste nécessaire à la finalisation
+du cycle suivant). Le test de récursion consomme cette API au lieu
+d'orchestrer séparément la préparation et les deux preuves.
+
+La préparation N>1 est maintenant extraite :
+`prepare_next_recursive_step` consomme les preuves step et wrap d'un
+`RecursiveCycleProof`, utilise le statement public width-1 complet du step
+précédent et conserve explicitement l'accumulateur wrap vérifié ainsi que les
+challenges step finalisés. Le test construit le témoin de `step₃`.
+
+La preuve de `step₃` a révélé puis permis de corriger une confusion :
+`verify_one` utilisait une seule liste de commitments à la fois pour
+reconstruire `messages_for_next_step_proof` et pour l'IPA du wrap. Ces deux
+entrées sont maintenant séparées (`messages_for_next_step_accumulators` contre
+`prev_challenge_polynomial_commitments`) et le digest N>1 est reconstruit
+correctement. L'autre moitié de la réduction same-field est la conversion des
+anciens prechallenges et l'évaluation de leurs challenge polynomials aux deux
+points ; elle est maintenant intégrée au CIP de `finalize_deferred`.
+
+### Mise à jour : BOUCLE RÉCURSIVE N>1
+
+La finalisation différée inclut désormais les évaluations des anciens
+challenge polynomials en préfixe du combined inner product. C'était la donnée
+manquante à partir de `step₃` ; les quatre conjonctions de finalisation sont
+exposées séparément pour diagnostiquer `xi`/CIP/`b`/permutation.
+
+Les accumulateurs servant à `messages_for_next_step_proof` sont séparés des
+commitments de récursion kimchi absorbés par l'IPA. La même séparation existe
+côté wrap entre les challenges du Fr-sponge de la preuve finalisée et les
+challenges du hash `messages_for_next_wrap_proof`.
+
+`prove_next_recursive_cycle` enchaîne maintenant une itération complète
+step→wrap depuis un `RecursiveCycleProof`. Le test couvre
+base → step₂ → wrap₂ → step₃ → wrap₃, avec preuve et vérification locales à
+chaque couche ; il exerce aussi une itération supplémentaire step₄ → wrap₄
+pour valider que l'API est réellement répétable.
+
+Après la transition initiale, le harness se stabilise à 14 rounds et aux mêmes
+longueurs de statements. `prove_stable_recursive_cycles` exploite ce point fixe
+et boucle sur un nombre arbitraire de cycles sans réécrire les paramètres
+const-generic à chaque niveau.
+
+Les types wire réduits `reduced_messages::{Step,Wrap}` et leurs opérations
+`prepare` sont portés : le VK step est réinjecté depuis son ordre canonique de
+28 commitments et les prechallenges sont convertis via l'endomorphisme. Le
+pipeline récursif utilise ces préparations au lieu de conversions parallèles.
+
+Le padding front vers `MAX_PROOFS_VERIFIED=2` est désormais appliqué aux
+messages wrap récursifs : avec une preuve réelle, un vecteur dummy précède le
+vecteur réel, tant dans le statement hors-circuit que dans le recalcul
+`wrap_main::new accumulator digest`. La récursion multi-cycle passe avec ce
+layout paddé.
+
+La généralisation multi-preuves a commencé : `ProofsVerified::prefix_mask`
+encode les masks paddés (`N0=[0,0]`, `N1=[0,1]`, `N2=[1,1]`),
+`front_pad_proof_slots` matérialise les slots dummy/réels, et
+`build_step_statement` encode désormais un nombre arbitraire d'Unfinalized
+avant les deux digests communs. Le wrapper width-1 existant délègue à ce
+builder générique.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

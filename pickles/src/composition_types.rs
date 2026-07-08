@@ -127,6 +127,35 @@ impl ProofsVerified {
             _ => panic!("ProofsVerified: expected 0, 1 or 2"),
         }
     }
+
+    /// Pickles' fixed-width, front-padded proof mask.
+    pub fn prefix_mask(self) -> [bool; crate::common::MAX_PROOFS_VERIFIED] {
+        match self {
+            ProofsVerified::N0 => [false, false],
+            ProofsVerified::N1 => [false, true],
+            ProofsVerified::N2 => [true, true],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProofSlot<T> {
+    Dummy,
+    Proof(T),
+}
+
+pub fn front_pad_proof_slots<T>(
+    proofs: Vec<T>,
+) -> [ProofSlot<T>; crate::common::MAX_PROOFS_VERIFIED] {
+    let proofs_verified = ProofsVerified::from_usize(proofs.len());
+    let mut proofs = proofs.into_iter();
+    std::array::from_fn(|i| {
+        if proofs_verified.prefix_mask()[i] {
+            ProofSlot::Proof(proofs.next().expect("mask and proof count agree"))
+        } else {
+            ProofSlot::Dummy
+        }
+    })
 }
 
 /// Data identifying which step branch was verified (`branch_data.ml`).
@@ -539,6 +568,21 @@ mod tests {
         };
         assert_eq!(dv.bulletproof_challenges.len(), crate::common::TOCK_ROUNDS);
         assert_eq!(dv.plonk.feature_flags, Features::none());
+    }
+
+    #[test]
+    fn proof_slots_are_front_padded_to_width_two() {
+        assert_eq!(ProofsVerified::N0.prefix_mask(), [false, false]);
+        assert_eq!(ProofsVerified::N1.prefix_mask(), [false, true]);
+        assert_eq!(ProofsVerified::N2.prefix_mask(), [true, true]);
+        assert_eq!(
+            front_pad_proof_slots(vec![7u64]),
+            [ProofSlot::Dummy, ProofSlot::Proof(7)]
+        );
+        assert_eq!(
+            front_pad_proof_slots(vec![7u64, 8]),
+            [ProofSlot::Proof(7), ProofSlot::Proof(8)]
+        );
     }
 
     #[test]

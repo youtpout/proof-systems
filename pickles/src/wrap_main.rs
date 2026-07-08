@@ -127,6 +127,9 @@ pub struct PerUnfinalized<'a, F: PrimeField> {
     /// Dummy challenge-vector constants padding the accumulator hash
     /// (`Wrap_hack`; empty at full width).
     pub hash_dummy_challenges: Vec<Vec<F>>,
+    /// Old challenges included in the accumulator hash. They are separate
+    /// from the proof's Fr-sponge `old_bulletproof_challenges`.
+    pub hash_old_bulletproof_challenges: Vec<Vec<FieldVar<F>>>,
 }
 
 /// The output of [`wrap_main`]: the recomputed previous
@@ -182,12 +185,7 @@ where
             &u.alpha,
             u.finalize_params.endo_r,
         )?;
-        let zeta_f = scalar_to_field(
-            sys,
-            finalize_loc.clone(),
-            &u.zeta,
-            u.finalize_params.endo_r,
-        )?;
+        let zeta_f = scalar_to_field(sys, finalize_loc.clone(), &u.zeta, u.finalize_params.endo_r)?;
         let witness = FinalizeWitness {
             alpha: alpha_f,
             beta: u.beta.clone(),
@@ -204,12 +202,7 @@ where
             public_evals: u.finalize_evals.public_evals.clone(),
             evals: u.finalize_evals.evals.clone(),
         };
-        let fin = finalize_deferred(
-            sys,
-            finalize_loc.clone(),
-            &u.finalize_params,
-            &witness,
-        )?;
+        let fin = finalize_deferred(sys, finalize_loc.clone(), &u.finalize_params, &witness)?;
 
         // Boolean.Assert.any [finalized; not should_finalize]
         let ok = Boolean::any(
@@ -217,18 +210,15 @@ where
             sys,
             finalize_loc.clone(),
         )?;
-        ok.to_field_var().assert_equals(
-            sys,
-            finalize_loc,
-            &FieldVar::constant(F::one()),
-        )?;
+        ok.to_field_var()
+            .assert_equals(sys, finalize_loc, &FieldVar::constant(F::one()))?;
 
         // the previous accumulator digest for the step statement
         prev_msgs_wrap.push(hash_messages_for_next_wrap_proof(
             sys,
             loc.clone(),
             &u.hash_dummy_challenges,
-            &u.old_bulletproof_challenges,
+            &u.hash_old_bulletproof_challenges,
             &u.prev_step_acc,
         ));
         new_bulletproof_challenges.push(fin.challenges);
@@ -236,7 +226,10 @@ where
 
     // == commit to the step statement and fully verify the step proof ==
     let terms = step_statement_terms(sys, loc.clone(), step_statement_elements, lagranges)?;
-    let sg_old: Vec<Point<F>> = unfinalized.iter().map(|u| u.prev_step_acc.clone()).collect();
+    let sg_old: Vec<Point<F>> = unfinalized
+        .iter()
+        .map(|u| u.prev_step_acc.clone())
+        .collect();
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
@@ -260,11 +253,9 @@ where
     )?;
     // Boolean.Assert.is_true bulletproof_success (unlike the step side, which
     // threads it into the per-proof ok boolean)
-    success.to_field_var().assert_equals(
-        sys,
-        verify_loc,
-        &FieldVar::constant(F::one()),
-    )?;
+    success
+        .to_field_var()
+        .assert_equals(sys, verify_loc, &FieldVar::constant(F::one()))?;
 
     // == this statement's accumulator digest ==
     let new_digest = hash_messages_for_next_wrap_proof(
@@ -515,6 +506,7 @@ mod tests {
                 old_bulletproof_challenges: vec![wvec(sys, &self.old_chals)?],
                 prev_step_acc: mkpt(sys, self.prev_acc)?,
                 hash_dummy_challenges: vec![self.hash_dummies.clone()],
+                hash_old_bulletproof_challenges: vec![wvec(sys, &self.old_chals)?],
             };
 
             // ---- step proof pieces ----
@@ -625,9 +617,7 @@ mod tests {
         let v1 = u128::rand(&mut rng);
         let lag: Vec<Tracked> = (0..4).map(|_| track(&mut rng)).collect();
         // corrections for the two Packed slots (0: 255 bits, 2: 128 bits)
-        let corr = |t: &Tracked, n: usize| {
-            crate::public_input::lagrange_correction(&t.pt, n)
-        };
+        let corr = |t: &Tracked, n: usize| crate::public_input::lagrange_correction(&t.pt, n);
         let corrections = [
             corr(&lag[0], 255),
             lag[1].pt, // Cond slot: unused
@@ -761,8 +751,7 @@ mod tests {
         {
             let q = Vesta::generator() * q_p + u_pt * cip1;
             let lhs = q * c_e + delta.pt.into_group();
-            let rhs = (cpc.pt.into_group() + u_pt * b1) * z1_1
-                + h_t.pt * z2_1;
+            let rhs = (cpc.pt.into_group() + u_pt * b1) * z1_1 + h_t.pt * z2_1;
             assert_eq!(lhs.into_affine(), rhs.into_affine(), "mirror equal_g");
         }
 
