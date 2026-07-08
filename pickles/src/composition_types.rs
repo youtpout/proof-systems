@@ -71,6 +71,25 @@ pub enum ProofsVerified {
     N2,
 }
 
+impl ProofsVerified {
+    pub fn to_usize(self) -> usize {
+        match self {
+            ProofsVerified::N0 => 0,
+            ProofsVerified::N1 => 1,
+            ProofsVerified::N2 => 2,
+        }
+    }
+
+    pub fn from_usize(n: usize) -> Self {
+        match n {
+            0 => ProofsVerified::N0,
+            1 => ProofsVerified::N1,
+            2 => ProofsVerified::N2,
+            _ => panic!("ProofsVerified: expected 0, 1 or 2"),
+        }
+    }
+}
+
 /// Data identifying which step branch was verified (`branch_data.ml`).
 /// `domain_log2` is the log2 of the step circuit's domain size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,12 +103,27 @@ impl BranchData {
     /// bits are `proofs_verified`, the next 8 bits are `domain_log2`, i.e.
     /// `domain_log2·4 + proofs_verified`.
     pub fn pack<F: ark_ff::PrimeField>(&self) -> F {
-        let pv = match self.proofs_verified {
-            ProofsVerified::N0 => 0u64,
-            ProofsVerified::N1 => 1,
-            ProofsVerified::N2 => 2,
-        };
+        let pv = self.proofs_verified.to_usize() as u64;
         F::from(u64::from(self.domain_log2)) * F::from(4u64) + F::from(pv)
+    }
+
+    /// Unpacks a branch-data field element (`branch_data.ml`, `unpack`): low
+    /// two bits are `proofs_verified`, next eight bits are `domain_log2`.
+    pub fn unpack<F: ark_ff::PrimeField>(x: F) -> Self {
+        use ark_ff::BigInteger;
+
+        let bits = x.into_bigint().to_bits_le();
+        let pv = usize::from(bits[0]) | (usize::from(bits[1]) << 1);
+        let mut domain_log2 = 0u8;
+        for i in 0..8 {
+            if bits[2 + i] {
+                domain_log2 |= 1 << i;
+            }
+        }
+        Self {
+            proofs_verified: ProofsVerified::from_usize(pv),
+            domain_log2,
+        }
     }
 }
 
@@ -454,6 +488,23 @@ mod tests {
                 Fq::from(11u64),
             ]
         );
+    }
+
+    #[test]
+    fn branch_data_pack_unpack_round_trips() {
+        for proofs_verified in [ProofsVerified::N0, ProofsVerified::N1, ProofsVerified::N2] {
+            let branch = BranchData {
+                proofs_verified,
+                domain_log2: 15,
+            };
+            assert_eq!(BranchData::unpack(branch.pack::<Fq>()), branch);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "ProofsVerified: expected 0, 1 or 2")]
+    fn branch_data_unpack_rejects_proofs_verified_3() {
+        let _ = BranchData::unpack::<Fq>(Fq::from(3u64));
     }
 
     #[test]
