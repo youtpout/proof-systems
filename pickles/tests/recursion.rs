@@ -39,6 +39,14 @@ type PallasScalar = DefaultFrSponge<Fq, PlonkSpongeConstantsKimchi, FULL_ROUNDS>
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
 const ROUNDS: usize = 9;
 const STMT_LEN: usize = 13 + ROUNDS + 9;
+/// the wrap circuit's IPA rounds (its domain is 2^13 — matching pickles'
+/// `wrap_domains(0)`).
+const WROUNDS: usize = 13;
+/// the width-1 step statement: 5 Type2 pairs (cip, b, zsl, zds, perm of the
+/// wrap proof), the wrap proof's sponge digest, beta/gamma, alpha/zeta/xi,
+/// WROUNDS bulletproof challenges, should_finalize, then the new
+/// messages_for_next_step digest and the messages_for_next_wrap digest.
+const K2: usize = 10 + 1 + 2 + 3 + WROUNDS + 1 + 2;
 
 struct SquareApp;
 impl StepApp for SquareApp {
@@ -101,22 +109,9 @@ struct Step2Data {
     delta: (Fp, Fp),
     sg: (Fp, Fp),
     h: (Fp, Fp),
-    // Type2 split pairs from step_witness
+    // Type2 split pairs of the wrap proof's opening scalars (witness data)
     z1: (Fp, bool),
     z2: (Fp, bool),
-    cip: (Fp, bool),
-    b: (Fp, bool),
-    perm2: (Fp, bool),
-    zsl2: (Fp, bool),
-    zds2: (Fp, bool),
-    // wrap proof transcript claims (raw 128-bit, from step_witness)
-    claimed_beta: Fp,
-    claimed_gamma: Fp,
-    claimed_alpha: Fp,
-    claimed_zeta: Fp,
-    claimed_digest: Fp, // Fq digest converted (fits whp)
-    claimed_bp: Vec<Fp>,
-    xi2: Fp, // the wrap proof's raw polyscale challenge
     // x_hat constants: (L, correction) per packed slot + flag lagranges
     packed_lagranges: Vec<((Fp, Fp), (Fp, Fp))>,
     flag_lagranges: Vec<(Fp, Fp)>,
@@ -130,14 +125,14 @@ impl SnarkyCircuit for Step2Circuit {
     type Curve = Vesta;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     type PrivateInput = ();
-    /// the new accumulator digest (the width-1 statement, digest part)
-    type PublicInput = FieldVar<Fp>;
+    /// the width-1 step statement (see [`K2`])
+    type PublicInput = [FieldVar<Fp>; K2];
     type PublicOutput = ();
 
     fn circuit(
         &self,
         sys: &mut RunState<Fp>,
-        new_digest: Self::PublicInput,
+        stmt2: Self::PublicInput,
         _private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
         use groupmap::GroupMap;
@@ -167,12 +162,20 @@ impl SnarkyCircuit for Step2Circuit {
             Ok(out)
         };
         let cpt = |p: (Fp, Fp)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
-        let t2 = |sys: &mut RunState<Fp>,
-                  p: (Fp, bool)|
+        // a Type2 pair read from two statement slots; the odd slot is
+        // boolean-constrained here
+        let t2s = |sys: &mut RunState<Fp>,
+                   half: FieldVar<Fp>,
+                   odd: FieldVar<Fp>|
          -> SnarkyResult<ShiftedScalar<Fp>> {
-            let half = sys.compute(loc!(), move |_| p.0)?;
-            let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
-            Ok(ShiftedScalar::Type2(half, odd))
+            sys.assert_r1cs(
+                Some("stmt2 odd bit".into()),
+                loc!(),
+                odd.clone(),
+                odd.clone(),
+                odd.clone(),
+            )?;
+            Ok(ShiftedScalar::Type2(half, Boolean::create_unsafe(odd)))
         };
 
         // ---- finalize params + evals ----
@@ -305,31 +308,50 @@ impl SnarkyCircuit for Step2Circuit {
             lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
         }
         let h = cpt(d.h);
+        // the wrap proof's z1/z2 stay witness data (opening proof); the
+        // deferred scalars, transcript claims and bulletproof challenges come
+        // from the statement (stmt2 layout: see K2)
+        let wt2 = |sys: &mut RunState<Fp>,
+                   p: (Fp, bool)|
+         -> SnarkyResult<ShiftedScalar<Fp>> {
+            let half = sys.compute(loc!(), move |_| p.0)?;
+            let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+            Ok(ShiftedScalar::Type2(half, odd))
+        };
         let openings = OpeningProof {
             lr,
             delta: mkpt(sys, d.delta)?,
-            z1: t2(sys, d.z1)?,
-            z2: t2(sys, d.z2)?,
+            z1: wt2(sys, d.z1)?,
+            z2: wt2(sys, d.z2)?,
             challenge_polynomial_commitment: mkpt(sys, d.sg)?,
             h_generator: h.clone(),
         };
         let advice = Advice {
-            combined_inner_product: t2(sys, d.cip)?,
-            b: t2(sys, d.b)?,
-            perm: t2(sys, d.perm2)?,
-            zeta_to_srs_length: t2(sys, d.zsl2)?,
-            zeta_to_domain_size: t2(sys, d.zds2)?,
+            combined_inner_product: t2s(sys, stmt2[0].clone(), stmt2[1].clone())?,
+            b: t2s(sys, stmt2[2].clone(), stmt2[3].clone())?,
+            zeta_to_srs_length: t2s(sys, stmt2[4].clone(), stmt2[5].clone())?,
+            zeta_to_domain_size: t2s(sys, stmt2[6].clone(), stmt2[7].clone())?,
+            perm: t2s(sys, stmt2[8].clone(), stmt2[9].clone())?,
         };
         let claimed = Claimed {
-            beta: w1(sys, d.claimed_beta)?,
-            gamma: w1(sys, d.claimed_gamma)?,
-            alpha: w1(sys, d.claimed_alpha)?,
-            zeta: w1(sys, d.claimed_zeta)?,
-            sponge_digest_before_evaluations: w1(sys, d.claimed_digest)?,
-            bulletproof_challenges: wvec(sys, &d.claimed_bp)?,
+            sponge_digest_before_evaluations: stmt2[10].clone(),
+            beta: stmt2[11].clone(),
+            gamma: stmt2[12].clone(),
+            alpha: stmt2[13].clone(),
+            zeta: stmt2[14].clone(),
+            bulletproof_challenges: stmt2[16..16 + WROUNDS].to_vec(),
         };
-        let xi2 = w1(sys, d.xi2)?;
-        let tru: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
+        let xi2 = stmt2[15].clone();
+        // should_finalize (boolean-constrained statement bit) == must_verify
+        let sf = stmt2[16 + WROUNDS].clone();
+        sys.assert_r1cs(
+            Some("should_finalize bit".into()),
+            loc!(),
+            sf.clone(),
+            sf.clone(),
+            sf.clone(),
+        )?;
+        let tru: Boolean<Fp> = Boolean::create_unsafe(sf);
         let fals: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
 
         let packed_lagranges: Vec<(Point<Fp>, Point<Fp>)> = d
@@ -377,7 +399,9 @@ impl SnarkyCircuit for Step2Circuit {
             <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
             255,
         )?;
-        digest.assert_equals(sys, loc!(), &new_digest)?;
+        digest.assert_equals(sys, loc!(), &stmt2[17 + WROUNDS])?;
+        // stmt2[18 + WROUNDS]: the messages_for_next_wrap_proof digest —
+        // asserted by the wrap circuit, a passthrough here
         Ok(())
     }
 }
@@ -584,18 +608,6 @@ fn pickles_recursive_step() {
         h: (wh.x, wh.y),
         z1: sw.z1,
         z2: sw.z2,
-        cip: sw.cip,
-        b: sw.b,
-        perm2: sw.perm,
-        zsl2: sw.zeta_to_srs_length,
-        zds2: sw.zeta_to_domain_size,
-        claimed_beta: sw.beta_raw,
-        claimed_gamma: sw.gamma_raw,
-        claimed_alpha: sw.alpha_raw,
-        claimed_zeta: sw.zeta_raw,
-        claimed_digest: fq_to_fp(sw.sponge_digest),
-        claimed_bp: sw.bulletproof_prechallenges.clone(),
-        xi2: fq_to_fp(xi2_raw),
         packed_lagranges,
         flag_lagranges,
     };
@@ -625,10 +637,31 @@ fn pickles_recursive_step() {
         s.squeeze()
     };
 
-    // ---- 7. prove the recursive step ----
+    // ---- 7. the width-1 step statement (layout: see K2) ----
+    let pair = |p: (Fp, bool)| [p.0, if p.1 { Fp::one() } else { Fp::from(0u64) }];
+    let mut stmt2: Vec<Fp> = vec![];
+    stmt2.extend(pair(sw.cip));
+    stmt2.extend(pair(sw.b));
+    stmt2.extend(pair(sw.zeta_to_srs_length));
+    stmt2.extend(pair(sw.zeta_to_domain_size));
+    stmt2.extend(pair(sw.perm));
+    stmt2.push(fq_to_fp(sw.sponge_digest));
+    stmt2.push(sw.beta_raw);
+    stmt2.push(sw.gamma_raw);
+    stmt2.push(sw.alpha_raw);
+    stmt2.push(sw.zeta_raw);
+    stmt2.push(fq_to_fp(xi2_raw));
+    stmt2.extend(sw.bulletproof_prechallenges.iter().copied());
+    stmt2.push(Fp::one()); // should_finalize
+    stmt2.push(new_digest);
+    stmt2.push(Fp::from(0u64)); // messages_for_next_wrap digest (passthrough)
+    assert_eq!(stmt2.len(), K2);
+    let stmt2_arr: [Fp; K2] = stmt2.try_into().unwrap();
+
+    // ---- 8. prove the recursive step ----
     let (mut pi2, ver2) = Step2Circuit { d }.compile_to_indexes().unwrap();
     let (proof2, _) = pi2
-        .prove::<VestaBase, VestaScalar>(new_digest, (), true)
+        .prove::<VestaBase, VestaScalar>(stmt2_arr.clone(), (), true)
         .unwrap();
-    ver2.verify::<VestaBase, VestaScalar>(proof2, new_digest, ());
+    ver2.verify::<VestaBase, VestaScalar>(proof2, stmt2_arr, ());
 }
