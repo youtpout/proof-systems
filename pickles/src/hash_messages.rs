@@ -74,6 +74,43 @@ pub fn hash_messages_for_next_step_proof<F: PrimeField>(
     Ok(sponge.squeeze(sys, loc))
 }
 
+/// Out-of-circuit mirror of [`hash_messages_for_next_step_proof`].
+pub fn hash_messages_for_next_step_proof_ref<F: PrimeField>(
+    params: &'static ArithmeticSpongeParams<F, FULL_ROUNDS>,
+    dlog_plonk_index: &[(F, F)],
+    app_state: &[F],
+    challenge_polynomial_commitments: &[(F, F)],
+    old_bulletproof_challenges: &[Vec<F>],
+) -> F {
+    use mina_poseidon::poseidon::Sponge as _;
+
+    assert_eq!(
+        challenge_polynomial_commitments.len(),
+        old_bulletproof_challenges.len(),
+        "hash_messages_for_next_step_proof_ref: one challenge vector per commitment"
+    );
+
+    let mut sponge = crate::sponge::make_sponge(params);
+    for (x, y) in dlog_plonk_index {
+        sponge.absorb(&[*x]);
+        sponge.absorb(&[*y]);
+    }
+    for x in app_state {
+        sponge.absorb(&[*x]);
+    }
+    for ((x, y), chals) in challenge_polynomial_commitments
+        .iter()
+        .zip(old_bulletproof_challenges)
+    {
+        sponge.absorb(&[*x]);
+        sponge.absorb(&[*y]);
+        for c in chals {
+            sponge.absorb(&[*c]);
+        }
+    }
+    sponge.squeeze()
+}
+
 /// Hashes a `messages_for_next_wrap_proof` accumulator
 /// (`Wrap_hack.Checked.hash_messages_for_next_wrap_proof`): a fresh sponge
 /// absorbs `dummy_challenges` (circuit constants padding the vector to
@@ -256,23 +293,13 @@ mod tests {
             })
             .collect();
 
-        // out-of-circuit mirror
-        let mut s = RefSponge::new(Vesta::sponge_params());
-        for (x, y) in &vk_comms {
-            s.absorb(&[*x]);
-            s.absorb(&[*y]);
-        }
-        for x in &app_state {
-            s.absorb(&[*x]);
-        }
-        for ((x, y), chals) in cpcs.iter().zip(&old_chals) {
-            s.absorb(&[*x]);
-            s.absorb(&[*y]);
-            for c in chals {
-                s.absorb(&[*c]);
-            }
-        }
-        let expected = s.squeeze();
+        let expected = hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &vk_comms,
+            &app_state,
+            &cpcs,
+            &old_chals,
+        );
 
         let circ = HashCircuit {
             vk_comms,
