@@ -175,8 +175,19 @@ where
     let mut new_bulletproof_challenges = Vec::with_capacity(unfinalized.len());
     let mut prev_msgs_wrap = Vec::with_capacity(unfinalized.len());
     for u in unfinalized {
-        let alpha_f = scalar_to_field(sys, loc.clone(), &u.alpha, u.finalize_params.endo_r)?;
-        let zeta_f = scalar_to_field(sys, loc.clone(), &u.zeta, u.finalize_params.endo_r)?;
+        let finalize_loc = Cow::Borrowed("wrap_main: finalize unfinalized");
+        let alpha_f = scalar_to_field(
+            sys,
+            finalize_loc.clone(),
+            &u.alpha,
+            u.finalize_params.endo_r,
+        )?;
+        let zeta_f = scalar_to_field(
+            sys,
+            finalize_loc.clone(),
+            &u.zeta,
+            u.finalize_params.endo_r,
+        )?;
         let witness = FinalizeWitness {
             alpha: alpha_f,
             beta: u.beta.clone(),
@@ -193,16 +204,24 @@ where
             public_evals: u.finalize_evals.public_evals.clone(),
             evals: u.finalize_evals.evals.clone(),
         };
-        let fin = finalize_deferred(sys, loc.clone(), &u.finalize_params, &witness)?;
+        let fin = finalize_deferred(
+            sys,
+            finalize_loc.clone(),
+            &u.finalize_params,
+            &witness,
+        )?;
 
         // Boolean.Assert.any [finalized; not should_finalize]
         let ok = Boolean::any(
             &[&fin.finalized, &u.should_finalize.not()],
             sys,
-            loc.clone(),
+            finalize_loc.clone(),
         )?;
-        ok.to_field_var()
-            .assert_equals(sys, loc.clone(), &FieldVar::constant(F::one()))?;
+        ok.to_field_var().assert_equals(
+            sys,
+            finalize_loc,
+            &FieldVar::constant(F::one()),
+        )?;
 
         // the previous accumulator digest for the step statement
         prev_msgs_wrap.push(hash_messages_for_next_wrap_proof(
@@ -219,9 +238,10 @@ where
     let terms = step_statement_terms(sys, loc.clone(), step_statement_elements, lagranges)?;
     let sg_old: Vec<Point<F>> = unfinalized.iter().map(|u| u.prev_step_acc.clone()).collect();
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
+    let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
         sys,
-        loc.clone(),
+        verify_loc.clone(),
         vk_digest,
         vk,
         &sg_old,
@@ -240,9 +260,11 @@ where
     )?;
     // Boolean.Assert.is_true bulletproof_success (unlike the step side, which
     // threads it into the per-proof ok boolean)
-    success
-        .to_field_var()
-        .assert_equals(sys, loc.clone(), &FieldVar::constant(F::one()))?;
+    success.to_field_var().assert_equals(
+        sys,
+        verify_loc,
+        &FieldVar::constant(F::one()),
+    )?;
 
     // == this statement's accumulator digest ==
     let new_digest = hash_messages_for_next_wrap_proof(
@@ -252,7 +274,11 @@ where
         &new_bulletproof_challenges,
         &openings.challenge_polynomial_commitment,
     );
-    new_digest.assert_equals(sys, loc, messages_for_next_wrap_proof_digest)?;
+    new_digest.assert_equals(
+        sys,
+        Cow::Borrowed("wrap_main: new accumulator digest"),
+        messages_for_next_wrap_proof_digest,
+    )?;
 
     Ok(WrapMainOutput {
         prev_messages_for_next_wrap_proof: prev_msgs_wrap,

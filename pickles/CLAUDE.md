@@ -174,12 +174,6 @@ forme du statement wrap préparé et la présence de l'unfinalized. Prochaine
 étape : appeler `WrapCircuit::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>` avec ce
 témoin et résoudre les éventuels écarts de transcript/finalize en circuit.
 
-Essai suivant effectué localement : brancher directement ce témoin dans
-`WrapCircuit::<14, 36>` compile et atteint le circuit, mais échoue encore sur
-un assert booléen dans `wrap_main` (`UnsatisfiedEqualConstraint 0 == 1`).
-Bypasser temporairement `should_finalize` ne supprime pas l'échec, donc le
-prochain écart à isoler n'est pas seulement le `finalize_deferred` de
-l'unfinalized.
 `prepare_recursive_wrap` reconstruit désormais le commitment public `x_hat`
 du statement step récursif depuis les slots width-1 et les Lagranges SRS, puis
 l'asserte contre `public_comm.chunks[0]` produit par kimchi. Cette piste est
@@ -189,11 +183,17 @@ de `xi` pour le step proof récursif doit absorber le digest des
 `kimchi::verifier`, pas le digest vide du cas base. Le test récursif valide
 maintenant aussi l'équation IPA hors-circuit reconstruite depuis
 `PreparedRecursiveWrap` (`sg_old`, x_hat, ft, transcript IPA, `z1/z2`, `b`,
-`cip`). Rebrancher directement `WrapCircuit::<14, 36>` après cette correction
-échoue encore dans `wrap_main` au callsite `api.rs:405`; le prochain écart est
-donc dans l'encodage/exécution circuit de `wrap_main` (assert interne,
-finalize/hash/advice in-circuit), plus dans la préparation kimchi hors-circuit
-de l'IPA. L'état commité reste vert avec le témoin préparé et testé.
+`cip`).
+
+Le premier wrap récursif compile, prouve et vérifie désormais complètement.
+Des labels d'assertion dans `wrap_main` ont isolé le dernier échec dans
+`finalize_deferred`. La cause était le placement des challenges de padding :
+un base step proof n'a aucun vrai `prev_challenges` à absorber pendant sa
+finalisation, donc `old_bulletproof_challenges` doit être vide. Les challenges
+factices restent nécessaires uniquement dans `hash_dummy_challenges` pour le
+digest `Wrap_hack`. `prove_recursive_wrap` expose maintenant cette étape et le
+test couvre le pipeline base step/wrap -> step récursif -> équation IPA
+préparée -> wrap récursif prouvé et vérifié.
 
 ### Ce qu'il manque maintenant
 
@@ -201,9 +201,10 @@ de l'IPA. L'état commité reste vert avec le témoin préparé et testé.
   `prove_base_case + prove_recursive_step` en API générique capable de
   chaîner plusieurs steps/wraps et plusieurs branches. La première brique
   d'API est maintenant portée et le commitment de statement générique côté
-  wrap est prêt ; la plomberie `PerUnfinalized` côté wrap est branchée. Il
-  reste à prouver le wrap d'un step proof width>0 avec le témoin désormais
-  préparé, puis le bouclage step→wrap répété.
+  wrap est prêt ; la plomberie `PerUnfinalized` côté wrap est branchée et le
+  premier wrap d'un step proof width>0 est prouvé. Il reste à réinjecter ce
+  wrap récursif dans le step suivant, puis à généraliser le bouclage
+  step→wrap répété.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.

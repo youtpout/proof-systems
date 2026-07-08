@@ -12,8 +12,8 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
 use pickles::recursive_step::{
-    prepare_recursive_wrap, prove_recursive_step, recursive_wrap_ipa_equation_holds,
-    width1_step_statement_len, wrap_unfinalized_from_base,
+    prepare_recursive_wrap, prove_recursive_step, prove_recursive_wrap,
+    recursive_wrap_ipa_equation_holds, width1_step_statement_len, wrap_unfinalized_from_base,
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -86,4 +86,8 @@ fn pickles_recursive_step() {
         recursive_wrap_ipa_equation_holds(&prepared_wrap),
         "prepared recursive wrap IPA equation"
     );
+
+    let wrap2 = prove_recursive_wrap(prepared_wrap);
+    assert_eq!(wrap2.statement.len(), WRAP2_STMT_LEN);
+    assert_eq!(wrap2.proof.proof.lr.len(), R2);
 }

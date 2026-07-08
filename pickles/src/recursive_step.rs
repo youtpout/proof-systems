@@ -16,7 +16,8 @@ use poly_commitment::SRS;
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::api::{
-    BaseCaseProof, StepApp, WrapStepStatementSlot, WrapUnfinalizedWitnessData, WrapWitnessData,
+    BaseCaseProof, StepApp, WrapCircuit, WrapStepStatementSlot, WrapUnfinalizedWitnessData,
+    WrapWitnessData,
 };
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
@@ -337,9 +338,9 @@ pub fn wrap_unfinalized_from_base<
             .collect(),
         sponge_digest_before_evaluations: sw.sponge_digest,
         should_finalize: true,
-        old_bulletproof_challenges: dummy_wrap_chals,
+        old_bulletproof_challenges: vec![],
         prev_step_acc: (base.step_proof.proof.sg.x, base.step_proof.proof.sg.y),
-        hash_dummy_challenges: vec![],
+        hash_dummy_challenges: dummy_wrap_chals,
     }
 }
 
@@ -411,6 +412,13 @@ pub struct RecursiveStepProof<
 pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub data: WrapWitnessData,
     pub statement: [Fq; WRAP_STMT_LEN],
+}
+
+pub struct RecursiveWrapProof<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
+    pub statement: [Fq; WRAP_STMT_LEN],
+    pub proof: kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    pub verifier:
+        snarky::api::VerifierIndexWrapper<WrapCircuit<STEP_ROUNDS, WRAP_STMT_LEN>>,
 }
 
 /// Builds the witness, width-1 statement and recursion challenge for the first
@@ -875,6 +883,24 @@ pub fn prepare_recursive_wrap<
     PreparedRecursiveWrap {
         data,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+    }
+}
+
+pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
+    prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
+) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
+    let statement = prepared.statement;
+    let circuit = WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> { w: prepared.data };
+    let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
+    let (proof, _) = prover
+        .prove::<PallasBase, PallasScalar>(statement, (), true)
+        .unwrap();
+    verifier.verify::<PallasBase, PallasScalar>(proof.clone(), statement, ());
+
+    RecursiveWrapProof {
+        statement,
+        proof,
+        verifier,
     }
 }
 
