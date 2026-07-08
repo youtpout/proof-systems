@@ -3,7 +3,7 @@
 //! This module keeps the recursion test focused on witness construction while
 //! the step circuit plumbing lives in the crate.
 
-use ark_ff::{BigInteger, One, PrimeField};
+use ark_ff::{BigInteger, One, PrimeField, Zero};
 use groupmap::GroupMap;
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
@@ -15,7 +15,7 @@ use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::api::{BaseCaseProof, StepApp};
+use crate::api::{BaseCaseProof, StepApp, WrapStepStatementSlot};
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, Features};
 use crate::finalize::{FinalizeParams, ShiftKind};
@@ -41,6 +41,10 @@ pub const fn width1_step_statement_len(wrap_rounds: usize) -> usize {
 
 pub fn embed_fq_to_fp(x: Fq) -> Fp {
     Fp::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
+}
+
+pub fn embed_fp_to_fq(x: Fp) -> Fq {
+    Fq::from_le_bytes_mod_order(&x.into_bigint().to_bytes_le())
 }
 
 pub fn type2_pair_to_fields(p: (Fp, bool)) -> [Fp; 2] {
@@ -78,6 +82,51 @@ pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_
     statement.push(messages_for_next_step_digest);
     statement.push(messages_for_next_wrap_digest);
     statement.try_into().unwrap_or_else(|_| unreachable!())
+}
+
+pub fn width1_step_statement_slots<const WRAP_ROUNDS: usize>(
+    statement: &[Fp],
+) -> Vec<WrapStepStatementSlot> {
+    assert_eq!(statement.len(), width1_step_statement_len(WRAP_ROUNDS));
+
+    let mut slots = Vec::with_capacity(statement.len());
+    let mut push_type2 = |i: usize| {
+        slots.push(WrapStepStatementSlot::Packed {
+            value: embed_fp_to_fq(statement[i]),
+            num_bits: 255,
+        });
+        slots.push(WrapStepStatementSlot::Bool(!statement[i + 1].is_zero()));
+    };
+    for i in (0..10).step_by(2) {
+        push_type2(i);
+    }
+    slots.push(WrapStepStatementSlot::Packed {
+        value: embed_fp_to_fq(statement[10]),
+        num_bits: 255,
+    });
+    for &i in &[11usize, 12, 13, 14, 15] {
+        slots.push(WrapStepStatementSlot::Packed {
+            value: embed_fp_to_fq(statement[i]),
+            num_bits: 128,
+        });
+    }
+    for i in 16..16 + WRAP_ROUNDS {
+        slots.push(WrapStepStatementSlot::Packed {
+            value: embed_fp_to_fq(statement[i]),
+            num_bits: 128,
+        });
+    }
+    slots.push(WrapStepStatementSlot::Bool(
+        !statement[16 + WRAP_ROUNDS].is_zero(),
+    ));
+    for i in 17 + WRAP_ROUNDS..19 + WRAP_ROUNDS {
+        slots.push(WrapStepStatementSlot::Packed {
+            value: embed_fp_to_fq(statement[i]),
+            num_bits: 255,
+        });
+    }
+    debug_assert_eq!(slots.len(), statement.len());
+    slots
 }
 
 pub fn flatten_proof_evaluations(
@@ -781,5 +830,51 @@ mod tests {
                 Fp::from(18u64),
             ]
         );
+    }
+
+    #[test]
+    fn width1_step_statement_slots_match_layout() {
+        const WRAP_ROUNDS: usize = 2;
+        const LEN: usize = width1_step_statement_len(WRAP_ROUNDS);
+        let statement: Vec<Fp> = (0..LEN).map(|i| Fp::from((i + 1) as u64)).collect();
+        let slots = width1_step_statement_slots::<WRAP_ROUNDS>(&statement);
+
+        assert_eq!(slots.len(), LEN);
+        for i in (0..10).step_by(2) {
+            assert_eq!(
+                slots[i],
+                WrapStepStatementSlot::Packed {
+                    value: embed_fp_to_fq(statement[i]),
+                    num_bits: 255
+                }
+            );
+            assert_eq!(slots[i + 1], WrapStepStatementSlot::Bool(true));
+        }
+        assert_eq!(
+            slots[10],
+            WrapStepStatementSlot::Packed {
+                value: embed_fp_to_fq(statement[10]),
+                num_bits: 255
+            }
+        );
+        for i in 11..16 + WRAP_ROUNDS {
+            assert_eq!(
+                slots[i],
+                WrapStepStatementSlot::Packed {
+                    value: embed_fp_to_fq(statement[i]),
+                    num_bits: 128
+                }
+            );
+        }
+        assert_eq!(slots[16 + WRAP_ROUNDS], WrapStepStatementSlot::Bool(true));
+        for i in 17 + WRAP_ROUNDS..LEN {
+            assert_eq!(
+                slots[i],
+                WrapStepStatementSlot::Packed {
+                    value: embed_fp_to_fq(statement[i]),
+                    num_bits: 255
+                }
+            );
+        }
     }
 }

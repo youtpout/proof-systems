@@ -113,6 +113,12 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
 }
 
 /// Everything the wrap circuit witnesses about the step proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapStepStatementSlot {
+    Packed { value: Fq, num_bits: usize },
+    Bool(bool),
+}
+
 pub struct WrapWitnessData {
     pub step_vk_digest: Fq,
     pub generic: (Fq, Fq),
@@ -132,8 +138,8 @@ pub struct WrapWitnessData {
     pub sg: (Fq, Fq),
     pub z1_repr: Fq,
     pub z2_repr: Fq,
-    pub lagrange: (Fq, Fq),
-    pub correction: (Fq, Fq),
+    pub step_statement: Vec<WrapStepStatementSlot>,
+    pub step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))>,
     pub h: (Fq, Fq),
     pub new_acc_dummies: Vec<Vec<Fq>>,
 }
@@ -190,7 +196,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let xi = stmt[9].clone();
         let sponge_digest = stmt[10].clone();
         let msgs_wrap_digest = stmt[11].clone();
-        let msgs_step_digest = stmt[12].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
 
         let vk_digest: FieldVar<Fq> = sys.compute(loc!(), |_| w.step_vk_digest)?;
@@ -248,11 +253,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             bulletproof_challenges: bp,
         };
 
-        let elements = vec![StepStatementElement::Packed {
-            value: msgs_step_digest,
-            num_bits: 255,
-        }];
-        let lagranges = vec![(cpt(w.lagrange), cpt(w.correction))];
+        assert_eq!(
+            w.step_statement.len(),
+            w.step_statement_lagranges.len(),
+            "one Lagrange slot per step statement element"
+        );
+        let mut elements = Vec::with_capacity(w.step_statement.len());
+        for slot in &w.step_statement {
+            match *slot {
+                WrapStepStatementSlot::Packed { value, num_bits } => {
+                    let var = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Packed {
+                        value: var,
+                        num_bits,
+                    });
+                }
+                WrapStepStatementSlot::Bool(value) => {
+                    let bit = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Bool(bit));
+                }
+            }
+        }
+        let lagranges: Vec<(Point<Fq>, Point<Fq>)> = w
+            .step_statement_lagranges
+            .iter()
+            .map(|&(l, c)| (cpt(l), cpt(c)))
+            .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
         let _out = wrap_main::<Fq, VestaParameters>(
@@ -440,8 +466,8 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     // ---- wrap proof ----
     let co = |p: &Vesta| (p.x, p.y);
     let l0 = lgr[0].chunks[0];
-    drop(lgr); // release the SRS cache guard so step_ver can move below
     let correction = crate::public_input::lagrange_correction(&l0, 255);
+    drop(lgr); // release the SRS cache guard so step_ver can move below
     let srs_h = svi.srs().h;
     let wdata = WrapWitnessData {
         step_vk_digest: svi.digest::<VestaBase>(),
@@ -485,8 +511,11 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         sg: co(&sg_pt),
         z1_repr: fp_to_fq(ww.z1_repr),
         z2_repr: fp_to_fq(ww.z2_repr),
-        lagrange: co(&l0),
-        correction: co(&correction),
+        step_statement: vec![WrapStepStatementSlot::Packed {
+            value: fp_to_fq(digest),
+            num_bits: 255,
+        }],
+        step_statement_lagranges: vec![(co(&l0), co(&correction))],
         h: (srs_h.x, srs_h.y),
         new_acc_dummies: dummy_wrap_chals,
     };

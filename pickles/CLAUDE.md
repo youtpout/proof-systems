@@ -127,13 +127,30 @@ le résultat `RecursiveStepProof` conserve le statement width-1, la preuve
 Vesta et son verifier wrapper, prêts pour la future étape de wrap générique
 des step proofs récursifs.
 
+### Mise à jour : WRAP STATEMENT GÉNÉRIQUE
+
+`api::WrapCircuit` ne suppose plus que le step proof enveloppé a un unique
+public input digest : `WrapWitnessData` porte maintenant une liste
+`WrapStepStatementSlot::{Packed,Bool}` avec les Lagrange slots associés, et
+`wrap_main::step_statement_terms` commite cette liste générique. Le cas base
+reste le slot unique `Packed(digest,255)`.
+
+`recursive_step::width1_step_statement_slots` encode le statement width-1 dans
+le layout attendu pour le futur wrap récursif : 5 paires Type2
+`Packed(255)+Bool`, digest `Packed(255)`, beta/gamma/alpha/zeta/xi et les
+prechallenges en `Packed(128)`, `should_finalize` en bool, puis les deux
+digests finaux en `Packed(255)`. Test de layout ajouté. Prochaine étape :
+construire le `WrapWitnessData` d'un `RecursiveStepProof` et brancher
+l'unfinalized réel dans `wrap_main`.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
   `prove_base_case + prove_recursive_step` en API générique capable de
   chaîner plusieurs steps/wraps et plusieurs branches. La première brique
-  d'API est maintenant portée ; il reste le wrap générique d'un step proof
-  width>0, puis le bouclage step→wrap répété.
+  d'API est maintenant portée et le commitment de statement générique côté
+  wrap est prêt ; il reste le témoin wrap complet d'un step proof width>0,
+  puis le bouclage step→wrap répété.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.
