@@ -162,15 +162,16 @@ pub struct WrapStatementVars<F: PrimeField> {
 
 /// The bit widths of the packed (non-boolean) wrap statement elements, in
 /// `to_data` order: `fp[5]` (255), `challenge[2]` (128), `scalar_challenge[3]`
-/// (128), `digest[3]` (255), `bulletproof_challenges[16]` (128),
+/// (128), `digest[3]` (255), `bulletproof_challenges[rounds]` (128),
 /// `branch_data[1]` (10). The 8 trailing feature flags are 1-bit conditional
-/// terms, handled separately.
-pub fn wrap_statement_packed_widths() -> Vec<usize> {
+/// terms, handled separately. `rounds` is the step proof's IPA round count
+/// (TICK_ROUNDS = 16 with mina's padded domains).
+pub fn wrap_statement_packed_widths(rounds: usize) -> Vec<usize> {
     let mut w = vec![255usize; 5];
     w.extend([128, 128]); // beta, gamma
     w.extend([128, 128, 128]); // alpha, zeta, xi
     w.extend([255, 255, 255]); // digests
-    w.extend(std::iter::repeat_n(128, 16)); // bulletproof challenges
+    w.extend(std::iter::repeat_n(128, rounds)); // bulletproof challenges
     w.push(10); // branch_data
     w
 }
@@ -187,7 +188,7 @@ pub fn wrap_statement_terms<F: PrimeField>(
     packed_lagranges: &[(Point<F>, Point<F>)],
     flag_lagranges: &[Point<F>],
 ) -> Vec<Term<F>> {
-    let widths = wrap_statement_packed_widths();
+    let widths = wrap_statement_packed_widths(stmt.bulletproof_challenges.len());
     let mut values: Vec<FieldVar<F>> = vec![
         stmt.combined_inner_product.clone(),
         stmt.b.clone(),
@@ -1003,7 +1004,7 @@ mod tests {
 
         // wrap statement packed values (29): widths [255×5, 128×5, 255×2,
         // 128×16, 10]
-        let widths = wrap_statement_packed_widths();
+        let widths = wrap_statement_packed_widths(16);
         let mut stmt_packed: Vec<Fp> = vec![];
         for (i, &w) in widths.iter().enumerate() {
             if i == 12 {
