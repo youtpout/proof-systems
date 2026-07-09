@@ -357,6 +357,12 @@ applicatif public, vérifie sa présence au slot canonique du wrap statement,
 puis vérifie la preuve Kimchi. L'API générique n'est donc plus uniquement
 validée par un backend synthétique.
 
+Les branches récursives disposent maintenant de `N1RuleBackend` et
+`N2RuleBackend`. Leur witness contient respectivement `[PreviousProof; 1]` ou
+`[PreviousProof; 2]`, rendant une mauvaise arité non représentable. Avant
+d'appeler le prover concret fourni par la branche, l'adapter construit les
+slots Pickles `[dummy, réel]` ou `[réel, réel]`.
+
 ### Mise à jour : VERIFICATION KEYS SIDE-LOADED
 
 `SideLoadedVerificationKey` encapsule les 28 commitments canoniques et les

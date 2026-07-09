@@ -164,6 +164,110 @@ pub enum ProgramExecutionError<E> {
     Backend(E),
 }
 
+/// Witness of a recursive rule: application witness plus the previous proofs
+/// consumed by the rule.
+pub struct RecursiveRuleWitness<W, P, const ARITY: usize> {
+    pub witness: W,
+    pub previous_proofs: [P; ARITY],
+}
+
+/// Typed backend adapter for a recursive `N1` or `N2` branch. It validates the
+/// rule arity at compilation and front-pads previous proofs before invoking
+/// the concrete Pickles prover.
+pub struct RecursiveRuleBackend<
+    const ARITY: usize,
+    I,
+    W,
+    PreviousProof,
+    Proof,
+    E,
+    Prove,
+    Verify,
+> {
+    rule: InductiveRule,
+    prove: Prove,
+    verify: Verify,
+    _types: std::marker::PhantomData<(I, W, PreviousProof, Proof, E)>,
+}
+
+pub type N1RuleBackend<I, W, PreviousProof, Proof, E, Prove, Verify> =
+    RecursiveRuleBackend<1, I, W, PreviousProof, Proof, E, Prove, Verify>;
+pub type N2RuleBackend<I, W, PreviousProof, Proof, E, Prove, Verify> =
+    RecursiveRuleBackend<2, I, W, PreviousProof, Proof, E, Prove, Verify>;
+
+impl<
+        const ARITY: usize,
+        I,
+        W,
+        PreviousProof,
+        Proof,
+        E,
+        Prove,
+        Verify,
+    > RecursiveRuleBackend<ARITY, I, W, PreviousProof, Proof, E, Prove, Verify>
+{
+    pub fn compile(
+        rule: &InductiveRule,
+        prove: Prove,
+        verify: Verify,
+    ) -> Result<Self, ProgramError> {
+        if rule.proofs_verified.to_usize() != ARITY || !(1..=2).contains(&ARITY) {
+            return Err(ProgramError::WrongProofCount {
+                rule: rule.id,
+                expected: rule.proofs_verified.to_usize(),
+                actual: ARITY,
+            });
+        }
+        Ok(Self {
+            rule: rule.clone(),
+            prove,
+            verify,
+            _types: std::marker::PhantomData,
+        })
+    }
+
+    pub fn rule(&self) -> &InductiveRule {
+        &self.rule
+    }
+}
+
+impl<
+        const ARITY: usize,
+        I,
+        W,
+        PreviousProof,
+        Proof,
+        E,
+        Prove,
+        Verify,
+    > CompiledRuleBackend
+    for RecursiveRuleBackend<ARITY, I, W, PreviousProof, Proof, E, Prove, Verify>
+where
+    Prove: FnMut(&I, W, [ProofSlot<PreviousProof>; 2]) -> Result<Proof, E>,
+    Verify: Fn(&I, &Proof) -> Result<(), E>,
+{
+    type PublicInput = I;
+    type Witness = RecursiveRuleWitness<W, PreviousProof, ARITY>;
+    type Proof = Proof;
+    type Error = E;
+
+    fn prove(
+        &mut self,
+        public_input: &I,
+        witness: Self::Witness,
+    ) -> Result<Proof, E> {
+        let slots = self
+            .rule
+            .proof_slots(witness.previous_proofs.into_iter().collect())
+            .expect("backend arity was checked at compile time");
+        (self.prove)(public_input, witness.witness, slots)
+    }
+
+    fn verify(&self, public_input: &I, proof: &Proof) -> Result<(), E> {
+        (self.verify)(public_input, proof)
+    }
+}
+
 impl PicklesProgram {
     pub fn compile_metadata(
         name: impl Into<String>,
@@ -384,6 +488,59 @@ mod tests {
         assert_eq!(
             rule.branch_data().pack::<Fp>(),
             Fp::from(16u64 * 4 + 2)
+        );
+    }
+
+    #[test]
+    fn recursive_backends_enforce_n1_and_n2_padding() {
+        fn verify(input: &u64, proof: &u64) -> Result<(), &'static str> {
+            (input == proof).then_some(()).ok_or("bad proof")
+        }
+        let unary_rule = InductiveRule::new(RuleId(1), "unary", ProofsVerified::N1, 16);
+        let mut unary = N1RuleBackend::compile(
+            &unary_rule,
+            |input: &u64, witness: u64, slots: [ProofSlot<u64>; 2]| {
+                assert_eq!(slots, [ProofSlot::Dummy, ProofSlot::Proof(4)]);
+                Ok::<_, &'static str>(*input + witness)
+            },
+            verify,
+        )
+        .unwrap();
+        let proof = unary
+            .prove(
+                &5,
+                RecursiveRuleWitness {
+                    witness: 2,
+                    previous_proofs: [4],
+                },
+            )
+            .unwrap();
+        assert_eq!(proof, 7);
+
+        let binary_rule = InductiveRule::new(RuleId(2), "binary", ProofsVerified::N2, 16);
+        let mut binary = N2RuleBackend::compile(
+            &binary_rule,
+            |input: &u64, _: (), slots: [ProofSlot<u64>; 2]| {
+                assert_eq!(
+                    slots,
+                    [ProofSlot::Proof(3), ProofSlot::Proof(4)]
+                );
+                Ok::<_, &'static str>(*input)
+            },
+            verify,
+        )
+        .unwrap();
+        assert_eq!(
+            binary
+                .prove(
+                    &9,
+                    RecursiveRuleWitness {
+                        witness: (),
+                        previous_proofs: [3, 4],
+                    },
+                )
+                .unwrap(),
+            9
         );
     }
 }
