@@ -350,6 +350,13 @@ taggée ; `verify` reprend ce tag et refuse les règles inconnues. Les backends
 gardent leurs types de public input, witness, preuve et erreur, ce qui permet
 aux circuits step/wrap de rester fortement typés sans effacement global.
 
+`BaseCaseRuleBackend` raccorde cette abstraction au vrai pipeline Pickles
+`N0`. Son `prove` exécute la compilation deux passes avec wrap VK réelle. Son
+`verify` contrôle la VK embarquée, recalcule le digest depuis l'état
+applicatif public, vérifie sa présence au slot canonique du wrap statement,
+puis vérifie la preuve Kimchi. L'API générique n'est donc plus uniquement
+validée par un backend synthétique.
+
 ### Mise à jour : VERIFICATION KEYS SIDE-LOADED
 
 `SideLoadedVerificationKey` encapsule les 28 commitments canoniques et les

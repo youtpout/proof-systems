@@ -31,6 +31,7 @@ use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
 use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
+use crate::inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId};
 use crate::plonk_curve_ops::ShiftedScalar;
 use crate::scalar_challenge::ScalarChallenge;
 use crate::step_verifier::{Claimed, FinalizeEvals};
@@ -518,6 +519,116 @@ where
         "wrap verification key changed between compilation passes"
     );
     final_proof
+}
+
+/// Concrete [`CompiledRuleBackend`] for a Pickles base (`N0`) rule.
+///
+/// Proof creation uses the two-pass real-wrap-VK pipeline. Verification checks
+/// both the Kimchi wrap proof and the binding between the caller's public
+/// application state and the accumulator digest in the wrap statement.
+pub struct BaseCaseRuleBackend<
+    A: StepApp,
+    const ROUNDS: usize,
+    const STMT_LEN: usize,
+> {
+    rule_id: RuleId,
+    app: A,
+}
+
+impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
+    BaseCaseRuleBackend<A, ROUNDS, STMT_LEN>
+{
+    pub fn compile(rule: &InductiveRule, app: A) -> Result<Self, BaseCaseBackendError> {
+        if rule.proofs_verified != ProofsVerified::N0 {
+            return Err(BaseCaseBackendError::ExpectedBaseRule(rule.id));
+        }
+        Ok(Self {
+            rule_id: rule.id,
+            app,
+        })
+    }
+
+    pub fn rule_id(&self) -> RuleId {
+        self.rule_id
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BaseCaseBackendError {
+    ExpectedBaseRule(RuleId),
+    PublicStateMismatch,
+    WrapKeyMismatch,
+    InvalidStatementLength(usize),
+    InvalidWrapProof,
+}
+
+impl<
+        A: StepApp + Clone,
+        const ROUNDS: usize,
+        const STMT_LEN: usize,
+    > CompiledRuleBackend for BaseCaseRuleBackend<A, ROUNDS, STMT_LEN>
+where
+    A::Witness: Clone,
+{
+    type PublicInput = Vec<Fp>;
+    type Witness = A::Witness;
+    type Proof = BaseCaseProof<A, ROUNDS, STMT_LEN>;
+    type Error = BaseCaseBackendError;
+
+    fn prove(
+        &mut self,
+        public_input: &Self::PublicInput,
+        witness: Self::Witness,
+    ) -> Result<Self::Proof, Self::Error> {
+        if self.app.state(&witness) != *public_input {
+            return Err(BaseCaseBackendError::PublicStateMismatch);
+        }
+        Ok(prove_base_case_two_pass::<A, ROUNDS, STMT_LEN>(
+            self.app.clone(),
+            witness,
+        ))
+    }
+
+    fn verify(
+        &self,
+        public_input: &Self::PublicInput,
+        proof: &Self::Proof,
+    ) -> Result<(), Self::Error> {
+        let actual_vk = wrap_verification_key_points(&proof.wrap_verifier);
+        if actual_vk != proof.wrap_vk_pts {
+            return Err(BaseCaseBackendError::WrapKeyMismatch);
+        }
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &actual_vk,
+            public_input,
+            &[],
+            &[],
+        );
+        if proof.statement.len() != STMT_LEN {
+            return Err(BaseCaseBackendError::InvalidStatementLength(
+                proof.statement.len(),
+            ));
+        }
+        // Wrap.Statement.to_data stores the next-step message digest at slot
+        // 12, before bulletproof challenges, branch data and feature flags.
+        if proof.statement[12] != fp_to_fq(digest) {
+            return Err(BaseCaseBackendError::PublicStateMismatch);
+        }
+        let statement: [Fq; STMT_LEN] = proof
+            .statement
+            .clone()
+            .try_into()
+            .map_err(|statement: Vec<Fq>| {
+                BaseCaseBackendError::InvalidStatementLength(statement.len())
+            })?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof
+                .wrap_verifier
+                .verify::<PallasBase, PallasScalar>(proof.proof.clone(), statement, ());
+        }))
+        .map_err(|_| BaseCaseBackendError::InvalidWrapProof)
+    }
 }
 
 /// Proves one application execution through the full base-case pipeline and

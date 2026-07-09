@@ -12,8 +12,11 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::{
     api::{
-        prove_base_case, prove_base_case_two_pass, wrap_verification_key_points, StepApp,
+        prove_base_case, prove_base_case_two_pass, wrap_verification_key_points,
+        BaseCaseBackendError, BaseCaseRuleBackend, StepApp,
     },
+    composition_types::ProofsVerified,
+    inductive_rule::{InductiveRule, PicklesProgram, ProgramExecutionError, RuleId},
     recursive_step::{
         prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
         prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
@@ -303,5 +306,36 @@ fn recursive_cycle_uses_the_real_wrap_vk() {
     assert_eq!(
         cycle.wrap.proof.proof.lr.len(),
         WRAP2_PROOF_ROUNDS
+    );
+}
+
+#[test]
+fn compiled_program_proves_and_verifies_a_real_base_rule() {
+    let metadata = PicklesProgram::compile_metadata(
+        "square",
+        vec![InductiveRule::new(
+            RuleId(0),
+            "base",
+            ProofsVerified::N0,
+            ROUNDS as u8,
+        )],
+    )
+    .unwrap();
+    let mut program = metadata
+        .compile(|rule| BaseCaseRuleBackend::<SquareApp, ROUNDS, STMT_LEN>::compile(rule, SquareApp))
+        .unwrap();
+
+    let public_state = vec![Fp::from(31u64) * Fp::from(31u64)];
+    let proof = program
+        .prove(RuleId(0), &public_state, Fp::from(31u64))
+        .unwrap();
+    program.verify(&public_state, &proof).unwrap();
+
+    let wrong_state = vec![Fp::from(1u64)];
+    assert_eq!(
+        program.verify(&wrong_state, &proof),
+        Err(ProgramExecutionError::Backend(
+            BaseCaseBackendError::PublicStateMismatch
+        ))
     );
 }
