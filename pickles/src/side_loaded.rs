@@ -223,6 +223,52 @@ impl SideLoadedVerificationKey {
         key.max_proofs_verified = max_proofs_verified;
         Ok(key)
     }
+
+    /// Convert this validated key to Mina's
+    /// `Side_loaded_verification_key.Stable.V2` wire layout.
+    ///
+    /// Mina's Stable.V2 representation carries the maximum and actual wrap
+    /// arities plus the 28 Plonk commitments. It does not carry the step
+    /// domain, so the inverse conversion requires that metadata explicitly.
+    pub fn to_stable_v2(&self) -> crate::mina_bin_prot::SideLoadedVerificationKeyV2 {
+        crate::mina_bin_prot::SideLoadedVerificationKeyV2 {
+            max_proofs_verified: self.max_proofs_verified,
+            actual_wrap_domain_size: self.proofs_verified,
+            commitments: self.commitments.clone(),
+        }
+    }
+
+    pub fn from_stable_v2(
+        step_domain_log2: u8,
+        key: crate::mina_bin_prot::SideLoadedVerificationKeyV2,
+    ) -> Result<Self, SideLoadedKeyError> {
+        let wrap_domain_log2 =
+            crate::common::wrap_domain_log2(key.actual_wrap_domain_size.to_usize()) as u8;
+        let key = Self {
+            step_domain_log2,
+            wrap_domain_log2,
+            max_proofs_verified: key.max_proofs_verified,
+            proofs_verified: key.actual_wrap_domain_size,
+            commitments: key.commitments,
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn to_stable_v2_base58(
+        &self,
+    ) -> Result<String, crate::mina_bin_prot::BinProtError> {
+        self.to_stable_v2().to_base58_check()
+    }
+
+    pub fn from_stable_v2_base58(
+        step_domain_log2: u8,
+        value: &str,
+    ) -> Result<Self, SideLoadedStableV2Error> {
+        let key =
+            crate::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(value)?;
+        Ok(Self::from_stable_v2(step_domain_log2, key)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,6 +290,24 @@ pub enum SideLoadedKeyError {
     NonCanonicalField(usize),
     InvalidMetadataField(usize),
     ActualWidthExceedsMaximum,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SideLoadedStableV2Error {
+    Codec(crate::mina_bin_prot::BinProtError),
+    Key(SideLoadedKeyError),
+}
+
+impl From<crate::mina_bin_prot::BinProtError> for SideLoadedStableV2Error {
+    fn from(error: crate::mina_bin_prot::BinProtError) -> Self {
+        Self::Codec(error)
+    }
+}
+
+impl From<SideLoadedKeyError> for SideLoadedStableV2Error {
+    fn from(error: SideLoadedKeyError) -> Self {
+        Self::Key(error)
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +455,33 @@ mod tests {
         assert_eq!(
             SideLoadedVerificationKey::from_mina_field_bytes(&bytes).unwrap_err(),
             SideLoadedKeyError::NonCanonicalField(0)
+        );
+    }
+
+    #[test]
+    fn stable_v2_conversion_round_trips_through_mina_base58() {
+        let key =
+            SideLoadedVerificationKey::new(16, 15, ProofsVerified::N2, valid_commitments())
+                .unwrap();
+        let base58 = key.to_stable_v2_base58().unwrap();
+        let decoded = SideLoadedVerificationKey::from_stable_v2_base58(16, &base58).unwrap();
+
+        assert_eq!(decoded, key);
+        assert_eq!(decoded.to_mina_field_elements(), key.to_mina_field_elements());
+        assert_eq!(decoded.to_stable_v2(), key.to_stable_v2());
+    }
+
+    #[test]
+    fn stable_v2_conversion_rejects_invalid_metadata() {
+        let stable = crate::mina_bin_prot::SideLoadedVerificationKeyV2 {
+            max_proofs_verified: ProofsVerified::N1,
+            actual_wrap_domain_size: ProofsVerified::N2,
+            commitments: valid_commitments(),
+        };
+
+        assert_eq!(
+            SideLoadedVerificationKey::from_stable_v2(16, stable).unwrap_err(),
+            SideLoadedKeyError::ActualWidthExceedsMaximum
         );
     }
 
