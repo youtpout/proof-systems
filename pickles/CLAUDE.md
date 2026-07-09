@@ -267,10 +267,10 @@ Unfinalized et les deux recursion challenges ; `prove_recursive_step_width2`
 compile, prouve et vérifie le branch.
 
 Le test `pickles_recursive_step_width2` passe avec deux slots réels. La
-première version compose deux vérificateurs width-1 à l'intérieur du circuit
-parent ; une future déduplication pourra construire directement
-`step_main(&[PerProofInput; 2])` pour partager le VK et le sponge d'index, sans
-changer la sémantique ni le statement width-2 désormais validés.
+construction `RecursiveStepData → PerProofInput` est extraite et le circuit
+appelle directement une seule fois `step_main(&[PerProofInput; 2])` : les deux
+preuves partagent donc le VK, le sponge d'index et le calcul du digest final,
+comme le branch multi-preuves Pickles.
 
 ### Ce qu'il manque maintenant
 

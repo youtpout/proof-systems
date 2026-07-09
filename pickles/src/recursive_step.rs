@@ -442,8 +442,6 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
 pub struct PreparedRecursiveStepWidth2<const WIDTH1_INPUT_LEN: usize, const PUBLIC_INPUT_LEN: usize>
 {
     pub proofs: [RecursiveStepData; 2],
-    pub individual_statements: [[Fp; WIDTH1_INPUT_LEN]; 2],
-    pub finalized_step_challenges: [Vec<Fp>; 2],
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub recursions: [kimchi::proof::RecursionChallenge<Vesta>; 2],
 }
@@ -455,8 +453,6 @@ pub struct RecursiveStepWidth2Circuit<
     const PUBLIC_INPUT_LEN: usize,
 > {
     pub proofs: [RecursiveStepData; 2],
-    pub individual_statements: [[Fp; WIDTH1_INPUT_LEN]; 2],
-    pub finalized_step_challenges: [Vec<Fp>; 2],
 }
 
 pub struct RecursiveStepWidth2Proof<
@@ -852,8 +848,6 @@ pub fn prepare_recursive_step_width2<
 
     PreparedRecursiveStepWidth2 {
         proofs: [first.data, second.data],
-        individual_statements: [first.statement, second.statement],
-        finalized_step_challenges: challenges,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
         recursions: [first.recursion, second.recursion],
     }
@@ -875,8 +869,6 @@ pub fn prove_recursive_step_width2<
         PUBLIC_INPUT_LEN,
     > {
         proofs: prepared.proofs,
-        individual_statements: prepared.individual_statements,
-        finalized_step_challenges: prepared.finalized_step_challenges,
     };
     let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
     let (proof, _) = prover
@@ -1627,6 +1619,243 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     lhs.into_affine() == rhs.into_affine()
 }
 
+fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize>(
+    sys: &mut RunState<Fp>,
+    d: &'a RecursiveStepData,
+    statement: &[FieldVar<Fp>],
+    mds: &'a [Vec<Fp>],
+) -> SnarkyResult<(
+    PerProofInput<'a, Fp>,
+    crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
+    Vec<FieldVar<Fp>>,
+)> {
+    use crate::composition_types::PlonkVerificationKeyEvals;
+    use snarky::gadgets::curve::Point;
+
+    assert_eq!(statement.len(), 17 + WRAP_ROUNDS);
+    let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+        Ok(Point::new(
+            sys.compute(loc!(), move |_| p.0)?,
+            sys.compute(loc!(), move |_| p.1)?,
+        ))
+    };
+    let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
+        ps.iter().map(|&p| mkpt(sys, p)).collect()
+    };
+    let w1 = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
+    let wvec = |sys: &mut RunState<Fp>, vs: &[Fp]| -> SnarkyResult<Vec<FieldVar<Fp>>> {
+        vs.iter()
+            .map(|&v| sys.compute(loc!(), move |_| v))
+            .collect()
+    };
+    let cpt = |p: (Fp, Fp)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
+    let t2s = |sys: &mut RunState<Fp>,
+               half: FieldVar<Fp>,
+               odd: FieldVar<Fp>|
+     -> SnarkyResult<ShiftedScalar<Fp>> {
+        sys.assert_r1cs(
+            Some("step statement Type2 odd bit".into()),
+            loc!(),
+            odd.clone(),
+            odd.clone(),
+            odd.clone(),
+        )?;
+        Ok(ShiftedScalar::Type2(half, Boolean::create_unsafe(odd)))
+    };
+
+    let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
+    let finalize_params = FinalizeParams {
+        tokens: &d.finalize_tokens,
+        domain: d.finalize_domain,
+        srs_log2: d.finalize_srs_log2,
+        endo: d.finalize_endo,
+        shifts: &d.finalize_shifts,
+        endo_r: *endo_p,
+        mds,
+        shift: ShiftKind::Type1,
+    };
+    let mut fe = d.evals_flat.iter();
+    let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
+        let &(a, b) = fe.next().unwrap();
+        Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+    };
+    let evals = crate::fr_sponge::AbsorbEvalsVar {
+        z: next_pe(sys)?,
+        generic_selector: next_pe(sys)?,
+        poseidon_selector: next_pe(sys)?,
+        complete_add_selector: next_pe(sys)?,
+        mul_selector: next_pe(sys)?,
+        emul_selector: next_pe(sys)?,
+        endomul_scalar_selector: next_pe(sys)?,
+        w: (0..COLUMNS)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        coefficients: (0..COLUMNS)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        s: (0..PERMUTS - 1)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+    };
+    let finalize_evals = FinalizeEvals {
+        ft_eval1: w1(sys, d.ft_eval1)?,
+        public_evals: [
+            wvec(sys, &d.public_evals[0])?,
+            wvec(sys, &d.public_evals[1])?,
+        ],
+        evals,
+    };
+
+    let sv = wvec(sys, &d.stmt)?;
+    let stmt = WrapStatementVars {
+        combined_inner_product: sv[0].clone(),
+        b: sv[1].clone(),
+        zeta_to_srs_length: sv[2].clone(),
+        zeta_to_domain_size: sv[3].clone(),
+        perm: sv[4].clone(),
+        beta: sv[5].clone(),
+        gamma: sv[6].clone(),
+        alpha: sv[7].clone(),
+        zeta: sv[8].clone(),
+        xi: sv[9].clone(),
+        sponge_digest_before_evaluations: sv[10].clone(),
+        messages_for_next_wrap_proof_digest: sv[11].clone(),
+        bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
+        branch_data: sv[13 + PREV_ROUNDS].clone(),
+        feature_flags: (0..8)
+            .map(|_| sys.compute(loc!(), |_| false))
+            .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
+    };
+
+    let vk_pts = d
+        .wrap_vk_pts
+        .iter()
+        .map(|&p| mkpt(sys, p))
+        .collect::<SnarkyResult<Vec<_>>>()?;
+    let mut it = vk_pts.into_iter();
+    let dlog_index = PlonkVerificationKeyEvals {
+        sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
+        coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
+        generic_comm: it.next().unwrap(),
+        psm_comm: it.next().unwrap(),
+        complete_add_comm: it.next().unwrap(),
+        mul_comm: it.next().unwrap(),
+        emul_comm: it.next().unwrap(),
+        endomul_scalar_comm: it.next().unwrap(),
+    };
+    let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
+    let prev_app_state = wvec(sys, &d.prev_app_state)?;
+    let vk = VerificationKeyComm {
+        generic: mkpt(sys, d.generic)?,
+        psm: mkpt(sys, d.psm)?,
+        complete_add: mkpt(sys, d.complete_add)?,
+        mul: mkpt(sys, d.mul)?,
+        emul: mkpt(sys, d.emul)?,
+        endomul_scalar: mkpt(sys, d.endomul_scalar)?,
+        coefficients: mkpts(sys, &d.coefficients)?,
+        sigma_init: mkpts(sys, &d.sigma_init)?,
+        sigma_last: mkpts(sys, &d.sigma_last)?,
+    };
+    let messages = Messages {
+        w_comm: d
+            .w_comm
+            .iter()
+            .map(|&p| Ok(vec![mkpt(sys, p)?]))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        z_comm: vec![mkpt(sys, d.z_comm)?],
+        t_comm: d
+            .t_comm
+            .iter()
+            .map(|&p| mkpt(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+    };
+    let lr =
+        d.lr.iter()
+            .map(|&(l, r)| Ok((mkpt(sys, l)?, mkpt(sys, r)?)))
+            .collect::<SnarkyResult<Vec<_>>>()?;
+    let h = cpt(d.h);
+    let wt2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
+        let half = sys.compute(loc!(), move |_| p.0)?;
+        let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+        Ok(ShiftedScalar::Type2(half, odd))
+    };
+    let openings = OpeningProof {
+        lr,
+        delta: mkpt(sys, d.delta)?,
+        z1: wt2(sys, d.z1)?,
+        z2: wt2(sys, d.z2)?,
+        challenge_polynomial_commitment: mkpt(sys, d.sg)?,
+        h_generator: h.clone(),
+    };
+    let advice = Advice {
+        combined_inner_product: t2s(sys, statement[0].clone(), statement[1].clone())?,
+        b: t2s(sys, statement[2].clone(), statement[3].clone())?,
+        zeta_to_srs_length: t2s(sys, statement[4].clone(), statement[5].clone())?,
+        zeta_to_domain_size: t2s(sys, statement[6].clone(), statement[7].clone())?,
+        perm: t2s(sys, statement[8].clone(), statement[9].clone())?,
+    };
+    let claimed = Claimed {
+        sponge_digest_before_evaluations: statement[10].clone(),
+        beta: statement[11].clone(),
+        gamma: statement[12].clone(),
+        alpha: statement[13].clone(),
+        zeta: statement[14].clone(),
+        bulletproof_challenges: statement[16..16 + WRAP_ROUNDS].to_vec(),
+    };
+    let should_finalize = statement[16 + WRAP_ROUNDS].clone();
+    sys.assert_r1cs(
+        Some("should_finalize bit".into()),
+        loc!(),
+        should_finalize.clone(),
+        should_finalize.clone(),
+        should_finalize.clone(),
+    )?;
+    let should_finalize = Boolean::create_unsafe(should_finalize);
+    let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+
+    let proof = PerProofInput {
+        finalize_params,
+        finalize_evals,
+        stmt,
+        sponge_after_index: after_index,
+        prev_app_state,
+        messages_for_next_step_accumulators: d
+            .messages_for_next_step_accumulators
+            .iter()
+            .map(|&p| mkpt(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        prev_challenge_polynomial_commitments: d
+            .prev_challenge_polynomial_commitments
+            .iter()
+            .map(|&p| mkpt(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        prev_challenges: d
+            .prev_challenges
+            .iter()
+            .map(|chals| wvec(sys, chals))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        vk_digest: w1(sys, d.wrap_vk_digest)?,
+        vk,
+        packed_lagranges: d
+            .packed_lagranges
+            .iter()
+            .map(|&(l, c)| (cpt(l), cpt(c)))
+            .collect(),
+        flag_lagranges: d.flag_lagranges.iter().map(|&l| cpt(l)).collect(),
+        h_generator: h,
+        messages,
+        openings,
+        advice,
+        xi: statement[15].clone(),
+        claimed,
+        should_finalize: should_finalize.clone(),
+        must_verify: should_finalize,
+        is_base_case,
+    };
+    let app_state = wvec(sys, &d.prev_app_state)?;
+    Ok((proof, dlog_index, app_state))
+}
+
 impl<
         const PREV_ROUNDS: usize,
         const WRAP_ROUNDS: usize,
@@ -1648,72 +1877,42 @@ impl<
         statement: Self::PublicInput,
         _private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
-        use crate::composition_types::PlonkVerificationKeyEvals;
-        use snarky::gadgets::curve::Point;
-
         assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
         assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
         let per_proof = 17 + WRAP_ROUNDS;
-
+        let mds: Vec<Vec<Fp>> = Vesta::sponge_params()
+            .mds
+            .iter()
+            .map(|row| row.to_vec())
+            .collect();
+        let mut proofs = Vec::with_capacity(2);
+        let mut shared_index = None;
+        let mut app_state = None;
         for i in 0..2 {
-            let mut local = statement[i * per_proof..(i + 1) * per_proof].to_vec();
-            local.push(FieldVar::constant(
-                self.individual_statements[i][WIDTH1_INPUT_LEN - 2],
-            ));
-            local.push(statement[PUBLIC_INPUT_LEN - 1].clone());
-            let local: [FieldVar<Fp>; WIDTH1_INPUT_LEN] =
-                local.try_into().unwrap_or_else(|_| unreachable!());
-            let inner = RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN> {
-                d: [self.proofs[i].clone()],
-            };
-            inner.circuit(sys, local, None)?;
+            let segment = &statement[i * per_proof..(i + 1) * per_proof];
+            let (proof, index, state) = recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
+                sys,
+                &self.proofs[i],
+                segment,
+                &mds,
+            )?;
+            if i == 0 {
+                shared_index = Some(index);
+                app_state = Some(state);
+            }
+            proofs.push(proof);
         }
-
-        let d = &self.proofs[0];
-        let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-            Ok(Point::new(
-                sys.compute(loc!(), move |_| p.0)?,
-                sys.compute(loc!(), move |_| p.1)?,
-            ))
-        };
-        let mut vk_pts = Vec::with_capacity(28);
-        for &p in &d.wrap_vk_pts {
-            vk_pts.push(mkpt(sys, p)?);
-        }
-        let mut it = vk_pts.into_iter();
-        let dlog_index = PlonkVerificationKeyEvals {
-            sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
-            coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
-            generic_comm: it.next().unwrap(),
-            psm_comm: it.next().unwrap(),
-            complete_add_comm: it.next().unwrap(),
-            mul_comm: it.next().unwrap(),
-            emul_comm: it.next().unwrap(),
-            endomul_scalar_comm: it.next().unwrap(),
-        };
-        let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
-        let mut app_state = Vec::with_capacity(d.prev_app_state.len());
-        for &x in &d.prev_app_state {
-            app_state.push(sys.compute(loc!(), move |_| x)?);
-        }
-        let mut cpcs = Vec::with_capacity(2);
-        let mut challenges = Vec::with_capacity(2);
-        for i in 0..2 {
-            cpcs.push(mkpt(sys, self.proofs[i].sg)?);
-            challenges.push(
-                self.finalized_step_challenges[i]
-                    .iter()
-                    .map(|&x| sys.compute(loc!(), move |_| x))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
-            );
-        }
-        let digest = crate::hash_messages::hash_messages_for_next_step_proof(
+        let params = groupmap::BWParameters::<PallasParameters>::setup();
+        let digest = step_main::<Fp, PallasParameters>(
             sys,
             loc!(),
-            &after_index,
-            &app_state,
-            &cpcs,
-            &challenges,
+            &app_state.unwrap(),
+            &shared_index.unwrap(),
+            &proofs,
+            &params,
+            crate::endo::tick::base(),
+            <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
+            255,
         )?;
         digest.assert_equals(sys, loc!(), &statement[PUBLIC_INPUT_LEN - 2])
     }
