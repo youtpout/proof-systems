@@ -61,6 +61,7 @@ pub struct WrapWireProofV1 {
 /// so the `ArrayN16` bounds from Mina's `All_evals.Stable.V2` are enforced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WrapProofBaseV3 {
+    pub stable_statement: WrapStatementMinimalV1,
     pub statement: Vec<Fq>,
     pub prev_evals: WrapProofPrevEvalsV2,
     pub proof: WrapWireProofV1,
@@ -72,6 +73,34 @@ pub struct WrapProofPrevEvalsV2 {
     pub evals: ProofEvaluations<PointEvaluations<Vec<Fp>>>,
 }
 
+/// Mina `Composition_types.Wrap.Statement.Minimal.Stable.V1` specialized to
+/// the side-loaded proof shape.
+///
+/// The legacy Rust public input is the flattened `Wrap.Statement.to_data`
+/// vector. Mina's stable proof does not store that digest-only representation:
+/// it stores the reduced messages structurally. This type preserves the
+/// flattened values for local checks while carrying the two message records
+/// required by Mina's stable layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrapStatementMinimalV1 {
+    pub flattened: Vec<Fq>,
+    pub messages_for_next_wrap_proof: WrapMessagesForNextWrapProofV1,
+    pub messages_for_next_step_proof: StepMessagesForNextProofV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrapMessagesForNextWrapProofV1 {
+    pub challenge_polynomial_commitment: (Fq, Fq),
+    pub old_bulletproof_challenges: Vec<Vec<Fq>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepMessagesForNextProofV1 {
+    /// Side-loaded Mina proofs use `unit` app_state at this boundary.
+    pub challenge_polynomial_commitments: Vec<(Fp, Fp)>,
+    pub old_bulletproof_challenges: Vec<Vec<Fq>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinProtError {
     Base58,
@@ -81,14 +110,33 @@ pub enum BinProtError {
     InvalidProofsVerified(u8),
     InvalidVectorTerminator(usize),
     InvalidOptionTag(u8),
-    VectorTooLong { max: usize, actual: usize },
-    WrongVectorLength { expected: usize, actual: usize },
+    VectorTooLong {
+        max: usize,
+        actual: usize,
+    },
+    WrongVectorLength {
+        expected: usize,
+        actual: usize,
+    },
     EmptyStatement,
-    BoundedArrayTooLong { max: usize, actual: usize },
+    BoundedArrayTooLong {
+        max: usize,
+        actual: usize,
+    },
     UnsupportedLookupCommitments,
     UnsupportedOptionalEvaluation(&'static str),
     NonCanonicalField(usize),
     InvalidCurvePoint(usize),
+    InvalidStatementShape {
+        expected_at_least: usize,
+        actual: usize,
+    },
+    NonCanonicalChallenge(usize),
+    TooManyReducedMessages {
+        max: usize,
+        actual: usize,
+    },
+    MinaStatementMismatch,
 }
 
 fn encode_field(field: Fp, out: &mut Vec<u8>) {
@@ -129,6 +177,21 @@ fn encode_point(point: (Fp, Fp), out: &mut Vec<u8>) -> Result<(), BinProtError> 
 
 fn validate_point(point: (Fp, Fp), index: usize) -> Result<(), BinProtError> {
     let point = Pallas::new_unchecked(point.0, point.1);
+    if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(BinProtError::InvalidCurvePoint(index));
+    }
+    Ok(())
+}
+
+fn encode_vesta_point(point: (Fq, Fq), out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    validate_vesta_point(point, 0)?;
+    encode_scalar(point.0, out);
+    encode_scalar(point.1, out);
+    Ok(())
+}
+
+fn validate_vesta_point(point: (Fq, Fq), index: usize) -> Result<(), BinProtError> {
+    let point = Vesta::new_unchecked(point.0, point.1);
     if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
         return Err(BinProtError::InvalidCurvePoint(index));
     }
@@ -314,8 +377,14 @@ impl WrapWireProofV1 {
         };
         reject_optional("range_check0_selector", &proof.evals.range_check0_selector)?;
         reject_optional("range_check1_selector", &proof.evals.range_check1_selector)?;
-        reject_optional("foreign_field_add_selector", &proof.evals.foreign_field_add_selector)?;
-        reject_optional("foreign_field_mul_selector", &proof.evals.foreign_field_mul_selector)?;
+        reject_optional(
+            "foreign_field_add_selector",
+            &proof.evals.foreign_field_add_selector,
+        )?;
+        reject_optional(
+            "foreign_field_mul_selector",
+            &proof.evals.foreign_field_mul_selector,
+        )?;
         reject_optional("xor_selector", &proof.evals.xor_selector)?;
         reject_optional("rot_selector", &proof.evals.rot_selector)?;
         reject_optional("lookup_aggregation", &proof.evals.lookup_aggregation)?;
@@ -399,8 +468,7 @@ impl WrapWireProofV1 {
 
     pub fn to_prover_proof(
         &self,
-    ) -> Result<ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>, BinProtError>
-    {
+    ) -> Result<ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>, BinProtError> {
         let point = |coords: (Fp, Fp), index: usize| -> Result<Pallas, BinProtError> {
             validate_point(coords, index)?;
             Ok(Pallas::new_unchecked(coords.0, coords.1))
@@ -439,9 +507,7 @@ impl WrapWireProofV1 {
                 .bulletproof_lr
                 .iter()
                 .enumerate()
-                .map(|(index, &(l, r))| {
-                    Ok((point(l, index * 2)?, point(r, index * 2 + 1)?))
-                })
+                .map(|(index, &(l, r))| Ok((point(l, index * 2)?, point(r, index * 2 + 1)?)))
                 .collect::<Result<Vec<_>, _>>()?,
             z1: self.z_1,
             z2: self.z_2,
@@ -571,14 +637,13 @@ impl WrapWireProofV1 {
             validate_point((x, y), point_index)?;
             Ok((x, y))
         };
-        let read_pair = |offset: &mut usize,
-                         scalar_index: &mut usize|
-         -> Result<(Fq, Fq), BinProtError> {
-            Ok((
-                read_scalar(offset, scalar_index)?,
-                read_scalar(offset, scalar_index)?,
-            ))
-        };
+        let read_pair =
+            |offset: &mut usize, scalar_index: &mut usize| -> Result<(Fq, Fq), BinProtError> {
+                Ok((
+                    read_scalar(offset, scalar_index)?,
+                    read_scalar(offset, scalar_index)?,
+                ))
+            };
         let read_unit = |offset: &mut usize| {
             if *offset >= bytes.len() {
                 return Err(BinProtError::WrongLength(bytes.len()));
@@ -598,7 +663,11 @@ impl WrapWireProofV1 {
         let z_comm = read_point(&mut offset, &mut field_index, COLUMNS)?;
         let mut t_comm = Vec::with_capacity(7);
         for index in 0..7 {
-            t_comm.push(read_point(&mut offset, &mut field_index, COLUMNS + 1 + index)?);
+            t_comm.push(read_point(
+                &mut offset,
+                &mut field_index,
+                COLUMNS + 1 + index,
+            )?);
         }
         read_unit(&mut offset)?;
 
@@ -676,20 +745,195 @@ impl WrapProofPrevEvalsV2 {
     }
 }
 
+impl WrapStatementMinimalV1 {
+    pub const MIN_FLATTENED_LEN: usize = 38;
+
+    pub fn from_flattened(
+        flattened: Vec<Fq>,
+        messages_for_next_wrap_proof: WrapMessagesForNextWrapProofV1,
+        messages_for_next_step_proof: StepMessagesForNextProofV1,
+    ) -> Result<Self, BinProtError> {
+        if flattened.len() < Self::MIN_FLATTENED_LEN {
+            return Err(BinProtError::InvalidStatementShape {
+                expected_at_least: Self::MIN_FLATTENED_LEN,
+                actual: flattened.len(),
+            });
+        }
+        messages_for_next_wrap_proof.validate()?;
+        messages_for_next_step_proof.validate()?;
+        Ok(Self {
+            flattened,
+            messages_for_next_wrap_proof,
+            messages_for_next_step_proof,
+        })
+    }
+
+    pub fn legacy_digest_only(flattened: Vec<Fq>) -> Result<Self, BinProtError> {
+        if flattened.len() < Self::MIN_FLATTENED_LEN {
+            return Err(BinProtError::InvalidStatementShape {
+                expected_at_least: Self::MIN_FLATTENED_LEN,
+                actual: flattened.len(),
+            });
+        }
+        Ok(Self {
+            flattened,
+            messages_for_next_wrap_proof: WrapMessagesForNextWrapProofV1 {
+                challenge_polynomial_commitment: (Fq::from(0u64), Fq::from(0u64)),
+                old_bulletproof_challenges: Vec::new(),
+            },
+            messages_for_next_step_proof: StepMessagesForNextProofV1 {
+                challenge_polynomial_commitments: Vec::new(),
+                old_bulletproof_challenges: Vec::new(),
+            },
+        })
+    }
+
+    fn encode_bin_prot(&self, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+        if self.flattened.len() < Self::MIN_FLATTENED_LEN {
+            return Err(BinProtError::InvalidStatementShape {
+                expected_at_least: Self::MIN_FLATTENED_LEN,
+                actual: self.flattened.len(),
+            });
+        }
+
+        // proof_state.deferred_values.plonk
+        encode_challenge_constant(self.flattened[7], out)?; // alpha.inner
+        encode_challenge_constant(self.flattened[5], out)?; // beta
+        encode_challenge_constant(self.flattened[6], out)?; // gamma
+        encode_challenge_constant(self.flattened[8], out)?; // zeta.inner
+        encode_option_none(out); // joint_combiner
+        encode_features_none(out); // feature_flags
+
+        // proof_state.deferred_values.bulletproof_challenges
+        for &challenge in &self.flattened[13..29] {
+            encode_challenge_constant(challenge, out)?;
+        }
+        out.push(0); // fixed Vector_16 terminator
+
+        // proof_state.deferred_values.branch_data
+        let proofs_verified = match branch_data_proofs_verified(&self.flattened[29])? {
+            0 => ProofsVerified::N0,
+            1 => ProofsVerified::N1,
+            2 => ProofsVerified::N2,
+            value => return Err(BinProtError::InvalidProofsVerified(value as u8)),
+        };
+        out.push(encode_proofs_verified(proofs_verified));
+        out.push(branch_data_domain_log2(&self.flattened[29])?);
+
+        // proof_state.sponge_digest_before_evaluations
+        encode_digest_constant(self.flattened[10], out)?;
+
+        // proof_state.messages_for_next_wrap_proof
+        self.messages_for_next_wrap_proof.encode_bin_prot(out)?;
+
+        // statement.messages_for_next_step_proof
+        self.messages_for_next_step_proof.encode_bin_prot(out)?;
+        Ok(())
+    }
+}
+
+impl WrapMessagesForNextWrapProofV1 {
+    fn validate(&self) -> Result<(), BinProtError> {
+        validate_vesta_point(self.challenge_polynomial_commitment, 0)?;
+        if self.old_bulletproof_challenges.len() > 2 {
+            return Err(BinProtError::TooManyReducedMessages {
+                max: 2,
+                actual: self.old_bulletproof_challenges.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn encode_bin_prot(&self, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+        self.validate()?;
+        encode_vesta_point(self.challenge_polynomial_commitment, out)?;
+        encode_u8_len_exact(self.old_bulletproof_challenges.len(), 2, out)?;
+        for challenges in &self.old_bulletproof_challenges {
+            encode_challenge_vector(challenges, out)?;
+        }
+        Ok(())
+    }
+}
+
+impl StepMessagesForNextProofV1 {
+    fn validate(&self) -> Result<(), BinProtError> {
+        if self.challenge_polynomial_commitments.len() > 2 {
+            return Err(BinProtError::TooManyReducedMessages {
+                max: 2,
+                actual: self.challenge_polynomial_commitments.len(),
+            });
+        }
+        if self.challenge_polynomial_commitments.len() != self.old_bulletproof_challenges.len() {
+            return Err(BinProtError::WrongVectorLength {
+                expected: self.challenge_polynomial_commitments.len(),
+                actual: self.old_bulletproof_challenges.len(),
+            });
+        }
+        for (index, &point) in self.challenge_polynomial_commitments.iter().enumerate() {
+            validate_point(point, index)?;
+        }
+        Ok(())
+    }
+
+    fn encode_bin_prot(&self, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+        self.validate()?;
+        out.push(0); // app_state = unit
+        encode_u8_len_exact(self.challenge_polynomial_commitments.len(), 2, out)?;
+        for &point in &self.challenge_polynomial_commitments {
+            encode_point(point, out)?;
+        }
+        encode_u8_len_exact(self.old_bulletproof_challenges.len(), 2, out)?;
+        for challenges in &self.old_bulletproof_challenges {
+            encode_challenge_vector(challenges, out)?;
+        }
+        Ok(())
+    }
+}
+
 impl WrapProofBaseV3 {
     pub fn from_proofs(
         statement: Vec<Fq>,
         prev_step_proof: &ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
         wrap_proof: &ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
     ) -> Result<Self, BinProtError> {
-        if statement.is_empty() {
-            return Err(BinProtError::EmptyStatement);
-        }
-        Ok(Self {
+        let sg = prev_step_proof.proof.sg;
+        let stable_statement = WrapStatementMinimalV1::from_flattened(
             statement,
+            WrapMessagesForNextWrapProofV1 {
+                challenge_polynomial_commitment: (sg.x, sg.y),
+                old_bulletproof_challenges: Vec::new(),
+            },
+            StepMessagesForNextProofV1 {
+                challenge_polynomial_commitments: Vec::new(),
+                old_bulletproof_challenges: Vec::new(),
+            },
+        )?;
+        Self::from_proofs_with_statement(stable_statement, prev_step_proof, wrap_proof)
+    }
+
+    pub fn from_proofs_with_statement(
+        stable_statement: WrapStatementMinimalV1,
+        prev_step_proof: &ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+        wrap_proof: &ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    ) -> Result<Self, BinProtError> {
+        Ok(Self {
+            statement: stable_statement.flattened.clone(),
+            stable_statement,
             prev_evals: WrapProofPrevEvalsV2::from_step_proof(prev_step_proof)?,
             proof: WrapWireProofV1::from_prover_proof(wrap_proof)?,
         })
+    }
+
+    pub fn to_mina_bin_prot(&self) -> Result<Vec<u8>, BinProtError> {
+        if self.statement != self.stable_statement.flattened {
+            return Err(BinProtError::MinaStatementMismatch);
+        }
+        validate_prev_evals(&self.prev_evals.evals)?;
+        let mut out = Vec::new();
+        self.stable_statement.encode_bin_prot(&mut out)?;
+        self.prev_evals.encode_bin_prot(&mut out)?;
+        out.extend(self.proof.to_bin_prot()?);
+        Ok(out)
     }
 
     pub fn to_normalized_bin_prot(&self) -> Result<Vec<u8>, BinProtError> {
@@ -724,8 +968,10 @@ impl WrapProofBaseV3 {
         let proof = cursor.read_bytes(proof_len)?;
         let proof = WrapWireProofV1::from_bin_prot(proof)?;
         cursor.finish()?;
+        let stable_statement = WrapStatementMinimalV1::legacy_digest_only(statement.clone())?;
         Ok(Self {
             statement,
+            stable_statement,
             prev_evals,
             proof,
         })
@@ -854,6 +1100,96 @@ fn encode_u32_len(len: usize, out: &mut Vec<u8>) -> Result<(), BinProtError> {
     })?;
     out.extend(len.to_le_bytes());
     Ok(())
+}
+
+fn encode_u8_len_exact(len: usize, max: usize, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    if len > max {
+        return Err(BinProtError::VectorTooLong { max, actual: len });
+    }
+    out.push(len as u8);
+    Ok(())
+}
+
+fn encode_option_none(out: &mut Vec<u8>) {
+    out.push(0);
+}
+
+fn encode_features_none(out: &mut Vec<u8>) {
+    out.extend([0u8; 8]);
+}
+
+fn encode_int64(value: u64, out: &mut Vec<u8>) {
+    out.extend(value.to_le_bytes());
+}
+
+fn field_low_limbs<F: PrimeField>(field: F, limbs: usize) -> Vec<u64> {
+    let bytes = field.into_bigint().to_bytes_le();
+    (0..limbs)
+        .map(|limb| {
+            let mut out = [0u8; 8];
+            let start = limb * 8;
+            let end = usize::min(start + 8, bytes.len());
+            if start < bytes.len() {
+                out[..end - start].copy_from_slice(&bytes[start..end]);
+            }
+            u64::from_le_bytes(out)
+        })
+        .collect()
+}
+
+fn encode_challenge_constant(field: Fq, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    let limbs = field_low_limbs(field, 2);
+    if field_low_limbs(field, 4)[2..].iter().any(|&limb| limb != 0) {
+        return Err(BinProtError::NonCanonicalChallenge(0));
+    }
+    encode_int64(limbs[0], out);
+    encode_int64(limbs[1], out);
+    out.push(0); // fixed Vector_2 terminator
+    Ok(())
+}
+
+fn encode_digest_constant(field: Fq, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    for limb in field_low_limbs(field, 4) {
+        encode_int64(limb, out);
+    }
+    out.push(0); // fixed Vector_4 terminator
+    Ok(())
+}
+
+fn encode_challenge_vector(challenges: &[Fq], out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    if challenges.len() != 16 {
+        return Err(BinProtError::WrongVectorLength {
+            expected: 16,
+            actual: challenges.len(),
+        });
+    }
+    for &challenge in challenges {
+        encode_challenge_constant(challenge, out)?;
+    }
+    out.push(0); // fixed Step_bp_vec terminator
+    Ok(())
+}
+
+fn field_low_u8<F: PrimeField>(field: &F) -> u8 {
+    field
+        .into_bigint()
+        .to_bytes_le()
+        .first()
+        .copied()
+        .unwrap_or(0)
+}
+
+fn branch_data_proofs_verified(field: &Fq) -> Result<usize, BinProtError> {
+    let byte = field_low_u8(field);
+    let value = (byte & 0b11) as usize;
+    if value > 2 {
+        return Err(BinProtError::InvalidProofsVerified(value as u8));
+    }
+    Ok(value)
+}
+
+fn branch_data_domain_log2(field: &Fq) -> Result<u8, BinProtError> {
+    Ok(field_low_u8(field) >> 2)
 }
 
 fn encode_bounded_fp_array(values: &[Fp], out: &mut Vec<u8>) -> Result<(), BinProtError> {
@@ -1074,6 +1410,11 @@ mod tests {
         (point.x, point.y)
     }
 
+    fn vesta_point(scalar: u64) -> (Fq, Fq) {
+        let point = (Vesta::generator() * Fp::from(scalar)).into_affine();
+        (point.x, point.y)
+    }
+
     fn scalar_pair(seed: u64) -> (Fq, Fq) {
         (Fq::from(seed), Fq::from(seed + 10_000))
     }
@@ -1111,7 +1452,9 @@ mod tests {
 
     fn fp_evals(seed: u64, len: usize) -> PointEvaluations<Vec<Fp>> {
         PointEvaluations {
-            zeta: (0..len).map(|index| Fp::from(seed + index as u64)).collect(),
+            zeta: (0..len)
+                .map(|index| Fp::from(seed + index as u64))
+                .collect(),
             zeta_omega: (0..len)
                 .map(|index| Fp::from(seed + 1_000 + index as u64))
                 .collect(),
@@ -1126,9 +1469,7 @@ mod tests {
                 w: std::array::from_fn(|index| fp_evals(100 + index as u64, chunk_len)),
                 z: fp_evals(200, chunk_len),
                 s: std::array::from_fn(|index| fp_evals(300 + index as u64, chunk_len)),
-                coefficients: std::array::from_fn(|index| {
-                    fp_evals(400 + index as u64, chunk_len)
-                }),
+                coefficients: std::array::from_fn(|index| fp_evals(400 + index as u64, chunk_len)),
                 generic_selector: fp_evals(500, chunk_len),
                 poseidon_selector: fp_evals(501, chunk_len),
                 complete_add_selector: fp_evals(502, chunk_len),
@@ -1155,8 +1496,21 @@ mod tests {
     }
 
     fn wrap_proof_base_v3() -> WrapProofBaseV3 {
+        let statement: Vec<Fq> = (1..=38).map(Fq::from).collect();
         WrapProofBaseV3 {
-            statement: (1..=4).map(Fq::from).collect(),
+            stable_statement: WrapStatementMinimalV1::from_flattened(
+                statement.clone(),
+                WrapMessagesForNextWrapProofV1 {
+                    challenge_polynomial_commitment: vesta_point(1_200),
+                    old_bulletproof_challenges: Vec::new(),
+                },
+                StepMessagesForNextProofV1 {
+                    challenge_polynomial_commitments: Vec::new(),
+                    old_bulletproof_challenges: Vec::new(),
+                },
+            )
+            .unwrap(),
+            statement,
             prev_evals: prev_evals(2),
             proof: wrap_wire(4),
         }
@@ -1170,7 +1524,10 @@ mod tests {
         assert_eq!(bytes[0..2], [2, 1]);
         assert_eq!(bytes[2 + 7 * 64], 0);
         assert_eq!(bytes[2 + 7 * 64 + 1 + 15 * 64], 0);
-        assert_eq!(SideLoadedVerificationKeyV2::from_bin_prot(&bytes).unwrap(), key);
+        assert_eq!(
+            SideLoadedVerificationKeyV2::from_bin_prot(&bytes).unwrap(),
+            key
+        );
         let base58 = key.to_base58_check().unwrap();
         assert_eq!(
             SideLoadedVerificationKeyV2::from_base58_check(&base58).unwrap(),
@@ -1277,9 +1634,20 @@ mod tests {
         let proof = wrap_proof_base_v3();
         let bytes = proof.to_normalized_bin_prot().unwrap();
         let decoded = WrapProofBaseV3::from_normalized_bin_prot(&bytes).unwrap();
-        assert_eq!(decoded, proof);
+        assert_eq!(decoded.statement, proof.statement);
+        assert_eq!(decoded.prev_evals, proof.prev_evals);
+        assert_eq!(decoded.proof, proof.proof);
         assert_eq!(decoded.prev_evals.evals.w[0].zeta.len(), 2);
         assert_eq!(decoded.proof.bulletproof_lr.len(), 4);
+    }
+
+    #[test]
+    fn wrap_proof_base_v3_mina_bin_prot_uses_structured_statement() {
+        let proof = wrap_proof_base_v3();
+        let bytes = proof.to_mina_bin_prot().unwrap();
+        let normalized = proof.to_normalized_bin_prot().unwrap();
+        assert_ne!(bytes, normalized);
+        assert!(bytes.len() > proof.proof.to_bin_prot().unwrap().len());
     }
 
     #[test]
