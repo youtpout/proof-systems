@@ -708,6 +708,17 @@ impl<const R: usize, const WR: usize, const SR: usize, const SS: usize, const WS
             .wrap
             .ensure_mina_network_proof_matches(step_domain_log2, encoded)
     }
+
+    pub fn to_mina_stable_v3(
+        &self,
+    ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, DirectRecursiveBackendError> {
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
+            self.cycle.wrap.statement.to_vec(),
+            &self.cycle.step.proof,
+            &self.cycle.wrap.proof,
+        )
+        .map_err(|_| DirectRecursiveBackendError::MinaProofEncoding)
+    }
 }
 
 impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
@@ -725,6 +736,17 @@ impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const S
         let step_domain_log2 = self.step.verifier.index.domain.log_size_of_group as u8;
         self.wrap
             .ensure_mina_network_proof_matches(step_domain_log2, encoded)
+    }
+
+    pub fn to_mina_stable_v3(
+        &self,
+    ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, DirectRecursiveBackendError> {
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
+            self.wrap.statement.to_vec(),
+            &self.step.proof,
+            &self.wrap.proof,
+        )
+        .map_err(|_| DirectRecursiveBackendError::MinaProofEncoding)
     }
 }
 

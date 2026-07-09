@@ -655,6 +655,17 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, RO
         .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?;
         Ok(())
     }
+
+    pub fn to_mina_stable_v3(
+        &self,
+    ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, BaseCaseBackendError> {
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
+            self.statement.clone(),
+            &self.step_proof,
+            &self.proof,
+        )
+        .map_err(|_| BaseCaseBackendError::MinaProofEncoding)
+    }
 }
 
 /// Returns a wrap verifier index's 28 commitments in Pickles' canonical

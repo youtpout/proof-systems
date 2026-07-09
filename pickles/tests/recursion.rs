@@ -322,6 +322,14 @@ fn direct_n1_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.statement, proof.cycle.wrap.statement.to_vec());
     assert!(!encoded.wrap_wire_proof.is_empty());
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    let stable_v3 = proof.to_mina_stable_v3().unwrap();
+    assert_eq!(stable_v3.statement, proof.cycle.wrap.statement.to_vec());
+    assert_eq!(stable_v3.prev_evals.ft_eval1, proof.cycle.step.proof.ft_eval1);
+    assert_eq!(
+        stable_v3.proof,
+        pickles::mina_bin_prot::WrapWireProofV1::from_prover_proof(&proof.cycle.wrap.proof)
+            .unwrap()
+    );
     backend
         .verify_with_mina_encoding(&public, &proof, &encoded)
         .unwrap();
@@ -375,6 +383,13 @@ fn direct_n2_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.statement, proof.wrap.statement.to_vec());
     assert!(!encoded.wrap_wire_proof.is_empty());
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    let stable_v3 = proof.to_mina_stable_v3().unwrap();
+    assert_eq!(stable_v3.statement, proof.wrap.statement.to_vec());
+    assert_eq!(stable_v3.prev_evals.ft_eval1, proof.step.proof.ft_eval1);
+    assert_eq!(
+        stable_v3.proof,
+        pickles::mina_bin_prot::WrapWireProofV1::from_prover_proof(&proof.wrap.proof).unwrap()
+    );
     backend
         .verify_with_mina_encoding(&public, &proof, &encoded)
         .unwrap();
@@ -439,6 +454,13 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.statement, proof.statement);
     assert!(!encoded.wrap_wire_proof.is_empty());
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    let stable_v3 = proof.to_mina_stable_v3().unwrap();
+    assert_eq!(stable_v3.statement, proof.statement);
+    assert_eq!(stable_v3.prev_evals.ft_eval1, proof.step_proof.ft_eval1);
+    assert_eq!(
+        stable_v3.proof,
+        pickles::mina_bin_prot::WrapWireProofV1::from_prover_proof(&proof.proof).unwrap()
+    );
     backend
         .verify_with_mina_encoding(&public_state, &proof, &encoded)
         .unwrap();

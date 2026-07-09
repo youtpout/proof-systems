@@ -6,7 +6,7 @@ use kimchi::{
     circuits::wires::{COLUMNS, PERMUTS},
     proof::{PointEvaluations, ProofEvaluations, ProverCommitments, ProverProof},
 };
-use mina_curves::pasta::{Fp, Fq, Pallas};
+use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
 use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof};
 
 use crate::{common::FULL_ROUNDS, composition_types::ProofsVerified};
@@ -51,6 +51,27 @@ pub struct WrapWireProofV1 {
     pub challenge_polynomial_commitment: (Fp, Fp),
 }
 
+/// Rust representation of Mina
+/// `Proof.Base.Wrap.Stable.V3`.
+///
+/// This starts the full Stable.V3 port at the exact wrapper boundary used by
+/// Mina: the minimal wrap statement, the previous step proof evaluations, and
+/// the stable wrap wire proof. The nested statement/message types are still
+/// represented by their field elements, but `prev_evals` is kept structurally
+/// so the `ArrayN16` bounds from Mina's `All_evals.Stable.V2` are enforced.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrapProofBaseV3 {
+    pub statement: Vec<Fq>,
+    pub prev_evals: WrapProofPrevEvalsV2,
+    pub proof: WrapWireProofV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrapProofPrevEvalsV2 {
+    pub ft_eval1: Fp,
+    pub evals: ProofEvaluations<PointEvaluations<Vec<Fp>>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinProtError {
     Base58,
@@ -60,6 +81,8 @@ pub enum BinProtError {
     InvalidVectorTerminator(usize),
     VectorTooLong { max: usize, actual: usize },
     WrongVectorLength { expected: usize, actual: usize },
+    EmptyStatement,
+    BoundedArrayTooLong { max: usize, actual: usize },
     UnsupportedLookupCommitments,
     UnsupportedOptionalEvaluation(&'static str),
     NonCanonicalField(usize),
@@ -637,6 +660,93 @@ impl WrapWireProofV1 {
             challenge_polynomial_commitment,
         })
     }
+}
+
+impl WrapProofPrevEvalsV2 {
+    pub fn from_step_proof(
+        proof: &ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    ) -> Result<Self, BinProtError> {
+        validate_prev_evals(&proof.evals)?;
+        Ok(Self {
+            ft_eval1: proof.ft_eval1,
+            evals: proof.evals.clone(),
+        })
+    }
+}
+
+impl WrapProofBaseV3 {
+    pub fn from_proofs(
+        statement: Vec<Fq>,
+        prev_step_proof: &ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+        wrap_proof: &ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
+    ) -> Result<Self, BinProtError> {
+        if statement.is_empty() {
+            return Err(BinProtError::EmptyStatement);
+        }
+        Ok(Self {
+            statement,
+            prev_evals: WrapProofPrevEvalsV2::from_step_proof(prev_step_proof)?,
+            proof: WrapWireProofV1::from_prover_proof(wrap_proof)?,
+        })
+    }
+}
+
+fn validate_prev_evals(
+    evals: &ProofEvaluations<PointEvaluations<Vec<Fp>>>,
+) -> Result<(), BinProtError> {
+    fn validate_point_evals(evals: &PointEvaluations<Vec<Fp>>) -> Result<(), BinProtError> {
+        for actual in [evals.zeta.len(), evals.zeta_omega.len()] {
+            if actual > 16 {
+                return Err(BinProtError::BoundedArrayTooLong { max: 16, actual });
+            }
+        }
+        Ok(())
+    }
+    if let Some(public) = &evals.public {
+        validate_point_evals(public)?;
+    }
+    for eval in &evals.w {
+        validate_point_evals(eval)?;
+    }
+    validate_point_evals(&evals.z)?;
+    for eval in &evals.s {
+        validate_point_evals(eval)?;
+    }
+    for eval in &evals.coefficients {
+        validate_point_evals(eval)?;
+    }
+    validate_point_evals(&evals.generic_selector)?;
+    validate_point_evals(&evals.poseidon_selector)?;
+    validate_point_evals(&evals.complete_add_selector)?;
+    validate_point_evals(&evals.mul_selector)?;
+    validate_point_evals(&evals.emul_selector)?;
+    validate_point_evals(&evals.endomul_scalar_selector)?;
+    for eval in [
+        &evals.range_check0_selector,
+        &evals.range_check1_selector,
+        &evals.foreign_field_add_selector,
+        &evals.foreign_field_mul_selector,
+        &evals.xor_selector,
+        &evals.rot_selector,
+        &evals.lookup_aggregation,
+        &evals.lookup_table,
+        &evals.runtime_lookup_table,
+        &evals.runtime_lookup_table_selector,
+        &evals.xor_lookup_selector,
+        &evals.lookup_gate_lookup_selector,
+        &evals.range_check_lookup_selector,
+        &evals.foreign_field_mul_lookup_selector,
+    ] {
+        if let Some(eval) = eval {
+            validate_point_evals(eval)?;
+        }
+    }
+    for eval in &evals.lookup_sorted {
+        if let Some(eval) = eval {
+            validate_point_evals(eval)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
