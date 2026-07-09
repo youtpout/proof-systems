@@ -344,6 +344,12 @@ fixe son arité `N0/N1/N2`, son domaine step, son domaine wrap dérivé et appli
 le padding frontal des preuves. Les doublons, domaines Tick trop grands et
 arités incohérentes sont rejetés avant toute compilation coûteuse.
 
+`PicklesProgram::compile` attache désormais un `CompiledRuleBackend` concret à
+chaque règle. `prove` route vers l'index lié au `RuleId` et retourne une preuve
+taggée ; `verify` reprend ce tag et refuse les règles inconnues. Les backends
+gardent leurs types de public input, witness, preuve et erreur, ce qui permet
+aux circuits step/wrap de rester fortement typés sans effacement global.
+
 ### Mise à jour : VERIFICATION KEYS SIDE-LOADED
 
 `SideLoadedVerificationKey` encapsule les 28 commitments canoniques et les

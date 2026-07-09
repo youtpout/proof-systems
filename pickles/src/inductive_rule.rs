@@ -70,6 +70,88 @@ pub struct PicklesProgram {
     rules: Vec<InductiveRule>,
 }
 
+/// A compiled branch backend. Implementations own the concrete step/wrap
+/// indexes and know how to create and verify that branch's proof type.
+pub trait CompiledRuleBackend {
+    type PublicInput;
+    type Witness;
+    type Proof;
+    type Error;
+
+    fn prove(
+        &mut self,
+        public_input: &Self::PublicInput,
+        witness: Self::Witness,
+    ) -> Result<Self::Proof, Self::Error>;
+
+    fn verify(
+        &self,
+        public_input: &Self::PublicInput,
+        proof: &Self::Proof,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Proof tagged with the branch that created it. Verification routes using
+/// this tag and never accepts an unlabelled proof against an arbitrary index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleProof<P> {
+    pub rule_id: RuleId,
+    pub proof: P,
+}
+
+/// A metadata-validated program whose branches have concrete compiled
+/// backends attached.
+pub struct CompiledPicklesProgram<B: CompiledRuleBackend> {
+    metadata: PicklesProgram,
+    backends: Vec<(RuleId, B)>,
+}
+
+impl<B: CompiledRuleBackend> CompiledPicklesProgram<B> {
+    pub fn metadata(&self) -> &PicklesProgram {
+        &self.metadata
+    }
+
+    pub fn prove(
+        &mut self,
+        rule_id: RuleId,
+        public_input: &B::PublicInput,
+        witness: B::Witness,
+    ) -> Result<RuleProof<B::Proof>, ProgramExecutionError<B::Error>> {
+        let backend = self
+            .backends
+            .iter_mut()
+            .find(|(id, _)| *id == rule_id)
+            .map(|(_, backend)| backend)
+            .ok_or(ProgramExecutionError::UnknownRule(rule_id))?;
+        let proof = backend
+            .prove(public_input, witness)
+            .map_err(ProgramExecutionError::Backend)?;
+        Ok(RuleProof { rule_id, proof })
+    }
+
+    pub fn verify(
+        &self,
+        public_input: &B::PublicInput,
+        proof: &RuleProof<B::Proof>,
+    ) -> Result<(), ProgramExecutionError<B::Error>> {
+        let backend = self
+            .backends
+            .iter()
+            .find(|(id, _)| *id == proof.rule_id)
+            .map(|(_, backend)| backend)
+            .ok_or(ProgramExecutionError::UnknownRule(proof.rule_id))?;
+        backend
+            .verify(public_input, &proof.proof)
+            .map_err(ProgramExecutionError::Backend)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProgramExecutionError<E> {
+    UnknownRule(RuleId),
+    Backend(E),
+}
+
 impl PicklesProgram {
     pub fn compile_metadata(
         name: impl Into<String>,
@@ -118,6 +200,26 @@ impl PicklesProgram {
             .iter()
             .find(|rule| rule.id == id)
             .ok_or(ProgramError::UnknownRule(id))
+    }
+
+    /// Compiles every validated branch exactly once and binds the resulting
+    /// backend/index to its stable [`RuleId`].
+    pub fn compile<B, E>(
+        self,
+        mut compile_rule: impl FnMut(&InductiveRule) -> Result<B, E>,
+    ) -> Result<CompiledPicklesProgram<B>, ProgramExecutionError<E>>
+    where
+        B: CompiledRuleBackend,
+    {
+        let mut backends = Vec::with_capacity(self.rules.len());
+        for rule in &self.rules {
+            let backend = compile_rule(rule).map_err(ProgramExecutionError::Backend)?;
+            backends.push((rule.id, backend));
+        }
+        Ok(CompiledPicklesProgram {
+            metadata: self,
+            backends,
+        })
     }
 }
 
@@ -195,6 +297,66 @@ mod tests {
                 expected: 1,
                 actual: 0,
             }
+        );
+    }
+
+    #[derive(Clone)]
+    struct ArithmeticBackend {
+        rule: RuleId,
+    }
+
+    impl CompiledRuleBackend for ArithmeticBackend {
+        type PublicInput = u64;
+        type Witness = u64;
+        type Proof = u64;
+        type Error = &'static str;
+
+        fn prove(&mut self, public_input: &u64, witness: u64) -> Result<u64, Self::Error> {
+            let result = match self.rule {
+                RuleId(0) => witness,
+                RuleId(1) => witness + 1,
+                _ => return Err("unsupported rule"),
+            };
+            (result == *public_input)
+                .then_some(result)
+                .ok_or("invalid witness")
+        }
+
+        fn verify(&self, public_input: &u64, proof: &u64) -> Result<(), Self::Error> {
+            (proof == public_input).then_some(()).ok_or("invalid proof")
+        }
+    }
+
+    #[test]
+    fn compile_prove_verify_routes_to_the_bound_branch() {
+        let metadata = PicklesProgram::compile_metadata(
+            "arithmetic",
+            vec![
+                InductiveRule::new(RuleId(0), "base", ProofsVerified::N0, 9),
+                InductiveRule::new(RuleId(1), "successor", ProofsVerified::N1, 16),
+            ],
+        )
+        .unwrap();
+        let mut program = metadata
+            .compile(|rule| Ok::<_, &'static str>(ArithmeticBackend { rule: rule.id }))
+            .unwrap();
+
+        let base = program.prove(RuleId(0), &7, 7).unwrap();
+        let successor = program.prove(RuleId(1), &8, 7).unwrap();
+        program.verify(&7, &base).unwrap();
+        program.verify(&8, &successor).unwrap();
+
+        let wrongly_tagged = RuleProof {
+            rule_id: RuleId(99),
+            proof: 7,
+        };
+        assert_eq!(
+            program.verify(&7, &wrongly_tagged),
+            Err(ProgramExecutionError::UnknownRule(RuleId(99)))
+        );
+        assert_eq!(
+            program.prove(RuleId(1), &9, 7),
+            Err(ProgramExecutionError::Backend("invalid witness"))
         );
     }
 }
