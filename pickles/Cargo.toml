@@ -17,10 +17,12 @@ blake2.workspace = true
 groupmap.workspace = true
 kimchi.workspace = true
 mina-curves.workspace = true
+mina-base58.workspace = true
 mina-poseidon.workspace = true
 o1-utils.workspace = true
 poly-commitment.workspace = true
 snarky.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 rand = { workspace = true, features = ["std_rng"] }

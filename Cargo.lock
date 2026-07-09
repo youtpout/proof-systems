@@ -2460,11 +2460,13 @@ dependencies = [
  "blake2",
  "groupmap",
  "kimchi",
+ "mina-base58",
  "mina-curves",
  "mina-poseidon",
  "o1-utils",
  "poly-commitment",
  "rand 0.8.5",
+ "sha2",
  "snarky",
 ]
 

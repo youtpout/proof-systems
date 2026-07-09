@@ -392,8 +392,14 @@ canoniques, points invalides et métadonnées incohérentes.
 
 Cette couche couvre la parité des field elements consommés par Pickles. Le
 codec RPC Mina/bin_prot complet (versions Stable et enveloppes réseau) reste
-distinct : aucun crate bin_prot ni vecteur Mina correspondant n'est présent
-dans ce workspace, il ne doit donc pas être confondu avec ce payload.
+distinct du payload circuit.
+
+`mina_bin_prot::SideLoadedVerificationKeyV2` porte maintenant le sous-ensemble
+exact nécessaire à la clé side-loaded : deux variants `Proofs_verified`, les
+vecteurs fixes 7/15 avec leurs terminateurs `unit`, six commitments nommés,
+champs Pasta canoniques et enveloppe Base58Check `0x1b`. La sortie du dummy
+est comparée byte-for-byte (via son SHA-256 et sa longueur) au vecteur officiel
+Mina.
 
 La référence Mina officielle `6f65312c4caebc3cb0ef25f74ba7ea641c91b033`
 a été auditée. Le vecteur officiel `test_ro.ml` pour

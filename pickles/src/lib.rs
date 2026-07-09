@@ -27,6 +27,7 @@ pub mod ft_eval_circuit;
 pub mod hash_messages;
 pub mod incrementally_verify;
 pub mod inductive_rule;
+pub mod mina_bin_prot;
 pub mod ipa;
 pub mod opt_sponge;
 pub mod oracles;
