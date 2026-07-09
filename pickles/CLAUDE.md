@@ -272,6 +272,19 @@ appelle directement une seule fois `step_main(&[PerProofInput; 2])` : les deux
 preuves partagent donc le VK, le sponge d'index et le calcul du digest final,
 comme le branch multi-preuves Pickles.
 
+### Mise à jour : WRAP WIDTH-2 PROUVÉ
+
+La préparation wrap est désormais indépendante du wrapper width-1 : elle
+consomme directement index, proof, statement, slots, liste d'Unfinalized et
+anciens accumulateurs. `prepare_recursive_wrap_width2` fournit deux
+Unfinalized, utilise les slots du statement width-2 et encode
+`ProofsVerified::N2`.
+
+Le test width-2 couvre maintenant le pipeline complet :
+deux slots wrap réels → preuve step récursive avec deux recursion challenges →
+finalisation des deux anciens proofs dans `wrap_main` → équation IPA →
+preuve wrap Pallas vérifiée. Le step width-2 compile ici à 15 rounds.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

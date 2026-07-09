@@ -13,8 +13,9 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 use pickles::api::{prove_base_case, StepApp};
 use pickles::recursive_step::{
     prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_width2,
-    prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
-    prove_stable_recursive_cycles, step_statement_len, width1_step_statement_len,
+    prepare_recursive_wrap_width2, prove_first_recursive_cycle, prove_next_recursive_cycle,
+    prove_recursive_step_width2, prove_recursive_wrap, prove_stable_recursive_cycles,
+    recursive_wrap_ipa_equation_holds, step_statement_len, width1_step_statement_len,
     wrap_unfinalized_from_base, wrap_unfinalized_from_recursive_cycle,
 };
 
@@ -40,6 +41,8 @@ const K4: usize = width1_step_statement_len(WRAP3_PROOF_ROUNDS);
 const R4: usize = 14;
 const WRAP4_STMT_LEN: usize = 13 + R4 + 9;
 const K_WIDTH2: usize = step_statement_len(2, WROUNDS);
+const WIDTH2_STEP_ROUNDS: usize = 15;
+const WIDTH2_WRAP_STMT_LEN: usize = 13 + WIDTH2_STEP_ROUNDS + 9;
 
 struct SquareApp;
 impl StepApp for SquareApp {
@@ -175,4 +178,21 @@ fn pickles_recursive_step_width2() {
     let proof = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(prepared);
     assert_eq!(proof.statement.len(), K_WIDTH2);
     assert_eq!(proof.proof.prev_challenges.len(), 2);
+    assert_eq!(proof.proof.proof.lr.len(), WIDTH2_STEP_ROUNDS);
+
+    let prepared_wrap = prepare_recursive_wrap_width2::<
+        SquareApp,
+        ROUNDS,
+        STMT_LEN,
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
+    >(&base, &proof);
+    assert_eq!(prepared_wrap.data.unfinalized.len(), 2);
+    assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
+    let wrapped = prove_recursive_wrap(prepared_wrap);
+    assert_eq!(wrapped.statement.len(), WIDTH2_WRAP_STMT_LEN);
 }
