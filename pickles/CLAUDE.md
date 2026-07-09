@@ -363,6 +363,12 @@ Les branches récursives disposent maintenant de `N1RuleBackend` et
 d'appeler le prover concret fourni par la branche, l'adapter construit les
 slots Pickles `[dummy, réel]` ou `[réel, réel]`.
 
+`HeterogeneousPicklesProgram` permet de réunir ces branches avec le backend
+`N0` même lorsque leurs public inputs, witnesses et preuves Rust diffèrent.
+L'effacement de types reste limité à la table de routage ; chaque appel
+`prove`/`verify` redescend vers le type concret et retourne une erreur
+explicite en cas de mauvais type, de règle absente ou de backend dupliqué.
+
 ### Mise à jour : VERIFICATION KEYS SIDE-LOADED
 
 `SideLoadedVerificationKey` encapsule les 28 commitments canoniques et les

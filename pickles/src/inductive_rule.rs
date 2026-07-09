@@ -4,7 +4,7 @@
 //! gives every branch a stable identity and validates the recursion width and
 //! domains before expensive circuit compilation starts.
 
-use std::collections::HashSet;
+use std::{any::Any, collections::HashSet, fmt::Debug};
 
 use ark_ff::PrimeField;
 
@@ -162,6 +162,172 @@ impl<B: CompiledRuleBackend> CompiledPicklesProgram<B> {
 pub enum ProgramExecutionError<E> {
     UnknownRule(RuleId),
     Backend(E),
+}
+
+#[doc(hidden)]
+pub trait ErasedRuleBackend {
+    fn rule_id(&self) -> RuleId;
+    fn prove(
+        &mut self,
+        public_input: &dyn Any,
+        witness: Box<dyn Any>,
+    ) -> Result<Box<dyn Any>, HeterogeneousProgramError>;
+    fn verify(
+        &self,
+        public_input: &dyn Any,
+        proof: &dyn Any,
+    ) -> Result<(), HeterogeneousProgramError>;
+}
+
+struct ErasedBackend<B: CompiledRuleBackend> {
+    rule_id: RuleId,
+    backend: B,
+}
+
+impl<B> ErasedRuleBackend for ErasedBackend<B>
+where
+    B: CompiledRuleBackend + 'static,
+    B::PublicInput: 'static,
+    B::Witness: 'static,
+    B::Proof: 'static,
+    B::Error: Debug,
+{
+    fn rule_id(&self) -> RuleId {
+        self.rule_id
+    }
+
+    fn prove(
+        &mut self,
+        public_input: &dyn Any,
+        witness: Box<dyn Any>,
+    ) -> Result<Box<dyn Any>, HeterogeneousProgramError> {
+        let public_input = public_input
+            .downcast_ref::<B::PublicInput>()
+            .ok_or(HeterogeneousProgramError::PublicInputTypeMismatch(
+                self.rule_id,
+            ))?;
+        let witness = witness
+            .downcast::<B::Witness>()
+            .map_err(|_| HeterogeneousProgramError::WitnessTypeMismatch(self.rule_id))?;
+        self.backend
+            .prove(public_input, *witness)
+            .map(|proof| Box::new(proof) as Box<dyn Any>)
+            .map_err(|error| HeterogeneousProgramError::Backend(format!("{error:?}")))
+    }
+
+    fn verify(
+        &self,
+        public_input: &dyn Any,
+        proof: &dyn Any,
+    ) -> Result<(), HeterogeneousProgramError> {
+        let public_input = public_input
+            .downcast_ref::<B::PublicInput>()
+            .ok_or(HeterogeneousProgramError::PublicInputTypeMismatch(
+                self.rule_id,
+            ))?;
+        let proof = proof
+            .downcast_ref::<B::Proof>()
+            .ok_or(HeterogeneousProgramError::ProofTypeMismatch(self.rule_id))?;
+        self.backend
+            .verify(public_input, proof)
+            .map_err(|error| HeterogeneousProgramError::Backend(format!("{error:?}")))
+    }
+}
+
+/// One validated program containing branches with different concrete backend,
+/// input, witness and proof types.
+pub struct HeterogeneousPicklesProgram {
+    metadata: PicklesProgram,
+    backends: Vec<Box<dyn ErasedRuleBackend>>,
+}
+
+impl HeterogeneousPicklesProgram {
+    pub fn compile(
+        metadata: PicklesProgram,
+        backends: Vec<Box<dyn ErasedRuleBackend>>,
+    ) -> Result<Self, HeterogeneousProgramError> {
+        if backends.len() != metadata.rules.len() {
+            return Err(HeterogeneousProgramError::BackendCountMismatch {
+                expected: metadata.rules.len(),
+                actual: backends.len(),
+            });
+        }
+        for rule in &metadata.rules {
+            let count = backends
+                .iter()
+                .filter(|backend| backend.rule_id() == rule.id)
+                .count();
+            if count != 1 {
+                return Err(HeterogeneousProgramError::MissingOrDuplicateBackend(
+                    rule.id,
+                ));
+            }
+        }
+        Ok(Self { metadata, backends })
+    }
+
+    pub fn metadata(&self) -> &PicklesProgram {
+        &self.metadata
+    }
+
+    pub fn prove<I: 'static, W: 'static, P: 'static>(
+        &mut self,
+        rule_id: RuleId,
+        public_input: &I,
+        witness: W,
+    ) -> Result<RuleProof<P>, HeterogeneousProgramError> {
+        let backend = self
+            .backends
+            .iter_mut()
+            .find(|backend| backend.rule_id() == rule_id)
+            .ok_or(HeterogeneousProgramError::UnknownRule(rule_id))?;
+        let proof = backend.prove(public_input, Box::new(witness))?;
+        let proof = proof
+            .downcast::<P>()
+            .map_err(|_| HeterogeneousProgramError::ProofTypeMismatch(rule_id))?;
+        Ok(RuleProof {
+            rule_id,
+            proof: *proof,
+        })
+    }
+
+    pub fn verify<I: 'static, P: 'static>(
+        &self,
+        public_input: &I,
+        proof: &RuleProof<P>,
+    ) -> Result<(), HeterogeneousProgramError> {
+        let backend = self
+            .backends
+            .iter()
+            .find(|backend| backend.rule_id() == proof.rule_id)
+            .ok_or(HeterogeneousProgramError::UnknownRule(proof.rule_id))?;
+        backend.verify(public_input, &proof.proof)
+    }
+}
+
+pub fn erase_rule_backend<B>(
+    rule_id: RuleId,
+    backend: B,
+) -> Box<dyn ErasedRuleBackend>
+where
+    B: CompiledRuleBackend + 'static,
+    B::PublicInput: 'static,
+    B::Witness: 'static,
+    B::Proof: 'static,
+    B::Error: Debug,
+{
+    Box::new(ErasedBackend { rule_id, backend })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HeterogeneousProgramError {
+    UnknownRule(RuleId),
+    BackendCountMismatch { expected: usize, actual: usize },
+    MissingOrDuplicateBackend(RuleId),
+    PublicInputTypeMismatch(RuleId),
+    WitnessTypeMismatch(RuleId),
+    ProofTypeMismatch(RuleId),
+    Backend(String),
 }
 
 /// Witness of a recursive rule: application witness plus the previous proofs
@@ -541,6 +707,57 @@ mod tests {
                 )
                 .unwrap(),
             9
+        );
+    }
+
+    #[test]
+    fn heterogeneous_program_routes_different_branch_types() {
+        #[derive(Clone)]
+        struct StringBackend;
+        impl CompiledRuleBackend for StringBackend {
+            type PublicInput = String;
+            type Witness = usize;
+            type Proof = String;
+            type Error = &'static str;
+
+            fn prove(&mut self, input: &String, witness: usize) -> Result<String, Self::Error> {
+                (input.len() == witness)
+                    .then(|| input.clone())
+                    .ok_or("length mismatch")
+            }
+            fn verify(&self, input: &String, proof: &String) -> Result<(), Self::Error> {
+                (input == proof).then_some(()).ok_or("bad proof")
+            }
+        }
+
+        let metadata = PicklesProgram::compile_metadata(
+            "heterogeneous",
+            vec![
+                InductiveRule::new(RuleId(0), "numbers", ProofsVerified::N0, 9),
+                InductiveRule::new(RuleId(1), "strings", ProofsVerified::N1, 16),
+            ],
+        )
+        .unwrap();
+        let mut program = HeterogeneousPicklesProgram::compile(
+            metadata,
+            vec![
+                erase_rule_backend(RuleId(0), ArithmeticBackend { rule: RuleId(0) }),
+                erase_rule_backend(RuleId(1), StringBackend),
+            ],
+        )
+        .unwrap();
+
+        let number: RuleProof<u64> = program.prove(RuleId(0), &7u64, 7u64).unwrap();
+        let text: RuleProof<String> = program
+            .prove(RuleId(1), &"pickles".to_owned(), 7usize)
+            .unwrap();
+        program.verify(&7u64, &number).unwrap();
+        program.verify(&"pickles".to_owned(), &text).unwrap();
+        assert_eq!(
+            program.verify(&7u64, &text),
+            Err(HeterogeneousProgramError::PublicInputTypeMismatch(
+                RuleId(1)
+            ))
         );
     }
 }
