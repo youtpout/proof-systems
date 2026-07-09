@@ -752,6 +752,20 @@ mod tests {
         );
     }
 
+    /// Rust-side regression fixture for the Mina
+    /// `Wrap_wire_proof.Stable.V1` bin_prot layout. Mina upstream does not
+    /// expose a Base58 proof fixture in `test_encoding_regression.ml`; this
+    /// digest pins the exact byte order ported from `wrap_wire_proof.ml`.
+    #[test]
+    fn wrap_wire_proof_v1_has_stable_bin_prot_digest() {
+        let bytes = wrap_wire(16).to_bin_prot().unwrap();
+        assert_eq!(bytes.len(), 4_454 + 16 * 128);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "db308f97e363b683dc09342ecb2cbf4d9dc7f7e7fc17bf872fcbb60bf7af5ced"
+        );
+    }
+
     #[test]
     fn wrap_wire_proof_v1_round_trips_bin_prot_and_kimchi_shape() {
         let wire = wrap_wire(3);
