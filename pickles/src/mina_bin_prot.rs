@@ -77,8 +77,10 @@ pub enum BinProtError {
     Base58,
     WrongLength(usize),
     UnexpectedTrailingBytes(usize),
+    Truncated,
     InvalidProofsVerified(u8),
     InvalidVectorTerminator(usize),
+    InvalidOptionTag(u8),
     VectorTooLong { max: usize, actual: usize },
     WrongVectorLength { expected: usize, actual: usize },
     EmptyStatement,
@@ -689,6 +691,303 @@ impl WrapProofBaseV3 {
             proof: WrapWireProofV1::from_prover_proof(wrap_proof)?,
         })
     }
+
+    pub fn to_normalized_bin_prot(&self) -> Result<Vec<u8>, BinProtError> {
+        if self.statement.is_empty() {
+            return Err(BinProtError::EmptyStatement);
+        }
+        validate_prev_evals(&self.prev_evals.evals)?;
+        let mut out = Vec::new();
+        encode_u32_len(self.statement.len(), &mut out)?;
+        for &field in &self.statement {
+            encode_scalar(field, &mut out);
+        }
+        self.prev_evals.encode_bin_prot(&mut out)?;
+        let proof = self.proof.to_bin_prot()?;
+        encode_u32_len(proof.len(), &mut out)?;
+        out.extend(proof);
+        Ok(out)
+    }
+
+    pub fn from_normalized_bin_prot(bytes: &[u8]) -> Result<Self, BinProtError> {
+        let mut cursor = DecodeCursor::new(bytes);
+        let statement_len = cursor.read_u32_len()?;
+        if statement_len == 0 {
+            return Err(BinProtError::EmptyStatement);
+        }
+        let mut statement = Vec::with_capacity(statement_len);
+        for index in 0..statement_len {
+            statement.push(cursor.read_fq(index)?);
+        }
+        let prev_evals = WrapProofPrevEvalsV2::decode_bin_prot(&mut cursor)?;
+        let proof_len = cursor.read_u32_len()?;
+        let proof = cursor.read_bytes(proof_len)?;
+        let proof = WrapWireProofV1::from_bin_prot(proof)?;
+        cursor.finish()?;
+        Ok(Self {
+            statement,
+            prev_evals,
+            proof,
+        })
+    }
+}
+
+impl WrapProofPrevEvalsV2 {
+    fn encode_bin_prot(&self, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+        encode_field(self.ft_eval1, out);
+        encode_point_evaluations_option(self.evals.public.as_ref(), out)?;
+        for eval in &self.evals.w {
+            encode_point_evaluations(eval, out)?;
+        }
+        encode_point_evaluations(&self.evals.z, out)?;
+        for eval in &self.evals.s {
+            encode_point_evaluations(eval, out)?;
+        }
+        for eval in &self.evals.coefficients {
+            encode_point_evaluations(eval, out)?;
+        }
+        encode_point_evaluations(&self.evals.generic_selector, out)?;
+        encode_point_evaluations(&self.evals.poseidon_selector, out)?;
+        encode_point_evaluations(&self.evals.complete_add_selector, out)?;
+        encode_point_evaluations(&self.evals.mul_selector, out)?;
+        encode_point_evaluations(&self.evals.emul_selector, out)?;
+        encode_point_evaluations(&self.evals.endomul_scalar_selector, out)?;
+        for eval in [
+            &self.evals.range_check0_selector,
+            &self.evals.range_check1_selector,
+            &self.evals.foreign_field_add_selector,
+            &self.evals.foreign_field_mul_selector,
+            &self.evals.xor_selector,
+            &self.evals.rot_selector,
+            &self.evals.lookup_aggregation,
+            &self.evals.lookup_table,
+        ] {
+            encode_point_evaluations_option(eval.as_ref(), out)?;
+        }
+        for eval in &self.evals.lookup_sorted {
+            encode_point_evaluations_option(eval.as_ref(), out)?;
+        }
+        for eval in [
+            &self.evals.runtime_lookup_table,
+            &self.evals.runtime_lookup_table_selector,
+            &self.evals.xor_lookup_selector,
+            &self.evals.lookup_gate_lookup_selector,
+            &self.evals.range_check_lookup_selector,
+            &self.evals.foreign_field_mul_lookup_selector,
+        ] {
+            encode_point_evaluations_option(eval.as_ref(), out)?;
+        }
+        Ok(())
+    }
+
+    fn decode_bin_prot(cursor: &mut DecodeCursor<'_>) -> Result<Self, BinProtError> {
+        let ft_eval1 = cursor.read_fp(0)?;
+        let public = decode_point_evaluations_option(cursor)?;
+        let w = decode_point_evaluations_vec::<COLUMNS>(cursor)?;
+        let z = decode_point_evaluations(cursor)?;
+        let s = decode_point_evaluations_vec::<{ PERMUTS - 1 }>(cursor)?;
+        let coefficients = decode_point_evaluations_vec::<COLUMNS>(cursor)?;
+        let generic_selector = decode_point_evaluations(cursor)?;
+        let poseidon_selector = decode_point_evaluations(cursor)?;
+        let complete_add_selector = decode_point_evaluations(cursor)?;
+        let mul_selector = decode_point_evaluations(cursor)?;
+        let emul_selector = decode_point_evaluations(cursor)?;
+        let endomul_scalar_selector = decode_point_evaluations(cursor)?;
+        let range_check0_selector = decode_point_evaluations_option(cursor)?;
+        let range_check1_selector = decode_point_evaluations_option(cursor)?;
+        let foreign_field_add_selector = decode_point_evaluations_option(cursor)?;
+        let foreign_field_mul_selector = decode_point_evaluations_option(cursor)?;
+        let xor_selector = decode_point_evaluations_option(cursor)?;
+        let rot_selector = decode_point_evaluations_option(cursor)?;
+        let lookup_aggregation = decode_point_evaluations_option(cursor)?;
+        let lookup_table = decode_point_evaluations_option(cursor)?;
+        let lookup_sorted = [
+            decode_point_evaluations_option(cursor)?,
+            decode_point_evaluations_option(cursor)?,
+            decode_point_evaluations_option(cursor)?,
+            decode_point_evaluations_option(cursor)?,
+            decode_point_evaluations_option(cursor)?,
+        ];
+        let runtime_lookup_table = decode_point_evaluations_option(cursor)?;
+        let runtime_lookup_table_selector = decode_point_evaluations_option(cursor)?;
+        let xor_lookup_selector = decode_point_evaluations_option(cursor)?;
+        let lookup_gate_lookup_selector = decode_point_evaluations_option(cursor)?;
+        let range_check_lookup_selector = decode_point_evaluations_option(cursor)?;
+        let foreign_field_mul_lookup_selector = decode_point_evaluations_option(cursor)?;
+        let evals = ProofEvaluations {
+            public,
+            w,
+            z,
+            s,
+            coefficients,
+            generic_selector,
+            poseidon_selector,
+            complete_add_selector,
+            mul_selector,
+            emul_selector,
+            endomul_scalar_selector,
+            range_check0_selector,
+            range_check1_selector,
+            foreign_field_add_selector,
+            foreign_field_mul_selector,
+            xor_selector,
+            rot_selector,
+            lookup_aggregation,
+            lookup_table,
+            lookup_sorted,
+            runtime_lookup_table,
+            runtime_lookup_table_selector,
+            xor_lookup_selector,
+            lookup_gate_lookup_selector,
+            range_check_lookup_selector,
+            foreign_field_mul_lookup_selector,
+        };
+        validate_prev_evals(&evals)?;
+        Ok(Self { ft_eval1, evals })
+    }
+}
+
+fn encode_u32_len(len: usize, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    let len = u32::try_from(len).map_err(|_| BinProtError::VectorTooLong {
+        max: u32::MAX as usize,
+        actual: len,
+    })?;
+    out.extend(len.to_le_bytes());
+    Ok(())
+}
+
+fn encode_bounded_fp_array(values: &[Fp], out: &mut Vec<u8>) -> Result<(), BinProtError> {
+    if values.len() > 16 {
+        return Err(BinProtError::BoundedArrayTooLong {
+            max: 16,
+            actual: values.len(),
+        });
+    }
+    out.push(values.len() as u8);
+    for &value in values {
+        encode_field(value, out);
+    }
+    Ok(())
+}
+
+fn encode_point_evaluations(
+    evals: &PointEvaluations<Vec<Fp>>,
+    out: &mut Vec<u8>,
+) -> Result<(), BinProtError> {
+    encode_bounded_fp_array(&evals.zeta, out)?;
+    encode_bounded_fp_array(&evals.zeta_omega, out)
+}
+
+fn encode_point_evaluations_option(
+    evals: Option<&PointEvaluations<Vec<Fp>>>,
+    out: &mut Vec<u8>,
+) -> Result<(), BinProtError> {
+    match evals {
+        None => out.push(0),
+        Some(evals) => {
+            out.push(1);
+            encode_point_evaluations(evals, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_point_evaluations(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<PointEvaluations<Vec<Fp>>, BinProtError> {
+    Ok(PointEvaluations {
+        zeta: cursor.read_bounded_fp_array()?,
+        zeta_omega: cursor.read_bounded_fp_array()?,
+    })
+}
+
+fn decode_point_evaluations_option(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<Option<PointEvaluations<Vec<Fp>>>, BinProtError> {
+    match cursor.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(decode_point_evaluations(cursor)?)),
+        tag => Err(BinProtError::InvalidOptionTag(tag)),
+    }
+}
+
+fn decode_point_evaluations_vec<const N: usize>(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<[PointEvaluations<Vec<Fp>>; N], BinProtError> {
+    let values = (0..N)
+        .map(|_| decode_point_evaluations(cursor))
+        .collect::<Result<Vec<_>, _>>()?;
+    values
+        .try_into()
+        .map_err(|values: Vec<_>| BinProtError::WrongVectorLength {
+            expected: N,
+            actual: values.len(),
+        })
+}
+
+struct DecodeCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> DecodeCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_u8(&mut self) -> Result<u8, BinProtError> {
+        if self.offset >= self.bytes.len() {
+            return Err(BinProtError::Truncated);
+        }
+        let value = self.bytes[self.offset];
+        self.offset += 1;
+        Ok(value)
+    }
+
+    fn read_u32_len(&mut self) -> Result<usize, BinProtError> {
+        let bytes = self.read_bytes(4)?;
+        Ok(u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], BinProtError> {
+        if self.offset + len > self.bytes.len() {
+            return Err(BinProtError::Truncated);
+        }
+        let bytes = &self.bytes[self.offset..self.offset + len];
+        self.offset += len;
+        Ok(bytes)
+    }
+
+    fn read_fp(&mut self, index: usize) -> Result<Fp, BinProtError> {
+        let bytes = self.read_bytes(FIELD_BYTES)?;
+        decode_field(bytes, index)
+    }
+
+    fn read_fq(&mut self, index: usize) -> Result<Fq, BinProtError> {
+        let bytes = self.read_bytes(FIELD_BYTES)?;
+        decode_scalar(bytes, index)
+    }
+
+    fn read_bounded_fp_array(&mut self) -> Result<Vec<Fp>, BinProtError> {
+        let len = self.read_u8()? as usize;
+        if len > 16 {
+            return Err(BinProtError::BoundedArrayTooLong {
+                max: 16,
+                actual: len,
+            });
+        }
+        (0..len).map(|index| self.read_fp(index)).collect()
+    }
+
+    fn finish(&self) -> Result<(), BinProtError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(BinProtError::UnexpectedTrailingBytes(
+                self.bytes.len() - self.offset,
+            ))
+        }
+    }
 }
 
 fn validate_prev_evals(
@@ -810,6 +1109,59 @@ mod tests {
         }
     }
 
+    fn fp_evals(seed: u64, len: usize) -> PointEvaluations<Vec<Fp>> {
+        PointEvaluations {
+            zeta: (0..len).map(|index| Fp::from(seed + index as u64)).collect(),
+            zeta_omega: (0..len)
+                .map(|index| Fp::from(seed + 1_000 + index as u64))
+                .collect(),
+        }
+    }
+
+    fn prev_evals(chunk_len: usize) -> WrapProofPrevEvalsV2 {
+        WrapProofPrevEvalsV2 {
+            ft_eval1: Fp::from(42u64),
+            evals: ProofEvaluations {
+                public: Some(fp_evals(1, chunk_len)),
+                w: std::array::from_fn(|index| fp_evals(100 + index as u64, chunk_len)),
+                z: fp_evals(200, chunk_len),
+                s: std::array::from_fn(|index| fp_evals(300 + index as u64, chunk_len)),
+                coefficients: std::array::from_fn(|index| {
+                    fp_evals(400 + index as u64, chunk_len)
+                }),
+                generic_selector: fp_evals(500, chunk_len),
+                poseidon_selector: fp_evals(501, chunk_len),
+                complete_add_selector: fp_evals(502, chunk_len),
+                mul_selector: fp_evals(503, chunk_len),
+                emul_selector: fp_evals(504, chunk_len),
+                endomul_scalar_selector: fp_evals(505, chunk_len),
+                range_check0_selector: None,
+                range_check1_selector: None,
+                foreign_field_add_selector: None,
+                foreign_field_mul_selector: None,
+                xor_selector: None,
+                rot_selector: None,
+                lookup_aggregation: None,
+                lookup_table: None,
+                lookup_sorted: [None, None, None, None, None],
+                runtime_lookup_table: None,
+                runtime_lookup_table_selector: None,
+                xor_lookup_selector: None,
+                lookup_gate_lookup_selector: None,
+                range_check_lookup_selector: None,
+                foreign_field_mul_lookup_selector: None,
+            },
+        }
+    }
+
+    fn wrap_proof_base_v3() -> WrapProofBaseV3 {
+        WrapProofBaseV3 {
+            statement: (1..=4).map(Fq::from).collect(),
+            prev_evals: prev_evals(2),
+            proof: wrap_wire(4),
+        }
+    }
+
     #[test]
     fn stable_v2_round_trips_bin_prot_and_base58() {
         let key = key();
@@ -916,6 +1268,43 @@ mod tests {
         bytes.push(0);
         assert_eq!(
             WrapWireProofV1::from_bin_prot(&bytes).unwrap_err(),
+            BinProtError::UnexpectedTrailingBytes(1)
+        );
+    }
+
+    #[test]
+    fn wrap_proof_base_v3_normalized_bin_prot_round_trips() {
+        let proof = wrap_proof_base_v3();
+        let bytes = proof.to_normalized_bin_prot().unwrap();
+        let decoded = WrapProofBaseV3::from_normalized_bin_prot(&bytes).unwrap();
+        assert_eq!(decoded, proof);
+        assert_eq!(decoded.prev_evals.evals.w[0].zeta.len(), 2);
+        assert_eq!(decoded.proof.bulletproof_lr.len(), 4);
+    }
+
+    #[test]
+    fn wrap_proof_base_v3_normalized_bin_prot_rejects_malleable_inputs() {
+        let mut proof = wrap_proof_base_v3();
+        proof.statement.clear();
+        assert_eq!(
+            proof.to_normalized_bin_prot().unwrap_err(),
+            BinProtError::EmptyStatement
+        );
+
+        let mut proof = wrap_proof_base_v3();
+        proof.prev_evals.evals.w[0].zeta = vec![Fp::from(1u64); 17];
+        assert_eq!(
+            proof.to_normalized_bin_prot().unwrap_err(),
+            BinProtError::BoundedArrayTooLong {
+                max: 16,
+                actual: 17
+            }
+        );
+
+        let mut bytes = wrap_proof_base_v3().to_normalized_bin_prot().unwrap();
+        bytes.push(0);
+        assert_eq!(
+            WrapProofBaseV3::from_normalized_bin_prot(&bytes).unwrap_err(),
             BinProtError::UnexpectedTrailingBytes(1)
         );
     }
