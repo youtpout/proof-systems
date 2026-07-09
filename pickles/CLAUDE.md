@@ -323,6 +323,14 @@ message du step avec les challenges Step et le commitment Wrap canoniques de
 reçoit donc deux `sg_old` physiques tout en ne finalisant qu'un seul
 `Unfinalized`, avec `ProofsVerified::N1`.
 
+### Mise à jour : WRAP VK RÉELLE EN DEUX PASSES
+
+`prove_base_case_two_pass` casse maintenant le cycle de compilation Pickles :
+une passe bootstrap compile le wrap et en extrait les 28 commitments dans
+l'ordre canonique, puis la passe finale reconstruit le step en hashant cette
+VK réelle. Le wrap est recompilé et sa VK doit être strictement identique à
+celle de la première passe avant que la preuve finale soit retournée.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
@@ -333,9 +341,8 @@ reçoit donc deux `sg_old` physiques tout en ne finalisant qu'un seul
   premier wrap d'un step proof width>0 est prouvé. Il reste à réinjecter ce
   wrap récursif dans le step suivant, puis à généraliser le bouclage
   step→wrap répété.
-- **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
-  après compilation du wrap circuit, ce qui implique une compilation en deux
-  passes et les domaines Pickles paddés complets.
+- **Vrai wrap VK récursif** : propager la compilation deux passes validée sur
+  le cas de base aux règles récursives et à la future API multi-branches.
 - **Padding Pickles complet** : généraliser le branch `N1` validé aux règles
   inductives et aux branches utilisateur, puis couvrir les autres données
   dummy (evals et statements) au-delà du chemin récursif actuel.

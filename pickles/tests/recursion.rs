@@ -11,7 +11,9 @@ use mina_curves::pasta::Fp;
 use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::{
-    api::{prove_base_case, StepApp},
+    api::{
+        prove_base_case, prove_base_case_two_pass, wrap_verification_key_points, StepApp,
+    },
     recursive_step::{
         prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
         prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
@@ -47,6 +49,7 @@ const K_WIDTH2: usize = step_statement_len(2, WROUNDS);
 const WIDTH2_STEP_ROUNDS: usize = pickles::common::TICK_ROUNDS;
 const WIDTH2_WRAP_STMT_LEN: usize = 13 + WIDTH2_STEP_ROUNDS + 9;
 
+#[derive(Clone, Copy)]
 struct SquareApp;
 impl StepApp for SquareApp {
     type Witness = Fp;
@@ -264,4 +267,16 @@ fn pickles_recursive_step_n1_is_physically_padded() {
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.proof.proof.lr.len(), pickles::common::TOCK_ROUNDS);
+}
+
+#[test]
+fn base_case_two_pass_hashes_the_real_wrap_vk() {
+    let proof =
+        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(19u64));
+    let actual = wrap_verification_key_points(&proof.wrap_verifier);
+    assert_eq!(proof.wrap_vk_pts, actual);
+    assert_ne!(
+        proof.wrap_vk_pts[0],
+        (Fp::from(1_000_000u64), Fp::from(2_000_000u64))
+    );
 }

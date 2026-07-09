@@ -450,6 +450,74 @@ pub struct BaseCaseProof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
     pub step_proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
     pub step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
     pub wrap_verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+    /// The actual wrap verification-key commitments hashed by the step proof.
+    pub wrap_vk_pts: Vec<(Fp, Fp)>,
+}
+
+/// Returns a wrap verifier index's 28 commitments in Pickles' canonical
+/// sigma, coefficients, selector order.
+pub fn wrap_verification_key_points<const ROUNDS: usize, const STMT_LEN: usize>(
+    verifier: &snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+) -> Vec<(Fp, Fp)> {
+    let index = &verifier.index;
+    let point = |p: &Pallas| (p.x, p.y);
+    let mut points = Vec::with_capacity(28);
+    points.extend(
+        index
+            .sigma_comm
+            .iter()
+            .map(|commitment| point(&commitment.chunks[0])),
+    );
+    points.extend(
+        index
+            .coefficients_comm
+            .iter()
+            .map(|commitment| point(&commitment.chunks[0])),
+    );
+    points.push(point(&index.generic_comm.chunks[0]));
+    points.push(point(&index.psm_comm.chunks[0]));
+    points.push(point(&index.complete_add_comm.chunks[0]));
+    points.push(point(&index.mul_comm.chunks[0]));
+    points.push(point(&index.emul_comm.chunks[0]));
+    points.push(point(&index.endomul_scalar_comm.chunks[0]));
+    assert_eq!(points.len(), 28);
+    points
+}
+
+/// Compiles the wrap circuit in two passes to break the Pickles VK cycle.
+///
+/// The bootstrap pass determines the wrap index from the circuit shape. The
+/// final pass rebuilds the step proof with those real 28 commitments in its
+/// accumulator digest, recompiles the wrap, asserts index stability, and
+/// returns only the final proof.
+pub fn prove_base_case_two_pass<
+    A: StepApp + Clone,
+    const ROUNDS: usize,
+    const STMT_LEN: usize,
+>(
+    app: A,
+    witness: A::Witness,
+) -> BaseCaseProof<A, ROUNDS, STMT_LEN>
+where
+    A::Witness: Clone,
+{
+    let bootstrap_points = (0..28u64)
+        .map(|i| (Fp::from(1_000_000 + i), Fp::from(2_000_000 + i)))
+        .collect();
+    let bootstrap = prove_base_case::<A, ROUNDS, STMT_LEN>(
+        app.clone(),
+        witness.clone(),
+        bootstrap_points,
+    );
+    let actual_points = wrap_verification_key_points(&bootstrap.wrap_verifier);
+    let final_proof =
+        prove_base_case::<A, ROUNDS, STMT_LEN>(app, witness, actual_points.clone());
+    assert_eq!(
+        wrap_verification_key_points(&final_proof.wrap_verifier),
+        actual_points,
+        "wrap verification key changed between compilation passes"
+    );
+    final_proof
 }
 
 /// Proves one application execution through the full base-case pipeline and
@@ -475,7 +543,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         &[],
     );
     let (step_proof, _) = step_pi
-        .prove::<VestaBase, VestaScalar>(digest, (witness, wrap_vk_pts), true)
+        .prove::<VestaBase, VestaScalar>(digest, (witness, wrap_vk_pts.clone()), true)
         .unwrap();
 
     // ---- wrap witness ----
@@ -672,5 +740,6 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         step_proof,
         step_verifier: step_ver,
         wrap_verifier: wrap_ver,
+        wrap_vk_pts,
     }
 }
