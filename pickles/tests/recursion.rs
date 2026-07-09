@@ -23,6 +23,7 @@ use pickles::{
         width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle,
     },
+    side_loaded::SideLoadedVerificationKey,
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -276,6 +277,10 @@ fn base_case_two_pass_hashes_the_real_wrap_vk() {
         prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(19u64));
     let actual = wrap_verification_key_points(&proof.wrap_verifier);
     assert_eq!(proof.wrap_vk_pts, actual);
+    let side_loaded =
+        SideLoadedVerificationKey::from_wrap_verifier(ROUNDS as u8, &proof.wrap_verifier)
+            .unwrap();
+    assert_eq!(side_loaded.commitments(), actual);
     assert_ne!(
         proof.wrap_vk_pts[0],
         (Fp::from(1_000_000u64), Fp::from(2_000_000u64))

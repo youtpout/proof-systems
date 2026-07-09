@@ -38,6 +38,7 @@ pub mod reduced_messages;
 pub mod ro;
 pub mod scalar_challenge;
 pub mod shifted_value;
+pub mod side_loaded;
 pub mod sponge;
 pub mod step_main;
 pub mod step_verifier;

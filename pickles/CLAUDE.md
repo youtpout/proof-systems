@@ -344,6 +344,15 @@ fixe son arité `N0/N1/N2`, son domaine step, son domaine wrap dérivé et appli
 le padding frontal des preuves. Les doublons, domaines Tick trop grands et
 arités incohérentes sont rejetés avant toute compilation coûteuse.
 
+### Mise à jour : VERIFICATION KEYS SIDE-LOADED
+
+`SideLoadedVerificationKey` encapsule les 28 commitments canoniques et les
+métadonnées de branche. La construction vérifie les domaines Tick/Tock,
+l'accord `ProofsVerified`, le nombre de commitments, ainsi que l'appartenance
+de chaque point à Pallas et à son sous-groupe. Une clé peut être extraite d'un
+vrai index wrap puis convertie sans ambiguïté vers
+`PlonkVerificationKeyEvals`.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
