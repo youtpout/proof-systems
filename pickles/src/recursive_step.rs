@@ -1135,6 +1135,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         sg: co(&step_proof.proof.sg),
         z1_repr: embed_fp_to_fq(ww.z1_repr),
         z2_repr: embed_fp_to_fq(ww.z2_repr),
+        sg_olds: sg_olds.iter().map(co).collect(),
         unfinalized,
         step_statement,
         step_statement_lagranges,
@@ -1572,8 +1573,8 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     let mut sponge =
         RefSponge::new(<Vesta as KimchiCurve<FULL_ROUNDS>>::other_curve_sponge_params());
     sponge.absorb(&[data.step_vk_digest]);
-    for unf in &data.unfinalized {
-        abpt(&mut sponge, pt(unf.prev_step_acc));
+    for &sg_old in &data.sg_olds {
+        abpt(&mut sponge, pt(sg_old));
     }
     abpt(&mut sponge, x_hat);
     for &w in &data.w_comm {
@@ -1624,11 +1625,7 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     let ft = pt(data.sigma_last[0]) * perm + t_red - t_red * zeta_to_domain_size;
 
     let mut commitments = Vec::new();
-    commitments.extend(
-        data.unfinalized
-            .iter()
-            .map(|u| pt(u.prev_step_acc).into_group()),
-    );
+    commitments.extend(data.sg_olds.iter().map(|&p| pt(p).into_group()));
     commitments.push(x_hat.into_group());
     commitments.push(ft);
     commitments.push(pt(data.z_comm).into_group());

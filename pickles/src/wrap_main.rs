@@ -150,6 +150,8 @@ pub fn wrap_main<F, C>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     unfinalized: &[PerUnfinalized<'_, F>],
+    // Physical backend accumulators, padded independently of `unfinalized`.
+    sg_olds: &[Point<F>],
     // the step proof + its statement
     vk_digest: &FieldVar<F>,
     vk: &VerificationKeyComm<F>,
@@ -226,10 +228,6 @@ where
 
     // == commit to the step statement and fully verify the step proof ==
     let terms = step_statement_terms(sys, loc.clone(), step_statement_elements, lagranges)?;
-    let sg_old: Vec<Point<F>> = unfinalized
-        .iter()
-        .map(|u| u.prev_step_acc.clone())
-        .collect();
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
@@ -237,7 +235,7 @@ where
         verify_loc.clone(),
         vk_digest,
         vk,
-        &sg_old,
+        sg_olds,
         &terms,
         h_generator,
         messages,
@@ -578,6 +576,7 @@ mod tests {
                 sys,
                 loc!(),
                 std::slice::from_ref(&per_unf),
+                std::slice::from_ref(&per_unf.prev_step_acc),
                 &vk_digest,
                 &vk,
                 &elements,

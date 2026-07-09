@@ -204,6 +204,16 @@ fn pickles_recursive_step_width2() {
         WIDTH2_WRAP_STMT_LEN,
     >([&base, &second_base], &proof);
     assert_eq!(prepared_wrap.data.unfinalized.len(), 2);
+    assert_eq!(prepared_wrap.data.sg_olds.len(), 2);
+    assert_eq!(
+        prepared_wrap.data.sg_olds,
+        proof
+            .proof
+            .prev_challenges
+            .iter()
+            .flat_map(|challenge| challenge.comm.chunks.iter().map(|point| (point.x, point.y)))
+            .collect::<Vec<_>>()
+    );
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.statement.len(), WIDTH2_WRAP_STMT_LEN);

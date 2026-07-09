@@ -304,6 +304,16 @@ Le test width-2 vérifie désormais 16 challenges IPA sur la preuve step et
 backend avec les challenges dummy protocolaires et débloque l'intégration
 correcte d'un branch `N1` front-paddé.
 
+### Mise à jour : ACCUMULATEURS PHYSIQUES SÉPARÉS
+
+Le wrap ne dérive plus les `sg_old` backend depuis la liste logique des
+`Unfinalized`. `WrapWitnessData` transporte maintenant explicitement les
+accumulateurs physiques paddés, et `wrap_main`, le transcript ainsi que le
+miroir IPA consomment tous cette même liste. Cette distinction est invisible
+pour `N2`, mais nécessaire pour `N1` : le backend reste de largeur 2
+(`[dummy, réel]`) tandis que la finalisation et les messages réduits ne
+comptent qu'une preuve réelle.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

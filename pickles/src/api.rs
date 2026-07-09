@@ -173,6 +173,9 @@ pub struct WrapWitnessData {
     pub sg: (Fq, Fq),
     pub z1_repr: Fq,
     pub z2_repr: Fq,
+    /// Physical recursion accumulators folded by the Kimchi step proof.
+    /// This is padded independently of the logical `unfinalized` entries.
+    pub sg_olds: Vec<(Fq, Fq)>,
     pub unfinalized: Vec<WrapUnfinalizedWitnessData>,
     pub step_statement: Vec<WrapStepStatementSlot>,
     pub step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))>,
@@ -406,10 +409,12 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
+        let sg_olds = mkpts(sys, &w.sg_olds)?;
         let _out = wrap_main::<Fq, VestaParameters>(
             sys,
             loc!(),
             &unfinalized,
+            &sg_olds,
             &vk_digest,
             &vk,
             &elements,
@@ -638,6 +643,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         sg: co(&sg_pt),
         z1_repr: fp_to_fq(ww.z1_repr),
         z2_repr: fp_to_fq(ww.z2_repr),
+        sg_olds: vec![],
         unfinalized: vec![],
         step_statement: vec![WrapStepStatementSlot::Packed {
             value: fp_to_fq(digest),
