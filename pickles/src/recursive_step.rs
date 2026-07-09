@@ -20,7 +20,7 @@ use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult}
 
 use crate::{
     api::{
-        BaseCaseProof, MinaBaseCaseProof, StepApp, WrapCircuit, WrapStepStatementSlot,
+        BaseCaseProof, MinaWrapProof, StepApp, WrapCircuit, WrapStepStatementSlot,
         WrapUnfinalizedWitnessData, WrapWitnessData,
     },
     common::FULL_ROUNDS,
@@ -571,7 +571,7 @@ impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usi
         &mut self,
         public: &Vec<Fp>,
         witness: DirectN1Witness<A, R, BS>,
-    ) -> Result<(DirectN1Proof<R, WR, SR, SS, WS>, MinaBaseCaseProof), DirectRecursiveBackendError> {
+    ) -> Result<(DirectN1Proof<R, WR, SR, SS, WS>, MinaWrapProof), DirectRecursiveBackendError> {
         let proof = <Self as CompiledRuleBackend>::prove(self, public, witness)?;
         let encoded = proof.to_mina_network_proof()?;
         Ok((proof, encoded))
@@ -581,7 +581,7 @@ impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usi
         &self,
         public: &Vec<Fp>,
         proof: &DirectN1Proof<R, WR, SR, SS, WS>,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), DirectRecursiveBackendError> {
         <Self as CompiledRuleBackend>::verify(self, public, proof)?;
         proof.ensure_mina_network_proof_matches(encoded)
@@ -632,7 +632,7 @@ impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: us
         &mut self,
         public: &Vec<Fp>,
         witness: DirectN2Witness<A, R, BS>,
-    ) -> Result<(DirectN2Proof<R, WR, W1S, SS, SR, WS>, MinaBaseCaseProof), DirectRecursiveBackendError> {
+    ) -> Result<(DirectN2Proof<R, WR, W1S, SS, SR, WS>, MinaWrapProof), DirectRecursiveBackendError> {
         let proof = <Self as CompiledRuleBackend>::prove(self, public, witness)?;
         let encoded = proof.to_mina_network_proof()?;
         Ok((proof, encoded))
@@ -642,7 +642,7 @@ impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: us
         &self,
         public: &Vec<Fp>,
         proof: &DirectN2Proof<R, WR, W1S, SS, SR, WS>,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), DirectRecursiveBackendError> {
         <Self as CompiledRuleBackend>::verify(self, public, proof)?;
         proof.ensure_mina_network_proof_matches(encoded)
@@ -655,7 +655,7 @@ impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
     pub fn to_mina_network_proof(
         &self,
         step_domain_log2: u8,
-    ) -> Result<MinaBaseCaseProof, DirectRecursiveBackendError> {
+    ) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
         let wrap_wire_proof =
             crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
                 .and_then(|proof| proof.to_bin_prot())
@@ -665,7 +665,7 @@ impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
                 .map_err(|_| DirectRecursiveBackendError::MinaVerificationKeyEncoding)?
                 .to_stable_v2_base58()
                 .map_err(|_| DirectRecursiveBackendError::MinaVerificationKeyEncoding)?;
-        Ok(MinaBaseCaseProof {
+        Ok(MinaWrapProof {
             statement: self.statement.to_vec(),
             wrap_wire_proof,
             side_loaded_verification_key,
@@ -675,7 +675,7 @@ impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
     pub fn ensure_mina_network_proof_matches(
         &self,
         step_domain_log2: u8,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), DirectRecursiveBackendError> {
         if encoded != &self.to_mina_network_proof(step_domain_log2)? {
             return Err(DirectRecursiveBackendError::MinaEncodingMismatch);
@@ -694,14 +694,14 @@ impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
 impl<const R: usize, const WR: usize, const SR: usize, const SS: usize, const WS: usize>
     DirectN1Proof<R, WR, SR, SS, WS>
 {
-    pub fn to_mina_network_proof(&self) -> Result<MinaBaseCaseProof, DirectRecursiveBackendError> {
+    pub fn to_mina_network_proof(&self) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
         let step_domain_log2 = self.cycle.step.verifier.index.domain.log_size_of_group as u8;
         self.cycle.wrap.to_mina_network_proof(step_domain_log2)
     }
 
     pub fn ensure_mina_network_proof_matches(
         &self,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), DirectRecursiveBackendError> {
         let step_domain_log2 = self.cycle.step.verifier.index.domain.log_size_of_group as u8;
         self.cycle
@@ -713,14 +713,14 @@ impl<const R: usize, const WR: usize, const SR: usize, const SS: usize, const WS
 impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
     DirectN2Proof<R, WR, W1S, SS, SR, WS>
 {
-    pub fn to_mina_network_proof(&self) -> Result<MinaBaseCaseProof, DirectRecursiveBackendError> {
+    pub fn to_mina_network_proof(&self) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
         let step_domain_log2 = self.step.verifier.index.domain.log_size_of_group as u8;
         self.wrap.to_mina_network_proof(step_domain_log2)
     }
 
     pub fn ensure_mina_network_proof_matches(
         &self,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), DirectRecursiveBackendError> {
         let step_domain_log2 = self.step.verifier.index.domain.log_size_of_group as u8;
         self.wrap

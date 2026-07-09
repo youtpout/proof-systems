@@ -327,7 +327,7 @@ fn direct_n1_backend_exports_and_checks_mina_network_encoding() {
         .unwrap();
 
     let json = encoded.to_o1js_json_string().unwrap();
-    let decoded = pickles::api::MinaBaseCaseProof::from_o1js_json_string(&json).unwrap();
+    let decoded = pickles::api::MinaWrapProof::from_o1js_json_string(&json).unwrap();
     backend
         .verify_with_mina_encoding(&public, &proof, &decoded)
         .unwrap();
@@ -391,7 +391,7 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
         .unwrap();
 
     let json = encoded.to_o1js_json_string().unwrap();
-    let decoded = pickles::api::MinaBaseCaseProof::from_o1js_json_string(&json).unwrap();
+    let decoded = pickles::api::MinaWrapProof::from_o1js_json_string(&json).unwrap();
     assert_eq!(decoded, encoded);
     backend
         .verify_with_mina_encoding(&public_state, &proof, &decoded)
@@ -407,7 +407,7 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
     let mut invalid_json = decoded.to_o1js_json_value();
     invalid_json.statement[0] = "not-a-field".to_string();
     assert_eq!(
-        pickles::api::MinaBaseCaseProof::from_o1js_json_value(invalid_json),
+        pickles::api::MinaWrapProof::from_o1js_json_value(invalid_json),
         Err(BaseCaseBackendError::O1jsJsonField)
     );
 }

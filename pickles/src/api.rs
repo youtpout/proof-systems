@@ -543,7 +543,7 @@ pub struct BaseCaseProof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
 /// The native proof remains available for local verification; this artifact
 /// carries the stable Mina bytes needed at API boundaries.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MinaBaseCaseProof {
+pub struct MinaWrapProof {
     pub statement: Vec<Fq>,
     pub wrap_wire_proof: Vec<u8>,
     pub side_loaded_verification_key: String,
@@ -555,18 +555,24 @@ pub struct MinaBaseCaseProof {
 /// JavaScript. The wrapped Mina bin_prot proof bytes are base64 encoded, and
 /// the side-loaded verification key remains Mina Base58Check.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct O1jsBaseCaseProofJson {
+pub struct O1jsWrapProofJson {
     pub version: u8,
     pub statement: Vec<String>,
     pub wrap_wire_proof_base64: String,
     pub side_loaded_verification_key_base58: String,
 }
 
-impl MinaBaseCaseProof {
+#[deprecated(note = "use MinaWrapProof; this wrap proof envelope is no longer base-case specific")]
+pub type MinaBaseCaseProof = MinaWrapProof;
+
+#[deprecated(note = "use O1jsWrapProofJson; this JSON envelope is no longer base-case specific")]
+pub type O1jsBaseCaseProofJson = O1jsWrapProofJson;
+
+impl MinaWrapProof {
     pub const O1JS_JSON_VERSION: u8 = 1;
 
-    pub fn to_o1js_json_value(&self) -> O1jsBaseCaseProofJson {
-        O1jsBaseCaseProofJson {
+    pub fn to_o1js_json_value(&self) -> O1jsWrapProofJson {
+        O1jsWrapProofJson {
             version: Self::O1JS_JSON_VERSION,
             statement: self
                 .statement
@@ -579,7 +585,7 @@ impl MinaBaseCaseProof {
     }
 
     pub fn from_o1js_json_value(
-        value: O1jsBaseCaseProofJson,
+        value: O1jsWrapProofJson,
     ) -> Result<Self, BaseCaseBackendError> {
         if value.version != Self::O1JS_JSON_VERSION {
             return Err(BaseCaseBackendError::O1jsJsonVersion(value.version));
@@ -616,7 +622,7 @@ impl MinaBaseCaseProof {
 }
 
 impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, ROUNDS, STMT_LEN> {
-    pub fn to_mina_network_proof(&self) -> Result<MinaBaseCaseProof, BaseCaseBackendError> {
+    pub fn to_mina_network_proof(&self) -> Result<MinaWrapProof, BaseCaseBackendError> {
         let wrap_wire_proof = crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
             .and_then(|proof| proof.to_bin_prot())
             .map_err(|_| BaseCaseBackendError::MinaProofEncoding)?;
@@ -626,7 +632,7 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, RO
                 .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?
                 .to_stable_v2_base58()
                 .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?;
-        Ok(MinaBaseCaseProof {
+        Ok(MinaWrapProof {
             statement: self.statement.clone(),
             wrap_wire_proof,
             side_loaded_verification_key,
@@ -635,7 +641,7 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, RO
 
     pub fn ensure_mina_network_proof_matches(
         &self,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), BaseCaseBackendError> {
         if encoded != &self.to_mina_network_proof()? {
             return Err(BaseCaseBackendError::MinaEncodingMismatch);
@@ -740,7 +746,7 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
         &mut self,
         public_input: &Vec<Fp>,
         witness: A::Witness,
-    ) -> Result<(BaseCaseProof<A, ROUNDS, STMT_LEN>, MinaBaseCaseProof), BaseCaseBackendError>
+    ) -> Result<(BaseCaseProof<A, ROUNDS, STMT_LEN>, MinaWrapProof), BaseCaseBackendError>
     where
         A: Clone,
         A::Witness: Clone,
@@ -754,7 +760,7 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
         &self,
         public_input: &Vec<Fp>,
         proof: &BaseCaseProof<A, ROUNDS, STMT_LEN>,
-        encoded: &MinaBaseCaseProof,
+        encoded: &MinaWrapProof,
     ) -> Result<(), BaseCaseBackendError>
     where
         A: Clone,
