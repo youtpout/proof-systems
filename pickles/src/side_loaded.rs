@@ -22,6 +22,32 @@ pub struct SideLoadedVerificationKey {
     commitments: Vec<(Fp, Fp)>,
 }
 
+/// Raw circuit witness form. Unlike [`SideLoadedVerificationKey`], this type
+/// may contain invalid data so the circuit can prove that malformed
+/// side-loaded keys are rejected by constraints.
+#[derive(Clone, Debug)]
+pub struct SideLoadedKeyWitness {
+    pub step_domain_log2: u8,
+    pub wrap_domain_log2: u8,
+    pub proofs_verified: u8,
+    pub commitments: [(Fp, Fp); SideLoadedVerificationKey::COMMITMENT_COUNT],
+}
+
+impl From<&SideLoadedVerificationKey> for SideLoadedKeyWitness {
+    fn from(key: &SideLoadedVerificationKey) -> Self {
+        Self {
+            step_domain_log2: key.step_domain_log2,
+            wrap_domain_log2: key.wrap_domain_log2,
+            proofs_verified: key.proofs_verified.to_usize() as u8,
+            commitments: key
+                .commitments
+                .clone()
+                .try_into()
+                .unwrap_or_else(|_| unreachable!("validated key has 28 commitments")),
+        }
+    }
+}
+
 impl SideLoadedVerificationKey {
     pub const COMMITMENT_COUNT: usize = 28;
     pub const MINA_FIELD_BYTES: usize = 32;
@@ -210,9 +236,47 @@ pub enum SideLoadedKeyError {
 #[cfg(test)]
 mod tests {
     use ark_ec::{AffineRepr, CurveGroup};
+    use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::Fq;
+    use mina_poseidon::{
+        constants::PlonkSpongeConstantsKimchi,
+        sponge::{DefaultFqSponge, DefaultFrSponge},
+    };
+    use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     use super::*;
+    use crate::{
+        api::{SideLoadedStepCircuit, StepApp},
+        common::FULL_ROUNDS,
+        inductive_rule::{InductiveRule, RuleId},
+    };
+
+    type BaseSponge = DefaultFqSponge<
+        mina_curves::pasta::VestaParameters,
+        PlonkSpongeConstantsKimchi,
+        FULL_ROUNDS,
+    >;
+    type ScalarSponge =
+        DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+
+    #[derive(Clone, Copy)]
+    struct IdentityApp;
+
+    impl StepApp for IdentityApp {
+        type Witness = Fp;
+
+        fn main(
+            &self,
+            sys: &mut RunState<Fp>,
+            witness: Option<&Fp>,
+        ) -> SnarkyResult<Vec<FieldVar<Fp>>> {
+            Ok(vec![sys.compute(loc!(), |_| *witness.unwrap())?])
+        }
+
+        fn state(&self, witness: &Fp) -> Vec<Fp> {
+            vec![*witness]
+        }
+    }
 
     fn valid_commitments() -> Vec<(Fp, Fp)> {
         (1..=SideLoadedVerificationKey::COMMITMENT_COUNT)
@@ -314,6 +378,60 @@ mod tests {
         assert_eq!(
             SideLoadedVerificationKey::from_mina_field_bytes(&bytes).unwrap_err(),
             SideLoadedKeyError::NonCanonicalField(0)
+        );
+    }
+
+    #[test]
+    fn side_loaded_step_circuit_accepts_valid_key_and_rejects_tampering() {
+        let key =
+            SideLoadedVerificationKey::new(9, 13, ProofsVerified::N0, valid_commitments())
+                .unwrap();
+        let rule = InductiveRule::new(RuleId(0), "base", ProofsVerified::N0, 9);
+        let circuit = SideLoadedStepCircuit {
+            app: IdentityApp,
+            rule,
+        };
+        let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
+        let app_state = vec![Fp::from(42u64)];
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            mina_curves::pasta::Vesta::sponge_params(),
+            key.commitments(),
+            &app_state,
+            &[],
+            &[],
+        );
+        let witness = SideLoadedKeyWitness::from(&key);
+        let (proof, _) = prover
+            .prove::<BaseSponge, ScalarSponge>(
+                digest,
+                (Fp::from(42u64), witness.clone()),
+                true,
+            )
+            .unwrap();
+        verifier.verify::<BaseSponge, ScalarSponge>(proof, digest, ());
+
+        let mut invalid_point = witness.clone();
+        invalid_point.commitments[0] = (Fp::from(1u64), Fp::from(1u64));
+        assert!(
+            prover
+                .prove::<BaseSponge, ScalarSponge>(
+                    digest,
+                    (Fp::from(42u64), invalid_point),
+                    true,
+                )
+                .is_err()
+        );
+
+        let mut invalid_branch = witness;
+        invalid_branch.proofs_verified = 1;
+        assert!(
+            prover
+                .prove::<BaseSponge, ScalarSponge>(
+                    digest,
+                    (Fp::from(42u64), invalid_branch),
+                    true,
+                )
+                .is_err()
         );
     }
 }

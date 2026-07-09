@@ -389,6 +389,12 @@ codec RPC Mina/bin_prot complet (versions Stable et enveloppes réseau) reste
 distinct : aucun crate bin_prot ni vecteur Mina correspondant n'est présent
 dans ce workspace, il ne doit donc pas être confondu avec ce payload.
 
+`SideLoadedStepCircuit` consomme maintenant une clé side-loaded comme témoin
+de taille fixe. Il contraint l'arité et les domaines à la règle compilée,
+contraint les 28 commitments sur la courbe Pallas (dont le cofacteur vaut 1),
+puis les injecte dans le hash `messages_for_next_step_proof`. Les tests
+prouvent le cas valide et rejettent séparément un point et une arité altérés.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

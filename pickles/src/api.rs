@@ -32,6 +32,7 @@ use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features
 use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
 use crate::inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId};
+use crate::side_loaded::SideLoadedKeyWitness;
 use crate::plonk_curve_ops::ShiftedScalar;
 use crate::scalar_challenge::ScalarChallenge;
 use crate::step_verifier::{Claimed, FinalizeEvals};
@@ -116,6 +117,97 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
             hash_messages_for_next_step_proof(sys, loc!(), &after_index, &app_state, &[], &[])?;
         computed.assert_equals(sys, loc!(), &digest)?;
         Ok(())
+    }
+}
+
+/// Application step circuit whose wrap VK is supplied at proving time and
+/// validated in-circuit against one inductive rule.
+pub struct SideLoadedStepCircuit<A: StepApp> {
+    pub app: A,
+    pub rule: InductiveRule,
+}
+
+impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
+    type Curve = Vesta;
+    type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
+    type PrivateInput = (A::Witness, SideLoadedKeyWitness);
+    type PublicInput = FieldVar<Fp>;
+    type PublicOutput = ();
+
+    fn circuit(
+        &self,
+        sys: &mut RunState<Fp>,
+        digest: Self::PublicInput,
+        private: Option<&Self::PrivateInput>,
+    ) -> SnarkyResult<()> {
+        use crate::composition_types::PlonkVerificationKeyEvals;
+        use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
+        use snarky::gadgets::curve::Point;
+
+        let app_state = self.app.main(sys, private.map(|input| &input.0))?;
+
+        let step_domain: FieldVar<Fp> = sys.compute(loc!(), move |_| {
+            Fp::from(u64::from(private.unwrap().1.step_domain_log2))
+        })?;
+        step_domain.assert_equals(
+            sys,
+            loc!(),
+            &FieldVar::constant(Fp::from(u64::from(
+                self.rule.step_domain_log2,
+            ))),
+        )?;
+        let proofs_verified: FieldVar<Fp> = sys.compute(loc!(), move |_| {
+            Fp::from(u64::from(private.unwrap().1.proofs_verified))
+        })?;
+        proofs_verified.assert_equals(
+            sys,
+            loc!(),
+            &FieldVar::constant(Fp::from(
+                self.rule.proofs_verified.to_usize() as u64,
+            )),
+        )?;
+        let expected_wrap_domain =
+            crate::common::wrap_domain_log2(self.rule.proofs_verified.to_usize()) as u64;
+        let wrap_domain: FieldVar<Fp> = sys.compute(loc!(), move |_| {
+            Fp::from(u64::from(private.unwrap().1.wrap_domain_log2))
+        })?;
+        wrap_domain.assert_equals(
+            sys,
+            loc!(),
+            &FieldVar::constant(Fp::from(expected_wrap_domain)),
+        )?;
+
+        let points = (0..crate::side_loaded::SideLoadedVerificationKey::COMMITMENT_COUNT)
+            .map(|index| {
+                let (x, y): (FieldVar<Fp>, FieldVar<Fp>) =
+                    sys.compute(loc!(), move |_| private.unwrap().1.commitments[index])?;
+                let point = Point::new(x, y);
+                point.assert_on_curve(
+                    sys,
+                    loc!(),
+                    Fp::from(0u64),
+                    Fp::from(5u64),
+                )?;
+                Ok(point)
+            })
+            .collect::<SnarkyResult<Vec<_>>>()?;
+        let mut points = points.into_iter();
+        let vk = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|_| points.next().unwrap()).collect(),
+            coefficients_comm: (0..COLUMNS)
+                .map(|_| points.next().unwrap())
+                .collect(),
+            generic_comm: points.next().unwrap(),
+            psm_comm: points.next().unwrap(),
+            complete_add_comm: points.next().unwrap(),
+            mul_comm: points.next().unwrap(),
+            emul_comm: points.next().unwrap(),
+            endomul_scalar_comm: points.next().unwrap(),
+        };
+        let after_index = sponge_after_index(sys, loc!(), &vk);
+        let computed =
+            hash_messages_for_next_step_proof(sys, loc!(), &after_index, &app_state, &[], &[])?;
+        computed.assert_equals(sys, loc!(), &digest)
     }
 }
 
