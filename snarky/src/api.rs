@@ -6,7 +6,12 @@ use core::marker::PhantomData;
 
 use groupmap::GroupMap;
 use kimchi::{
-    circuits::{constraints::ConstraintSystem, gate::CircuitGate, polynomial::COLUMNS},
+    circuits::{
+        constraints::{ConstraintSystem, ZK_ROWS_BY_DEFAULT},
+        gate::CircuitGate,
+        polynomial::COLUMNS,
+        wires::{Wire, WIRES},
+    },
     curve::KimchiCurve,
     plonk_sponge::FrSponge,
     proof::ProverProof,
@@ -365,7 +370,35 @@ pub trait SnarkyCircuit: Sized {
     where
         <Self::Curve as AffineRepr>::BaseField: PrimeField,
     {
-        let compiled_circuit = compile(self)?;
+        self.compile_to_indexes_with_minimum_domain_log2(0)
+    }
+
+    /// Compiles the circuit while padding it with zero gates to at least the
+    /// requested power-of-two domain. This is required by recursive proof
+    /// systems whose dummy accumulators have a protocol-fixed challenge count.
+    fn compile_to_indexes_with_minimum_domain_log2(
+        self,
+        minimum_domain_log2: u32,
+    ) -> SnarkyResult<(ProverIndexWrapper<Self>, VerifierIndexWrapper<Self>)>
+    where
+        <Self::Curve as AffineRepr>::BaseField: PrimeField,
+    {
+        let mut compiled_circuit = compile(self)?;
+        if minimum_domain_log2 > 0 {
+            let target_domain_size = 1usize << minimum_domain_log2;
+            let target_gate_count =
+                target_domain_size - usize::try_from(ZK_ROWS_BY_DEFAULT).unwrap();
+            if compiled_circuit.gates.len() < target_gate_count {
+                compiled_circuit.gates.extend(
+                    (compiled_circuit.gates.len()..target_gate_count).map(|row| {
+                        CircuitGate::zero(std::array::from_fn(|column| Wire {
+                            row,
+                            col: WIRES[column],
+                        }))
+                    }),
+                );
+            }
+        }
 
         // create constraint system
         let cs = ConstraintSystem::create(compiled_circuit.gates.clone())
@@ -373,6 +406,12 @@ pub trait SnarkyCircuit: Sized {
             .prev_challenges(Self::PREV_CHALLENGES)
             .build()
             .unwrap();
+        if minimum_domain_log2 > 0 {
+            assert!(
+                cs.domain.d1.log_size_of_group >= minimum_domain_log2,
+                "minimum domain padding must select at least the requested domain"
+            );
+        }
 
         // create SRS (for vesta, as the circuit is in Fp)
         // let mut srs = SRS::<Self::Curve>::create(cs.domain.d1.size as usize);

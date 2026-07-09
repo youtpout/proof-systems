@@ -288,7 +288,21 @@ elle ne duplique plus silencieusement le premier témoin.
 Le test width-2 couvre maintenant le pipeline complet :
 deux slots wrap réels distincts → preuve step récursive avec deux recursion challenges →
 finalisation des deux anciens proofs dans `wrap_main` → équation IPA →
-preuve wrap Pallas vérifiée. Le step width-2 compile ici à 15 rounds.
+preuve wrap Pallas vérifiée.
+
+### Mise à jour : DOMAINES PICKLES STABILISÉS
+
+Snarky expose maintenant une compilation avec domaine minimal explicite. Elle
+ajoute des portes zéro avant la construction de l'index tout en laissant le
+témoin logique inchangé. Le pipeline width-2 l'utilise pour compiler le step
+sur le domaine Tick `2^16` et le wrap sur le domaine Tock déterminé par
+`ProofsVerified` (`2^13`, `2^14` ou `2^15`). Le `BranchData` publié encode ce
+même domaine.
+
+Le test width-2 vérifie désormais 16 challenges IPA sur la preuve step et
+15 sur la preuve wrap. Cette stabilisation aligne la taille des accumulateurs
+backend avec les challenges dummy protocolaires et débloque l'intégration
+correcte d'un branch `N1` front-paddé.
 
 ### Ce qu'il manque maintenant
 
@@ -303,7 +317,7 @@ preuve wrap Pallas vérifiée. Le step width-2 compile ici à 15 rounds.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.
-- **Padding Pickles complet** : intégrer les preuves non vérifiées, dummy
+- **Padding Pickles complet** : intégrer maintenant le branch `N1`, les preuves non vérifiées, dummy
   commitments/evals/challenges et `reduced_messages_for_next_proof` dans le
   flux normal, pas seulement dans les helpers de test.
 - **Parité Mina** : valider la sérialisation/RO/statement exacts contre Mina,

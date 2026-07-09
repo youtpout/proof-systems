@@ -489,6 +489,7 @@ pub struct RecursiveStepProof<
 pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub data: WrapWitnessData,
     pub statement: [Fq; WRAP_STMT_LEN],
+    pub domain_log2: u32,
     pub next_wrap_old_challenges: Vec<Vec<Fq>>,
     pub next_wrap_dummy_challenges: Vec<Vec<Fq>>,
 }
@@ -874,7 +875,9 @@ pub fn prove_recursive_step_width2<
         proofs: prepared.proofs,
         app_state: prepared.app_state,
     };
-    let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
+    let (mut prover, verifier) = circuit
+        .compile_to_indexes_with_minimum_domain_log2(crate::common::TICK_ROUNDS as u32)
+        .unwrap();
     let (proof, _) = prover
         .prove_with_recursion::<VestaBase, VestaScalar>(
             statement,
@@ -1050,9 +1053,10 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
             prechallenge: ScalarChallenge(c),
         })
         .collect();
+    let domain_log2 = crate::common::wrap_domain_log2(proofs_verified.to_usize());
     let branch = BranchData {
         proofs_verified,
-        domain_log2: svi.domain.log_size_of_group as u8,
+        domain_log2: domain_log2 as u8,
     };
     let statement = crate::composition_types::wrap::wrap_statement_to_field_elements(
         &plonk_vals,
@@ -1141,6 +1145,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     PreparedRecursiveWrap {
         data,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        domain_log2,
         next_wrap_old_challenges: new_chals,
         next_wrap_dummy_challenges,
     }
@@ -1183,11 +1188,14 @@ pub fn prepare_recursive_wrap_width2<
 pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
     prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
 ) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
+    let domain_log2 = prepared.domain_log2;
     let statement = prepared.statement;
     let next_wrap_old_challenges = prepared.next_wrap_old_challenges;
     let next_wrap_dummy_challenges = prepared.next_wrap_dummy_challenges;
     let circuit = WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> { w: prepared.data };
-    let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
+    let (mut prover, verifier) = circuit
+        .compile_to_indexes_with_minimum_domain_log2(domain_log2)
+        .unwrap();
     let (proof, _) = prover
         .prove::<PallasBase, PallasScalar>(statement, (), true)
         .unwrap();

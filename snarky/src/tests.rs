@@ -140,3 +140,21 @@ fn test_simple_circuit() {
         }
     }
 }
+
+#[test]
+fn test_minimum_domain_padding_proves_and_verifies() {
+    let (mut prover_index, verifier_index) = TestCircuit {}
+        .compile_to_indexes_with_minimum_domain_log2(8)
+        .unwrap();
+    assert_eq!(prover_index.index.cs.domain.d1.log_size_of_group, 8);
+
+    let private_input = Priv {
+        x: Fp::one(),
+        y: Fp::from(2),
+        z: Fp::from(2),
+    };
+    let (proof, public_output) = prover_index
+        .prove::<BaseSponge, ScalarSponge>(true, private_input, true)
+        .unwrap();
+    verifier_index.verify::<BaseSponge, ScalarSponge>(proof, true, *public_output);
+}

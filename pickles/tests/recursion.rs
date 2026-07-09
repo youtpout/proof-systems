@@ -41,7 +41,7 @@ const K4: usize = width1_step_statement_len(WRAP3_PROOF_ROUNDS);
 const R4: usize = 14;
 const WRAP4_STMT_LEN: usize = 13 + R4 + 9;
 const K_WIDTH2: usize = step_statement_len(2, WROUNDS);
-const WIDTH2_STEP_ROUNDS: usize = 15;
+const WIDTH2_STEP_ROUNDS: usize = pickles::common::TICK_ROUNDS;
 const WIDTH2_WRAP_STMT_LEN: usize = 13 + WIDTH2_STEP_ROUNDS + 9;
 
 struct SquareApp;
@@ -207,4 +207,5 @@ fn pickles_recursive_step_width2() {
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.statement.len(), WIDTH2_WRAP_STMT_LEN);
+    assert_eq!(wrapped.proof.proof.lr.len(), pickles::common::TOCK_ROUNDS);
 }
