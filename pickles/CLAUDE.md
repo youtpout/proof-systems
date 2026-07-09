@@ -257,6 +257,21 @@ encode les masks paddés (`N0=[0,0]`, `N1=[0,1]`, `N2=[1,1]`),
 avant les deux digests communs. Le wrapper width-1 existant délègue à ce
 builder générique.
 
+### Mise à jour : STEP WIDTH-2 PROUVÉ
+
+`RecursiveStepWidth2Circuit` porte deux `RecursiveStepData`, déclare
+`PREV_CHALLENGES=2`, vérifie les deux slots wrap réels et contraint le digest
+commun `messages_for_next_step_proof` sur les deux accumulateurs/challenge
+vectors. `prepare_recursive_step_width2` assemble les deux segments
+Unfinalized et les deux recursion challenges ; `prove_recursive_step_width2`
+compile, prouve et vérifie le branch.
+
+Le test `pickles_recursive_step_width2` passe avec deux slots réels. La
+première version compose deux vérificateurs width-1 à l'intérieur du circuit
+parent ; une future déduplication pourra construire directement
+`step_main(&[PerProofInput; 2])` pour partager le VK et le sponge d'index, sans
+changer la sémantique ni le statement width-2 désormais validés.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

@@ -12,9 +12,10 @@ use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
 use pickles::api::{prove_base_case, StepApp};
 use pickles::recursive_step::{
-    prepare_next_recursive_step, prove_first_recursive_cycle, prove_next_recursive_cycle,
-    prove_stable_recursive_cycles, width1_step_statement_len, wrap_unfinalized_from_base,
-    wrap_unfinalized_from_recursive_cycle,
+    prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_width2,
+    prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
+    prove_stable_recursive_cycles, step_statement_len, width1_step_statement_len,
+    wrap_unfinalized_from_base, wrap_unfinalized_from_recursive_cycle,
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -38,6 +39,7 @@ const WRAP3_PROOF_ROUNDS: usize = 14;
 const K4: usize = width1_step_statement_len(WRAP3_PROOF_ROUNDS);
 const R4: usize = 14;
 const WRAP4_STMT_LEN: usize = 13 + R4 + 9;
+const K_WIDTH2: usize = step_statement_len(2, WROUNDS);
 
 struct SquareApp;
 impl StepApp for SquareApp {
@@ -145,4 +147,32 @@ fn pickles_recursive_step() {
     );
     assert_eq!(cycle3.step.statement.len(), K4);
     assert_eq!(cycle3.wrap.statement.len(), WRAP4_STMT_LEN);
+}
+
+#[test]
+fn pickles_recursive_step_width2() {
+    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
+        .map(|i| (Fp::from(3000 + i), Fp::from(4000 + i)))
+        .collect();
+    let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(11u64),
+        wrap_vk_pts.clone(),
+    );
+    let app_state = vec![Fp::from(121u64)];
+    let first = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
+        &base,
+        wrap_vk_pts.clone(),
+        app_state.clone(),
+    );
+    let second = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
+        &base,
+        wrap_vk_pts,
+        app_state,
+    );
+    let prepared = prepare_recursive_step_width2::<WROUNDS, K2, K_WIDTH2>(first, second);
+    assert_eq!(prepared.statement.len(), K_WIDTH2);
+    let proof = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(prepared);
+    assert_eq!(proof.statement.len(), K_WIDTH2);
+    assert_eq!(proof.proof.prev_challenges.len(), 2);
 }

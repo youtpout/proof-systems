@@ -383,6 +383,7 @@ fn wrap_unfinalized_from_parts(
 
 /// Plain witness data for a recursive step circuit that verifies one wrap
 /// proof and folds it into the next step accumulator.
+#[derive(Clone)]
 pub struct RecursiveStepData {
     pub finalize_tokens: Vec<StepPolishToken>,
     pub finalize_domain: ark_poly::Radix2EvaluationDomain<Fp>,
@@ -425,8 +426,9 @@ pub struct RecursiveStepCircuit<
     const PREV_ROUNDS: usize,
     const WRAP_ROUNDS: usize,
     const PUBLIC_INPUT_LEN: usize,
+    const WIDTH: usize = 1,
 > {
-    pub d: RecursiveStepData,
+    pub d: [RecursiveStepData; WIDTH],
 }
 
 pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
@@ -435,6 +437,39 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
     pub recursion: kimchi::proof::RecursionChallenge<Vesta>,
     pub verified_wrap_accumulator: (Fp, Fp),
     pub finalized_step_challenges: Vec<Fp>,
+}
+
+pub struct PreparedRecursiveStepWidth2<const WIDTH1_INPUT_LEN: usize, const PUBLIC_INPUT_LEN: usize>
+{
+    pub proofs: [RecursiveStepData; 2],
+    pub individual_statements: [[Fp; WIDTH1_INPUT_LEN]; 2],
+    pub finalized_step_challenges: [Vec<Fp>; 2],
+    pub statement: [Fp; PUBLIC_INPUT_LEN],
+    pub recursions: [kimchi::proof::RecursionChallenge<Vesta>; 2],
+}
+
+pub struct RecursiveStepWidth2Circuit<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+> {
+    pub proofs: [RecursiveStepData; 2],
+    pub individual_statements: [[Fp; WIDTH1_INPUT_LEN]; 2],
+    pub finalized_step_challenges: [Vec<Fp>; 2],
+}
+
+pub struct RecursiveStepWidth2Proof<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+> {
+    pub statement: [Fp; PUBLIC_INPUT_LEN],
+    pub proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
+    pub verifier: snarky::api::VerifierIndexWrapper<
+        RecursiveStepWidth2Circuit<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    >,
 }
 
 /// A proved width-1 recursive step, ready to be wrapped by the next Pickles
@@ -754,7 +789,7 @@ pub fn prove_recursive_step<
     let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
     let (mut prover, verifier) =
-        RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> { d: prepared.data }
+        RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> { d: [prepared.data] }
             .compile_to_indexes()
             .unwrap();
     let (proof, _) = prover
@@ -773,6 +808,90 @@ pub fn prove_recursive_step<
         verifier,
         verified_wrap_accumulator,
         finalized_step_challenges,
+    }
+}
+
+pub fn prepare_recursive_step_width2<
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    first: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
+    second: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
+) -> PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
+    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+    assert_eq!(first.data.wrap_vk_pts, second.data.wrap_vk_pts);
+    assert_eq!(first.data.prev_app_state, second.data.prev_app_state);
+    assert_eq!(
+        first.statement[WIDTH1_INPUT_LEN - 1],
+        second.statement[WIDTH1_INPUT_LEN - 1]
+    );
+
+    let cpcs = [
+        first.verified_wrap_accumulator,
+        second.verified_wrap_accumulator,
+    ];
+    let challenges = [
+        first.finalized_step_challenges.clone(),
+        second.finalized_step_challenges.clone(),
+    ];
+    let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+        Vesta::sponge_params(),
+        &first.data.wrap_vk_pts,
+        &first.data.prev_app_state,
+        &cpcs,
+        &challenges,
+    );
+    let per_proof = 17 + WRAP_ROUNDS;
+    let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
+    statement.extend_from_slice(&first.statement[..per_proof]);
+    statement.extend_from_slice(&second.statement[..per_proof]);
+    statement.push(combined_digest);
+    statement.push(first.statement[WIDTH1_INPUT_LEN - 1]);
+
+    PreparedRecursiveStepWidth2 {
+        proofs: [first.data, second.data],
+        individual_statements: [first.statement, second.statement],
+        finalized_step_challenges: challenges,
+        statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        recursions: [first.recursion, second.recursion],
+    }
+}
+
+pub fn prove_recursive_step_width2<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+) -> RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    let statement = prepared.statement;
+    let circuit = RecursiveStepWidth2Circuit::<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        PUBLIC_INPUT_LEN,
+    > {
+        proofs: prepared.proofs,
+        individual_statements: prepared.individual_statements,
+        finalized_step_challenges: prepared.finalized_step_challenges,
+    };
+    let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
+    let (proof, _) = prover
+        .prove_with_recursion::<VestaBase, VestaScalar>(
+            statement,
+            (),
+            true,
+            prepared.recursions.to_vec(),
+        )
+        .unwrap();
+    verifier.verify::<VestaBase, VestaScalar>(proof.clone(), statement, ());
+    RecursiveStepWidth2Proof {
+        statement,
+        proof,
+        verifier,
     }
 }
 
@@ -1252,7 +1371,7 @@ pub fn prove_next_recursive_step<
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
     let (mut prover, verifier) =
         RecursiveStepCircuit::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
-            d: prepared.data,
+            d: [prepared.data],
         }
         .compile_to_indexes()
         .unwrap();
@@ -1508,11 +1627,107 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     lhs.into_affine() == rhs.into_affine()
 }
 
-impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>
-    SnarkyCircuit for RecursiveStepCircuit<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>
+impl<
+        const PREV_ROUNDS: usize,
+        const WRAP_ROUNDS: usize,
+        const WIDTH1_INPUT_LEN: usize,
+        const PUBLIC_INPUT_LEN: usize,
+    > SnarkyCircuit
+    for RecursiveStepWidth2Circuit<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>
 {
     type Curve = Vesta;
-    const PREV_CHALLENGES: usize = 1;
+    const PREV_CHALLENGES: usize = 2;
+    type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
+    type PrivateInput = ();
+    type PublicInput = [FieldVar<Fp>; PUBLIC_INPUT_LEN];
+    type PublicOutput = ();
+
+    fn circuit(
+        &self,
+        sys: &mut RunState<Fp>,
+        statement: Self::PublicInput,
+        _private: Option<&Self::PrivateInput>,
+    ) -> SnarkyResult<()> {
+        use crate::composition_types::PlonkVerificationKeyEvals;
+        use snarky::gadgets::curve::Point;
+
+        assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
+        assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+        let per_proof = 17 + WRAP_ROUNDS;
+
+        for i in 0..2 {
+            let mut local = statement[i * per_proof..(i + 1) * per_proof].to_vec();
+            local.push(FieldVar::constant(
+                self.individual_statements[i][WIDTH1_INPUT_LEN - 2],
+            ));
+            local.push(statement[PUBLIC_INPUT_LEN - 1].clone());
+            let local: [FieldVar<Fp>; WIDTH1_INPUT_LEN] =
+                local.try_into().unwrap_or_else(|_| unreachable!());
+            let inner = RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN> {
+                d: [self.proofs[i].clone()],
+            };
+            inner.circuit(sys, local, None)?;
+        }
+
+        let d = &self.proofs[0];
+        let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+            Ok(Point::new(
+                sys.compute(loc!(), move |_| p.0)?,
+                sys.compute(loc!(), move |_| p.1)?,
+            ))
+        };
+        let mut vk_pts = Vec::with_capacity(28);
+        for &p in &d.wrap_vk_pts {
+            vk_pts.push(mkpt(sys, p)?);
+        }
+        let mut it = vk_pts.into_iter();
+        let dlog_index = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
+            coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
+            generic_comm: it.next().unwrap(),
+            psm_comm: it.next().unwrap(),
+            complete_add_comm: it.next().unwrap(),
+            mul_comm: it.next().unwrap(),
+            emul_comm: it.next().unwrap(),
+            endomul_scalar_comm: it.next().unwrap(),
+        };
+        let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
+        let mut app_state = Vec::with_capacity(d.prev_app_state.len());
+        for &x in &d.prev_app_state {
+            app_state.push(sys.compute(loc!(), move |_| x)?);
+        }
+        let mut cpcs = Vec::with_capacity(2);
+        let mut challenges = Vec::with_capacity(2);
+        for i in 0..2 {
+            cpcs.push(mkpt(sys, self.proofs[i].sg)?);
+            challenges.push(
+                self.finalized_step_challenges[i]
+                    .iter()
+                    .map(|&x| sys.compute(loc!(), move |_| x))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+            );
+        }
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof(
+            sys,
+            loc!(),
+            &after_index,
+            &app_state,
+            &cpcs,
+            &challenges,
+        )?;
+        digest.assert_equals(sys, loc!(), &statement[PUBLIC_INPUT_LEN - 2])
+    }
+}
+
+impl<
+        const PREV_ROUNDS: usize,
+        const WRAP_ROUNDS: usize,
+        const PUBLIC_INPUT_LEN: usize,
+        const WIDTH: usize,
+    > SnarkyCircuit for RecursiveStepCircuit<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN, WIDTH>
+{
+    type Curve = Vesta;
+    const PREV_CHALLENGES: usize = WIDTH;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     type PrivateInput = ();
     type PublicInput = [FieldVar<Fp>; PUBLIC_INPUT_LEN];
@@ -1527,9 +1742,9 @@ impl<const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN:
         use crate::composition_types::PlonkVerificationKeyEvals;
         use snarky::gadgets::curve::Point;
 
-        assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-
-        let d = &self.d;
+        assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(WIDTH, WRAP_ROUNDS));
+        assert!((1..=crate::common::MAX_PROOFS_VERIFIED).contains(&WIDTH));
+        let d = &self.d[0];
         let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
             Ok(Point::new(
                 sys.compute(loc!(), move |_| p.0)?,
