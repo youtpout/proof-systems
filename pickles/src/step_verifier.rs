@@ -21,11 +21,13 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::incrementally_verify::{
-    incrementally_verify_proof, Advice, IncrementalResult, Messages, OpeningProof,
-    VerificationKeyComm,
+use crate::{
+    incrementally_verify::{
+        incrementally_verify_proof, Advice, IncrementalResult, Messages, OpeningProof,
+        VerificationKeyComm,
+    },
+    public_input::{public_input_commitment, Term},
 };
-use crate::public_input::{public_input_commitment, Term};
 
 /// The claimed values `verify` checks the re-derived transcript against: the
 /// statement's raw 128-bit plonk challenges, the sponge digest, and the
@@ -285,9 +287,11 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::finalize::{finalize_deferred, FinalizeWitness};
-    use crate::hash_messages::hash_messages_for_next_step_proof;
-    use crate::scalar_challenge::scalar_to_field;
+    use crate::{
+        finalize::{finalize_deferred, FinalizeWitness},
+        hash_messages::hash_messages_for_next_step_proof,
+        scalar_challenge::scalar_to_field,
+    };
 
     // Boolean.Assert (unfinalized.should_finalize == must_verify)
     should_finalize
@@ -377,9 +381,9 @@ mod tests {
     use ark_ff::{AdditiveGroup, BigInteger, One, UniformRand, Zero};
     use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
-    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
+        poseidon::{ArithmeticSponge, Sponge as _},
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof as IpaProof;
@@ -933,6 +937,7 @@ mod tests {
 
             use groupmap::GroupMap;
             let params = groupmap::BWParameters::<PallasParameters>::setup();
+            let next_step_accumulator = openings.challenge_polynomial_commitment.clone();
             let proof_input = crate::step_main::PerProofInput {
                 finalize_params,
                 finalize_evals,
@@ -949,6 +954,8 @@ mod tests {
                 h_generator: h,
                 messages,
                 openings,
+                next_step_accumulator,
+                next_step_challenges: None,
                 advice,
                 xi,
                 claimed,

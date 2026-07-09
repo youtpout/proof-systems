@@ -23,10 +23,12 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::composition_types::PlonkVerificationKeyEvals;
-use crate::finalize::FinalizeParams;
-use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
-use crate::step_verifier::{verify_one, Claimed, FinalizeEvals, WrapStatementVars};
+use crate::{
+    composition_types::PlonkVerificationKeyEvals,
+    finalize::FinalizeParams,
+    incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm},
+    step_verifier::{verify_one, Claimed, FinalizeEvals, WrapStatementVars},
+};
 
 /// Everything [`verify_one`] needs for one previous proof (the in-circuit
 /// slice of `Per_proof_witness.t` + `Types_map.For_step.t` + `Unfinalized.t`).
@@ -53,6 +55,13 @@ pub struct PerProofInput<'a, F: PrimeField> {
     pub h_generator: Point<F>,
     pub messages: Messages<F>,
     pub openings: OpeningProof<F>,
+    /// Accumulator committed by the next-step message. This is normally the
+    /// opening proof's challenge-polynomial commitment, but a skipped padded
+    /// slot uses Pickles' canonical dummy commitment instead.
+    pub next_step_accumulator: Point<F>,
+    /// Challenges committed by `next_step_accumulator`. A skipped padded slot
+    /// uses the canonical dummy challenge vector.
+    pub next_step_challenges: Option<Vec<FieldVar<F>>>,
     // the wrap proof's deferred values (from the step statement's Unfinalized)
     pub advice: Advice<F>,
     pub xi: FieldVar<F>,
@@ -131,7 +140,7 @@ where
             Cow::Borrowed("step_main: step proof finalized"),
             &FieldVar::constant(F::one()),
         )?;
-        chalss.push(chals);
+        chalss.push(p.next_step_challenges.clone().unwrap_or(chals));
         oks.push(verified_or_skipped.and(&finalized_or_skipped, sys, loc.clone()));
     }
 
@@ -147,7 +156,7 @@ where
     let after_index = sponge_after_index(sys, loc.clone(), dlog_plonk_index);
     let cpcs: Vec<Point<F>> = proofs
         .iter()
-        .map(|p| p.openings.challenge_polynomial_commitment.clone())
+        .map(|p| p.next_step_accumulator.clone())
         .collect();
     hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
 }

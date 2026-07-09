@@ -10,13 +10,16 @@ use kimchi::curve::KimchiCurve;
 use mina_curves::pasta::Fp;
 use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
-use pickles::api::{prove_base_case, StepApp};
-use pickles::recursive_step::{
-    prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_width2,
-    prepare_recursive_wrap_width2, prove_first_recursive_cycle, prove_next_recursive_cycle,
-    prove_recursive_step_width2, prove_recursive_wrap, prove_stable_recursive_cycles,
-    recursive_wrap_ipa_equation_holds, step_statement_len, width1_step_statement_len,
-    wrap_unfinalized_from_base, wrap_unfinalized_from_recursive_cycle,
+use pickles::{
+    api::{prove_base_case, StepApp},
+    recursive_step::{
+        prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
+        prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
+        prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
+        prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
+        step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
+        wrap_unfinalized_from_recursive_cycle,
+    },
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
@@ -217,5 +220,48 @@ fn pickles_recursive_step_width2() {
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.statement.len(), WIDTH2_WRAP_STMT_LEN);
+    assert_eq!(wrapped.proof.proof.lr.len(), pickles::common::TOCK_ROUNDS);
+}
+
+#[test]
+fn pickles_recursive_step_n1_is_physically_padded() {
+    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
+        .map(|i| (Fp::from(5000 + i), Fp::from(6000 + i)))
+        .collect();
+    let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(17u64),
+        wrap_vk_pts.clone(),
+    );
+    let real = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
+        &base,
+        wrap_vk_pts,
+        vec![Fp::from(289u64)],
+    );
+    let prepared = prepare_recursive_step_n1::<WROUNDS, K2, K_WIDTH2>(real, vec![Fp::from(289u64)]);
+    assert_eq!(prepared.dummy_slots, [true, false]);
+    assert_eq!(prepared.statement[16 + WROUNDS], Fp::from(0u64));
+    assert_eq!(
+        prepared.statement[(17 + WROUNDS) + 16 + WROUNDS],
+        Fp::from(1u64)
+    );
+
+    let step = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(prepared);
+    assert_eq!(step.proof.prev_challenges.len(), 2);
+    let prepared_wrap = prepare_recursive_wrap_n1::<
+        SquareApp,
+        ROUNDS,
+        STMT_LEN,
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
+    >(&base, &step);
+    assert_eq!(prepared_wrap.data.unfinalized.len(), 1);
+    assert_eq!(prepared_wrap.data.sg_olds.len(), 2);
+    assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
+    let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.proof.proof.lr.len(), pickles::common::TOCK_ROUNDS);
 }

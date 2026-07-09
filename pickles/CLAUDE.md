@@ -314,6 +314,15 @@ pour `N2`, mais nécessaire pour `N1` : le backend reste de largeur 2
 (`[dummy, réel]`) tandis que la finalisation et les messages réduits ne
 comptent qu'une preuve réelle.
 
+### Mise à jour : PIPELINE N1 PHYSIQUEMENT PADDÉ
+
+Le branch logique `N1` utilise maintenant réellement deux slots backend
+`[dummy, réel]`. Le slot dummy est ignoré par `verify_one`, mais contribue au
+message du step avec les challenges Step et le commitment Wrap canoniques de
+`dummy.ml`. La preuve Kimchi plie séparément le commitment Step dummy. Le wrap
+reçoit donc deux `sg_old` physiques tout en ne finalisant qu'un seul
+`Unfinalized`, avec `ProofsVerified::N1`.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
@@ -327,9 +336,9 @@ comptent qu'une preuve réelle.
 - **Vrai wrap VK** : remplacer les points VK factices par le vrai VK obtenu
   après compilation du wrap circuit, ce qui implique une compilation en deux
   passes et les domaines Pickles paddés complets.
-- **Padding Pickles complet** : intégrer maintenant le branch `N1`, les preuves non vérifiées, dummy
-  commitments/evals/challenges et `reduced_messages_for_next_proof` dans le
-  flux normal, pas seulement dans les helpers de test.
+- **Padding Pickles complet** : généraliser le branch `N1` validé aux règles
+  inductives et aux branches utilisateur, puis couvrir les autres données
+  dummy (evals et statements) au-delà du chemin récursif actuel.
 - **Parité Mina** : valider la sérialisation/RO/statement exacts contre Mina,
   pas seulement contre kimchi Rust et les mirrors locaux.
 - **API utilisateur** : porter `compile.ml`, `inductive_rule.ml`, `tag.ml`,

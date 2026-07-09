@@ -5,29 +5,33 @@
 
 use ark_ff::{AdditiveGroup, BigInteger, Field, One, PrimeField, Zero};
 use groupmap::GroupMap;
-use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-use kimchi::curve::KimchiCurve;
-use kimchi::verifier_index::VerifierIndex;
+use kimchi::{
+    circuits::wires::{COLUMNS, PERMUTS},
+    curve::KimchiCurve,
+    verifier_index::VerifierIndex,
+};
 use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
-use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-use poly_commitment::commitment::PolyComm;
-use poly_commitment::ipa::OpeningProof as IpaProof;
-use poly_commitment::SRS;
+use mina_poseidon::{
+    constants::PlonkSpongeConstantsKimchi,
+    sponge::{DefaultFqSponge, DefaultFrSponge},
+};
+use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::api::{
-    BaseCaseProof, StepApp, WrapCircuit, WrapStepStatementSlot, WrapUnfinalizedWitnessData,
-    WrapWitnessData,
+use crate::{
+    api::{
+        BaseCaseProof, StepApp, WrapCircuit, WrapStepStatementSlot, WrapUnfinalizedWitnessData,
+        WrapWitnessData,
+    },
+    common::FULL_ROUNDS,
+    composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified},
+    finalize::{FinalizeParams, ShiftKind},
+    incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm},
+    plonk_curve_ops::ShiftedScalar,
+    scalar_challenge::ScalarChallenge,
+    step_main::{step_main, PerProofInput},
+    step_verifier::{Claimed, FinalizeEvals, WrapStatementVars},
 };
-use crate::common::FULL_ROUNDS;
-use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
-use crate::finalize::{FinalizeParams, ShiftKind};
-use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
-use crate::plonk_curve_ops::ShiftedScalar;
-use crate::scalar_challenge::ScalarChallenge;
-use crate::step_main::{step_main, PerProofInput};
-use crate::step_verifier::{Claimed, FinalizeEvals, WrapStatementVars};
 
 type VestaBase = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
@@ -442,6 +446,7 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
 pub struct PreparedRecursiveStepWidth2<const WIDTH1_INPUT_LEN: usize, const PUBLIC_INPUT_LEN: usize>
 {
     pub proofs: [RecursiveStepData; 2],
+    pub dummy_slots: [bool; 2],
     pub app_state: Vec<Fp>,
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub recursions: [kimchi::proof::RecursionChallenge<Vesta>; 2],
@@ -454,6 +459,7 @@ pub struct RecursiveStepWidth2Circuit<
     const PUBLIC_INPUT_LEN: usize,
 > {
     pub proofs: [RecursiveStepData; 2],
+    pub dummy_slots: [bool; 2],
     pub app_state: Vec<Fp>,
 }
 
@@ -851,9 +857,72 @@ pub fn prepare_recursive_step_width2<
 
     PreparedRecursiveStepWidth2 {
         proofs: [first.data, second.data],
+        dummy_slots: [false, false],
         app_state,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
         recursions: [first.recursion, second.recursion],
+    }
+}
+
+/// Pads one real previous proof to Kimchi's physical width two. The leading
+/// slot is skipped by the step verifier and contributes Pickles' canonical
+/// dummy accumulator/challenges; the trailing slot is the real proof.
+pub fn prepare_recursive_step_n1<
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    real: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
+    app_state: Vec<Fp>,
+) -> PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    use poly_commitment::{commitment::PolyComm, ipa::SRS, SRS as _};
+
+    assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
+    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+
+    let (dummy_wrap, dummy_step) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(
+        <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
+        <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
+    );
+    let wrap_srs = SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
+    let dummy_wrap_sg = crate::dummy::compute_sg(&wrap_srs, &dummy_wrap.challenges_computed);
+    let dummy_accumulator = (dummy_wrap_sg.x, dummy_wrap_sg.y);
+
+    let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+        Vesta::sponge_params(),
+        &real.data.wrap_vk_pts,
+        &app_state,
+        &[dummy_accumulator, real.verified_wrap_accumulator],
+        &[
+            dummy_step.challenges_computed.clone(),
+            real.finalized_step_challenges.clone(),
+        ],
+    );
+
+    let per_proof = 17 + WRAP_ROUNDS;
+    let mut dummy_statement = real.statement[..per_proof].to_vec();
+    dummy_statement[16 + WRAP_ROUNDS] = Fp::zero();
+    let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
+    statement.extend(dummy_statement);
+    statement.extend_from_slice(&real.statement[..per_proof]);
+    statement.push(combined_digest);
+    statement.push(real.statement[WIDTH1_INPUT_LEN - 1]);
+
+    let step_srs = SRS::<Vesta>::create(1 << crate::common::TICK_ROUNDS);
+    let dummy_step_sg = crate::dummy::compute_sg(&step_srs, &dummy_step.challenges_computed);
+    let dummy_recursion = kimchi::proof::RecursionChallenge {
+        chals: dummy_step.challenges_computed,
+        comm: PolyComm {
+            chunks: vec![dummy_step_sg],
+        },
+    };
+
+    PreparedRecursiveStepWidth2 {
+        proofs: [real.data.clone(), real.data],
+        dummy_slots: [true, false],
+        app_state,
+        statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        recursions: [dummy_recursion, real.recursion],
     }
 }
 
@@ -873,6 +942,7 @@ pub fn prove_recursive_step_width2<
         PUBLIC_INPUT_LEN,
     > {
         proofs: prepared.proofs,
+        dummy_slots: prepared.dummy_slots,
         app_state: prepared.app_state,
     };
     let (mut prover, verifier) = circuit
@@ -1183,6 +1253,40 @@ pub fn prepare_recursive_wrap_width2<
         ],
         sg_olds,
         ProofsVerified::N2,
+    )
+}
+
+/// Wraps a physically width-two `[dummy, real]` step proof while carrying one
+/// logical unfinalized proof (`ProofsVerified::N1`).
+pub fn prepare_recursive_wrap_n1<
+    A: StepApp,
+    const BASE_ROUNDS: usize,
+    const BASE_STMT_LEN: usize,
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const STEP_STMT_LEN: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN>,
+) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
+    let sg_olds: Vec<Vesta> = step
+        .proof
+        .prev_challenges
+        .iter()
+        .flat_map(|challenge| challenge.comm.chunks.iter().copied())
+        .collect();
+    assert_eq!(sg_olds.len(), 2, "N1 step proof must be physically padded");
+    prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
+        &step.verifier.index,
+        &step.proof,
+        &step.statement,
+        step_statement_slots::<WRAP_ROUNDS>(&step.statement, 2),
+        vec![wrap_unfinalized_from_base(base)],
+        sg_olds,
+        ProofsVerified::N1,
     )
 }
 
@@ -1655,6 +1759,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     d: &'a RecursiveStepData,
     statement: &[FieldVar<Fp>],
     mds: &'a [Vec<Fp>],
+    dummy_slot: bool,
 ) -> SnarkyResult<(
     PerProofInput<'a, Fp>,
     crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
@@ -1818,6 +1923,27 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         challenge_polynomial_commitment: mkpt(sys, d.sg)?,
         h_generator: h.clone(),
     };
+    let (next_step_accumulator, next_step_challenges) = if dummy_slot {
+        use poly_commitment::SRS as _;
+        let (dummy_wrap, dummy_step) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(
+            <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
+            <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
+        );
+        let srs = poly_commitment::ipa::SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
+        let sg = crate::dummy::compute_sg(&srs, &dummy_wrap.challenges_computed);
+        (
+            cpt((sg.x, sg.y)),
+            Some(
+                dummy_step
+                    .challenges_computed
+                    .into_iter()
+                    .map(FieldVar::constant)
+                    .collect(),
+            ),
+        )
+    } else {
+        (openings.challenge_polynomial_commitment.clone(), None)
+    };
     let advice = Advice {
         combined_inner_product: t2s(sys, statement[0].clone(), statement[1].clone())?,
         b: t2s(sys, statement[2].clone(), statement[3].clone())?,
@@ -1876,6 +2002,8 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         h_generator: h,
         messages,
         openings,
+        next_step_accumulator,
+        next_step_challenges,
         advice,
         xi: statement[15].clone(),
         claimed,
@@ -1920,12 +2048,14 @@ impl<
         let mut shared_index = None;
         for i in 0..2 {
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
-            let (proof, index, _previous_app_state) = recursive_per_proof_input::<
-                PREV_ROUNDS,
-                WRAP_ROUNDS,
-            >(
-                sys, &self.proofs[i], segment, &mds
-            )?;
+            let (proof, index, _previous_app_state) =
+                recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
+                    sys,
+                    &self.proofs[i],
+                    segment,
+                    &mds,
+                    self.dummy_slots[i],
+                )?;
             if i == 0 {
                 shared_index = Some(index);
             }
@@ -2216,6 +2346,8 @@ impl<
             h_generator: h,
             messages,
             openings,
+            next_step_accumulator: mkpt(sys, d.sg)?,
+            next_step_challenges: None,
             advice,
             xi: xi2,
             claimed,
