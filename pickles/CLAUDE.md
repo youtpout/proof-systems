@@ -336,6 +336,14 @@ VK du wrap réellement vérifié. Le premier cycle refuse un base proof dont le
 step n'aurait pas hashé cette même clé, ce qui ferme le chemin où une VK
 factice pouvait encore être injectée entre le cas de base et la récursion.
 
+### Mise à jour : MÉTADONNÉES DE RÈGLES INDUCTIVES
+
+`inductive_rule` fournit maintenant des identifiants de règles stables, la
+validation d'un programme multi-branches et le routage par règle. Chaque règle
+fixe son arité `N0/N1/N2`, son domaine step, son domaine wrap dérivé et applique
+le padding frontal des preuves. Les doublons, domaines Tick trop grands et
+arités incohérentes sont rejetés avant toute compilation coûteuse.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
@@ -355,4 +363,5 @@ factice pouvait encore être injectée entre le cas de base et la récursion.
   pas seulement contre kimchi Rust et les mirrors locaux.
 - **API utilisateur** : porter `compile.ml`, `inductive_rule.ml`, `tag.ml`,
   `types_map.ml` sous forme Rust idiomatique pour exposer un équivalent
-  ZkProgram/prove/verify.
+  ZkProgram/prove/verify. La couche de métadonnées et validation des règles est
+  en place ; il reste à lui attacher les closures de circuits et les index.
