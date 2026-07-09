@@ -32,9 +32,9 @@ use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features
 use crate::finalize::{FinalizeParams, ShiftKind};
 use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
 use crate::inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId};
-use crate::side_loaded::SideLoadedKeyWitness;
 use crate::plonk_curve_ops::ShiftedScalar;
 use crate::scalar_challenge::ScalarChallenge;
+use crate::side_loaded::{SideLoadedKeyWitness, SideLoadedVerificationKey};
 use crate::step_verifier::{Claimed, FinalizeEvals};
 use crate::wrap_main::{wrap_main, PerUnfinalized, StepStatementElement};
 
@@ -152,9 +152,7 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
         step_domain.assert_equals(
             sys,
             loc!(),
-            &FieldVar::constant(Fp::from(u64::from(
-                self.rule.step_domain_log2,
-            ))),
+            &FieldVar::constant(Fp::from(u64::from(self.rule.step_domain_log2))),
         )?;
         let proofs_verified: FieldVar<Fp> = sys.compute(loc!(), move |_| {
             Fp::from(u64::from(private.unwrap().1.proofs_verified))
@@ -162,9 +160,7 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
         proofs_verified.assert_equals(
             sys,
             loc!(),
-            &FieldVar::constant(Fp::from(
-                self.rule.proofs_verified.to_usize() as u64,
-            )),
+            &FieldVar::constant(Fp::from(self.rule.proofs_verified.to_usize() as u64)),
         )?;
         let expected_wrap_domain =
             crate::common::wrap_domain_log2(self.rule.proofs_verified.to_usize()) as u64;
@@ -182,21 +178,14 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
                 let (x, y): (FieldVar<Fp>, FieldVar<Fp>) =
                     sys.compute(loc!(), move |_| private.unwrap().1.commitments[index])?;
                 let point = Point::new(x, y);
-                point.assert_on_curve(
-                    sys,
-                    loc!(),
-                    Fp::from(0u64),
-                    Fp::from(5u64),
-                )?;
+                point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
                 Ok(point)
             })
             .collect::<SnarkyResult<Vec<_>>>()?;
         let mut points = points.into_iter();
         let vk = PlonkVerificationKeyEvals {
             sigma_comm: (0..PERMUTS).map(|_| points.next().unwrap()).collect(),
-            coefficients_comm: (0..COLUMNS)
-                .map(|_| points.next().unwrap())
-                .collect(),
+            coefficients_comm: (0..COLUMNS).map(|_| points.next().unwrap()).collect(),
             generic_comm: points.next().unwrap(),
             psm_comm: points.next().unwrap(),
             complete_add_comm: points.next().unwrap(),
@@ -547,6 +536,53 @@ pub struct BaseCaseProof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
     pub wrap_vk_pts: Vec<(Fp, Fp)>,
 }
 
+/// Network-facing Mina encoding for a base-case Pickles proof.
+///
+/// The native proof remains available for local verification; this artifact
+/// carries the stable Mina bytes needed at API boundaries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MinaBaseCaseProof {
+    pub statement: Vec<Fq>,
+    pub wrap_wire_proof: Vec<u8>,
+    pub side_loaded_verification_key: String,
+}
+
+impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, ROUNDS, STMT_LEN> {
+    pub fn to_mina_network_proof(&self) -> Result<MinaBaseCaseProof, BaseCaseBackendError> {
+        let wrap_wire_proof = crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
+            .and_then(|proof| proof.to_bin_prot())
+            .map_err(|_| BaseCaseBackendError::MinaProofEncoding)?;
+        let step_domain_log2 = self.step_verifier.index.domain.log_size_of_group as u8;
+        let side_loaded_verification_key =
+            SideLoadedVerificationKey::from_wrap_verifier(step_domain_log2, &self.wrap_verifier)
+                .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?
+                .to_stable_v2_base58()
+                .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?;
+        Ok(MinaBaseCaseProof {
+            statement: self.statement.clone(),
+            wrap_wire_proof,
+            side_loaded_verification_key,
+        })
+    }
+
+    pub fn ensure_mina_network_proof_matches(
+        &self,
+        encoded: &MinaBaseCaseProof,
+    ) -> Result<(), BaseCaseBackendError> {
+        if encoded != &self.to_mina_network_proof()? {
+            return Err(BaseCaseBackendError::MinaEncodingMismatch);
+        }
+        crate::mina_bin_prot::WrapWireProofV1::from_bin_prot(&encoded.wrap_wire_proof)
+            .map_err(|_| BaseCaseBackendError::MinaProofEncoding)?;
+        SideLoadedVerificationKey::from_stable_v2_base58(
+            self.step_verifier.index.domain.log_size_of_group as u8,
+            &encoded.side_loaded_verification_key,
+        )
+        .map_err(|_| BaseCaseBackendError::MinaVerificationKeyEncoding)?;
+        Ok(())
+    }
+}
+
 /// Returns a wrap verifier index's 28 commitments in Pickles' canonical
 /// sigma, coefficients, selector order.
 pub fn wrap_verification_key_points<const ROUNDS: usize, const STMT_LEN: usize>(
@@ -583,11 +619,7 @@ pub fn wrap_verification_key_points<const ROUNDS: usize, const STMT_LEN: usize>(
 /// final pass rebuilds the step proof with those real 28 commitments in its
 /// accumulator digest, recompiles the wrap, asserts index stability, and
 /// returns only the final proof.
-pub fn prove_base_case_two_pass<
-    A: StepApp + Clone,
-    const ROUNDS: usize,
-    const STMT_LEN: usize,
->(
+pub fn prove_base_case_two_pass<A: StepApp + Clone, const ROUNDS: usize, const STMT_LEN: usize>(
     app: A,
     witness: A::Witness,
 ) -> BaseCaseProof<A, ROUNDS, STMT_LEN>
@@ -597,14 +629,10 @@ where
     let bootstrap_points = (0..28u64)
         .map(|i| (Fp::from(1_000_000 + i), Fp::from(2_000_000 + i)))
         .collect();
-    let bootstrap = prove_base_case::<A, ROUNDS, STMT_LEN>(
-        app.clone(),
-        witness.clone(),
-        bootstrap_points,
-    );
+    let bootstrap =
+        prove_base_case::<A, ROUNDS, STMT_LEN>(app.clone(), witness.clone(), bootstrap_points);
     let actual_points = wrap_verification_key_points(&bootstrap.wrap_verifier);
-    let final_proof =
-        prove_base_case::<A, ROUNDS, STMT_LEN>(app, witness, actual_points.clone());
+    let final_proof = prove_base_case::<A, ROUNDS, STMT_LEN>(app, witness, actual_points.clone());
     assert_eq!(
         wrap_verification_key_points(&final_proof.wrap_verifier),
         actual_points,
@@ -618,11 +646,7 @@ where
 /// Proof creation uses the two-pass real-wrap-VK pipeline. Verification checks
 /// both the Kimchi wrap proof and the binding between the caller's public
 /// application state and the accumulator digest in the wrap statement.
-pub struct BaseCaseRuleBackend<
-    A: StepApp,
-    const ROUNDS: usize,
-    const STMT_LEN: usize,
-> {
+pub struct BaseCaseRuleBackend<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     rule_id: RuleId,
     app: A,
 }
@@ -643,6 +667,34 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>
     pub fn rule_id(&self) -> RuleId {
         self.rule_id
     }
+
+    pub fn prove_with_mina_encoding(
+        &mut self,
+        public_input: &Vec<Fp>,
+        witness: A::Witness,
+    ) -> Result<(BaseCaseProof<A, ROUNDS, STMT_LEN>, MinaBaseCaseProof), BaseCaseBackendError>
+    where
+        A: Clone,
+        A::Witness: Clone,
+    {
+        let proof = <Self as CompiledRuleBackend>::prove(self, public_input, witness)?;
+        let encoded = proof.to_mina_network_proof()?;
+        Ok((proof, encoded))
+    }
+
+    pub fn verify_with_mina_encoding(
+        &self,
+        public_input: &Vec<Fp>,
+        proof: &BaseCaseProof<A, ROUNDS, STMT_LEN>,
+        encoded: &MinaBaseCaseProof,
+    ) -> Result<(), BaseCaseBackendError>
+    where
+        A: Clone,
+        A::Witness: Clone,
+    {
+        <Self as CompiledRuleBackend>::verify(self, public_input, proof)?;
+        proof.ensure_mina_network_proof_matches(encoded)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -652,13 +704,13 @@ pub enum BaseCaseBackendError {
     WrapKeyMismatch,
     InvalidStatementLength(usize),
     InvalidWrapProof,
+    MinaProofEncoding,
+    MinaVerificationKeyEncoding,
+    MinaEncodingMismatch,
 }
 
-impl<
-        A: StepApp + Clone,
-        const ROUNDS: usize,
-        const STMT_LEN: usize,
-    > CompiledRuleBackend for BaseCaseRuleBackend<A, ROUNDS, STMT_LEN>
+impl<A: StepApp + Clone, const ROUNDS: usize, const STMT_LEN: usize> CompiledRuleBackend
+    for BaseCaseRuleBackend<A, ROUNDS, STMT_LEN>
 where
     A::Witness: Clone,
 {
@@ -707,17 +759,20 @@ where
         if proof.statement[12] != fp_to_fq(digest) {
             return Err(BaseCaseBackendError::PublicStateMismatch);
         }
-        let statement: [Fq; STMT_LEN] = proof
-            .statement
-            .clone()
-            .try_into()
-            .map_err(|statement: Vec<Fq>| {
-                BaseCaseBackendError::InvalidStatementLength(statement.len())
-            })?;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let statement: [Fq; STMT_LEN] =
             proof
-                .wrap_verifier
-                .verify::<PallasBase, PallasScalar>(proof.proof.clone(), statement, ());
+                .statement
+                .clone()
+                .try_into()
+                .map_err(|statement: Vec<Fq>| {
+                    BaseCaseBackendError::InvalidStatementLength(statement.len())
+                })?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof.wrap_verifier.verify::<PallasBase, PallasScalar>(
+                proof.proof.clone(),
+                statement,
+                (),
+            );
         }))
         .map_err(|_| BaseCaseBackendError::InvalidWrapProof)
     }

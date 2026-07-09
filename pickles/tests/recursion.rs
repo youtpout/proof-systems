@@ -20,11 +20,10 @@ use pickles::{
     recursive_step::{
         prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
         prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
-        DirectN1Backend, DirectN1Witness,
-        prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2, prove_recursive_wrap,
-        prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds, step_statement_len,
-        width1_step_statement_len, wrap_unfinalized_from_base,
-        wrap_unfinalized_from_recursive_cycle,
+        prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
+        prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
+        step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
+        wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness,
     },
     side_loaded::SideLoadedVerificationKey,
 };
@@ -276,13 +275,11 @@ fn pickles_recursive_step_n1_is_physically_padded() {
 
 #[test]
 fn base_case_two_pass_hashes_the_real_wrap_vk() {
-    let proof =
-        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(19u64));
+    let proof = prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(19u64));
     let actual = wrap_verification_key_points(&proof.wrap_verifier);
     assert_eq!(proof.wrap_vk_pts, actual);
     let side_loaded =
-        SideLoadedVerificationKey::from_wrap_verifier(ROUNDS as u8, &proof.wrap_verifier)
-            .unwrap();
+        SideLoadedVerificationKey::from_wrap_verifier(ROUNDS as u8, &proof.wrap_verifier).unwrap();
     assert_eq!(side_loaded.commitments(), actual);
     assert_ne!(
         proof.wrap_vk_pts[0],
@@ -292,31 +289,19 @@ fn base_case_two_pass_hashes_the_real_wrap_vk() {
 
 #[test]
 fn recursive_cycle_uses_the_real_wrap_vk() {
-    let base =
-        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(23u64));
+    let base = prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(23u64));
     let rule = InductiveRule::new(RuleId(1), "recursive", ProofsVerified::N1, 16);
-    let mut backend = DirectN1Backend::<
-        SquareApp,
-        ROUNDS,
-        WROUNDS,
-        R2,
-        STMT_LEN,
-        K2,
-        WRAP2_STMT_LEN,
-    >::compile(&rule)
-    .unwrap();
-    use pickles::inductive_rule::CompiledRuleBackend;
-    let proof = backend
-        .prove(
-            &vec![Fp::from(529u64)],
-            DirectN1Witness { base },
+    let mut backend =
+        DirectN1Backend::<SquareApp, ROUNDS, WROUNDS, R2, STMT_LEN, K2, WRAP2_STMT_LEN>::compile(
+            &rule,
         )
         .unwrap();
+    use pickles::inductive_rule::CompiledRuleBackend;
+    let proof = backend
+        .prove(&vec![Fp::from(529u64)], DirectN1Witness { base })
+        .unwrap();
     backend.verify(&vec![Fp::from(529u64)], &proof).unwrap();
-    assert_eq!(
-        proof.cycle.wrap.proof.proof.lr.len(),
-        WRAP2_PROOF_ROUNDS
-    );
+    assert_eq!(proof.cycle.wrap.proof.proof.lr.len(), WRAP2_PROOF_ROUNDS);
 }
 
 #[test]
@@ -332,7 +317,9 @@ fn compiled_program_proves_and_verifies_a_real_base_rule() {
     )
     .unwrap();
     let mut program = metadata
-        .compile(|rule| BaseCaseRuleBackend::<SquareApp, ROUNDS, STMT_LEN>::compile(rule, SquareApp))
+        .compile(|rule| {
+            BaseCaseRuleBackend::<SquareApp, ROUNDS, STMT_LEN>::compile(rule, SquareApp)
+        })
         .unwrap();
 
     let public_state = vec![Fp::from(31u64) * Fp::from(31u64)];
@@ -347,5 +334,30 @@ fn compiled_program_proves_and_verifies_a_real_base_rule() {
         Err(ProgramExecutionError::Backend(
             BaseCaseBackendError::PublicStateMismatch
         ))
+    );
+}
+
+#[test]
+fn base_backend_exports_and_checks_mina_network_encoding() {
+    let rule = InductiveRule::new(RuleId(0), "base", ProofsVerified::N0, ROUNDS as u8);
+    let mut backend =
+        BaseCaseRuleBackend::<SquareApp, ROUNDS, STMT_LEN>::compile(&rule, SquareApp).unwrap();
+    let public_state = vec![Fp::from(37u64) * Fp::from(37u64)];
+    let (proof, encoded) = backend
+        .prove_with_mina_encoding(&public_state, Fp::from(37u64))
+        .unwrap();
+
+    assert_eq!(encoded.statement, proof.statement);
+    assert!(!encoded.wrap_wire_proof.is_empty());
+    assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    backend
+        .verify_with_mina_encoding(&public_state, &proof, &encoded)
+        .unwrap();
+
+    let mut tampered = encoded;
+    tampered.wrap_wire_proof.push(0);
+    assert_eq!(
+        backend.verify_with_mina_encoding(&public_state, &proof, &tampered),
+        Err(BaseCaseBackendError::MinaEncodingMismatch)
     );
 }
