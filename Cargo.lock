@@ -2457,6 +2457,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-poly",
+ "base64 0.21.7",
  "blake2",
  "groupmap",
  "kimchi",
@@ -2466,6 +2467,8 @@ dependencies = [
  "o1-utils",
  "poly-commitment",
  "rand 0.8.5",
+ "serde",
+ "serde_json",
  "sha2",
  "snarky",
 ]

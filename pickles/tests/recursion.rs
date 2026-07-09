@@ -354,10 +354,24 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
         .verify_with_mina_encoding(&public_state, &proof, &encoded)
         .unwrap();
 
+    let json = encoded.to_o1js_json_string().unwrap();
+    let decoded = pickles::api::MinaBaseCaseProof::from_o1js_json_string(&json).unwrap();
+    assert_eq!(decoded, encoded);
+    backend
+        .verify_with_mina_encoding(&public_state, &proof, &decoded)
+        .unwrap();
+
     let mut tampered = encoded;
     tampered.wrap_wire_proof.push(0);
     assert_eq!(
         backend.verify_with_mina_encoding(&public_state, &proof, &tampered),
         Err(BaseCaseBackendError::MinaEncodingMismatch)
+    );
+
+    let mut invalid_json = decoded.to_o1js_json_value();
+    invalid_json.statement[0] = "not-a-field".to_string();
+    assert_eq!(
+        pickles::api::MinaBaseCaseProof::from_o1js_json_value(invalid_json),
+        Err(BaseCaseBackendError::O1jsJsonField)
     );
 }

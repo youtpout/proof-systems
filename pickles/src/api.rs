@@ -17,6 +17,7 @@
 //! surrounding data plumbing lands with the recursive API.
 
 use ark_ff::{BigInteger, One, PrimeField};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
@@ -25,6 +26,7 @@ use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
 use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
+use serde::{Deserialize, Serialize};
 use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
 use crate::common::FULL_ROUNDS;
@@ -547,6 +549,72 @@ pub struct MinaBaseCaseProof {
     pub side_loaded_verification_key: String,
 }
 
+/// JSON-safe envelope intended for JS/o1js consumers.
+///
+/// Field elements are decimal strings to preserve full Pasta precision in
+/// JavaScript. The wrapped Mina bin_prot proof bytes are base64 encoded, and
+/// the side-loaded verification key remains Mina Base58Check.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct O1jsBaseCaseProofJson {
+    pub version: u8,
+    pub statement: Vec<String>,
+    pub wrap_wire_proof_base64: String,
+    pub side_loaded_verification_key_base58: String,
+}
+
+impl MinaBaseCaseProof {
+    pub const O1JS_JSON_VERSION: u8 = 1;
+
+    pub fn to_o1js_json_value(&self) -> O1jsBaseCaseProofJson {
+        O1jsBaseCaseProofJson {
+            version: Self::O1JS_JSON_VERSION,
+            statement: self
+                .statement
+                .iter()
+                .map(|field| field.to_string())
+                .collect(),
+            wrap_wire_proof_base64: BASE64_STANDARD.encode(&self.wrap_wire_proof),
+            side_loaded_verification_key_base58: self.side_loaded_verification_key.clone(),
+        }
+    }
+
+    pub fn from_o1js_json_value(
+        value: O1jsBaseCaseProofJson,
+    ) -> Result<Self, BaseCaseBackendError> {
+        if value.version != Self::O1JS_JSON_VERSION {
+            return Err(BaseCaseBackendError::O1jsJsonVersion(value.version));
+        }
+        let statement = value
+            .statement
+            .iter()
+            .map(|field| {
+                field
+                    .parse::<Fq>()
+                    .map_err(|_| BaseCaseBackendError::O1jsJsonField)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let wrap_wire_proof = BASE64_STANDARD
+            .decode(value.wrap_wire_proof_base64)
+            .map_err(|_| BaseCaseBackendError::O1jsJsonProofBytes)?;
+        Ok(Self {
+            statement,
+            wrap_wire_proof,
+            side_loaded_verification_key: value.side_loaded_verification_key_base58,
+        })
+    }
+
+    pub fn to_o1js_json_string(&self) -> Result<String, BaseCaseBackendError> {
+        serde_json::to_string(&self.to_o1js_json_value())
+            .map_err(|_| BaseCaseBackendError::O1jsJsonSerialization)
+    }
+
+    pub fn from_o1js_json_string(value: &str) -> Result<Self, BaseCaseBackendError> {
+        let value = serde_json::from_str(value)
+            .map_err(|_| BaseCaseBackendError::O1jsJsonSerialization)?;
+        Self::from_o1js_json_value(value)
+    }
+}
+
 impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, ROUNDS, STMT_LEN> {
     pub fn to_mina_network_proof(&self) -> Result<MinaBaseCaseProof, BaseCaseBackendError> {
         let wrap_wire_proof = crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
@@ -707,6 +775,10 @@ pub enum BaseCaseBackendError {
     MinaProofEncoding,
     MinaVerificationKeyEncoding,
     MinaEncodingMismatch,
+    O1jsJsonSerialization,
+    O1jsJsonVersion(u8),
+    O1jsJsonField,
+    O1jsJsonProofBytes,
 }
 
 impl<A: StepApp + Clone, const ROUNDS: usize, const STMT_LEN: usize> CompiledRuleBackend
