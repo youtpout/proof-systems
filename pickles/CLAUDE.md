@@ -331,6 +331,11 @@ l'ordre canonique, puis la passe finale reconstruit le step en hashant cette
 VK réelle. Le wrap est recompilé et sa VK doit être strictement identique à
 celle de la première passe avant que la preuve finale soit retournée.
 
+Les helpers récursifs `*_with_real_vk` extraient ensuite automatiquement la
+VK du wrap réellement vérifié. Le premier cycle refuse un base proof dont le
+step n'aurait pas hashé cette même clé, ce qui ferme le chemin où une VK
+factice pouvait encore être injectée entre le cas de base et la récursion.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness

@@ -17,9 +17,10 @@ use pickles::{
     recursive_step::{
         prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
         prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
-        prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
-        prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
-        step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
+        prove_first_recursive_cycle, prove_first_recursive_cycle_with_real_vk,
+        prove_next_recursive_cycle, prove_recursive_step_width2, prove_recursive_wrap,
+        prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds, step_statement_len,
+        width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle,
     },
 };
@@ -278,5 +279,24 @@ fn base_case_two_pass_hashes_the_real_wrap_vk() {
     assert_ne!(
         proof.wrap_vk_pts[0],
         (Fp::from(1_000_000u64), Fp::from(2_000_000u64))
+    );
+}
+
+#[test]
+fn recursive_cycle_uses_the_real_wrap_vk() {
+    let base =
+        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(23u64));
+    let cycle = prove_first_recursive_cycle_with_real_vk::<
+        SquareApp,
+        ROUNDS,
+        WROUNDS,
+        R2,
+        STMT_LEN,
+        K2,
+        WRAP2_STMT_LEN,
+    >(&base, vec![Fp::from(529u64)]);
+    assert_eq!(
+        cycle.wrap.proof.proof.lr.len(),
+        WRAP2_PROOF_ROUNDS
     );
 }

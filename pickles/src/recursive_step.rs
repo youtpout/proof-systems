@@ -1364,6 +1364,44 @@ pub fn prove_first_recursive_cycle<
     RecursiveCycleProof { step, wrap }
 }
 
+/// Proves the first recursive cycle using the verification key of the base
+/// wrap proof itself. This is the production path after
+/// [`crate::api::prove_base_case_two_pass`]; callers no longer thread an
+/// unrelated 28-point placeholder into the recursive accumulator.
+pub fn prove_first_recursive_cycle_with_real_vk<
+    A: StepApp,
+    const BASE_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const BASE_STMT_LEN: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    prev_app_state: Vec<Fp>,
+) -> RecursiveCycleProof<
+    BASE_ROUNDS,
+    VERIFIED_WRAP_ROUNDS,
+    STEP_PROOF_ROUNDS,
+    STEP_STMT_LEN,
+    WRAP_STMT_LEN,
+> {
+    let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
+    assert_eq!(
+        base.wrap_vk_pts, wrap_vk_pts,
+        "base step proof must hash its own wrap verification key"
+    );
+    prove_first_recursive_cycle::<
+        A,
+        BASE_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        STEP_PROOF_ROUNDS,
+        BASE_STMT_LEN,
+        STEP_STMT_LEN,
+        WRAP_STMT_LEN,
+    >(base, wrap_vk_pts, prev_app_state)
+}
+
 /// Prepares the next step after a complete recursive cycle.
 ///
 /// Unlike [`prepare_recursive_step`], both the finalized step proof and the
@@ -1577,6 +1615,48 @@ pub fn prove_next_recursive_cycle<
     );
     let wrap = prove_recursive_wrap(prepared_wrap);
     RecursiveCycleProof { step, wrap }
+}
+
+/// Proves the next cycle with the previous cycle's actual wrap verification
+/// key in the reduced message.
+pub fn prove_next_recursive_cycle_with_real_vk<
+    const CYCLE_PREV_ROUNDS: usize,
+    const CYCLE_VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const NEXT_STEP_STMT_LEN: usize,
+    const NEXT_STEP_PROOF_ROUNDS: usize,
+    const NEXT_WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    app_state: Vec<Fp>,
+) -> RecursiveCycleProof<
+    PREV_STEP_PROOF_ROUNDS,
+    WRAP_PROOF_ROUNDS,
+    NEXT_STEP_PROOF_ROUNDS,
+    NEXT_STEP_STMT_LEN,
+    NEXT_WRAP_STMT_LEN,
+> {
+    let wrap_vk_pts = crate::api::wrap_verification_key_points(&previous.wrap.verifier);
+    prove_next_recursive_cycle::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_WRAP_STMT_LEN,
+    >(previous, wrap_vk_pts, app_state)
 }
 
 /// Repeats recursive step→wrap cycles once the compiled domains and statement
