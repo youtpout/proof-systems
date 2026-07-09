@@ -6,6 +6,8 @@
 
 use std::collections::HashSet;
 
+use ark_ff::PrimeField;
+
 use crate::{
     common::{wrap_domain_log2, TICK_ROUNDS},
     composition_types::{BranchData, ProofSlot, ProofsVerified},
@@ -60,6 +62,16 @@ impl InductiveRule {
             });
         }
         Ok(crate::composition_types::front_pad_proof_slots(proofs))
+    }
+
+    /// Stable field representation used at the compiler/protocol boundary.
+    /// Human-readable rule names are intentionally excluded.
+    pub fn to_mina_field_elements<F: PrimeField>(&self) -> [F; 3] {
+        [
+            F::from(u64::from(self.id.0)),
+            F::from(self.proofs_verified.to_usize() as u64),
+            F::from(u64::from(self.step_domain_log2)),
+        ]
     }
 }
 
@@ -357,6 +369,21 @@ mod tests {
         assert_eq!(
             program.prove(RuleId(1), &9, 7),
             Err(ProgramExecutionError::Backend("invalid witness"))
+        );
+    }
+
+    #[test]
+    fn rule_field_encoding_is_stable() {
+        use mina_curves::pasta::Fp;
+
+        let rule = InductiveRule::new(RuleId(7), "ignored-on-wire", ProofsVerified::N2, 16);
+        assert_eq!(
+            rule.to_mina_field_elements::<Fp>(),
+            [Fp::from(7u64), Fp::from(2u64), Fp::from(16u64)]
+        );
+        assert_eq!(
+            rule.branch_data().pack::<Fp>(),
+            Fp::from(16u64 * 4 + 2)
         );
     }
 }

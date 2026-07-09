@@ -359,6 +359,17 @@ de chaque point à Pallas et à son sous-groupe. Une clé peut être extraite d'
 vrai index wrap puis convertie sans ambiguïté vers
 `PlonkVerificationKeyEvals`.
 
+La représentation circuit-facing est maintenant stable : métadonnées puis 28
+points dans l'ordre VK, chaque coordonnée étant encodée comme un élément Pasta
+canonique little-endian de 32 octets. Le décodeur rejette longueurs, champs
+non canoniques, points invalides et métadonnées incohérentes. Les règles ont
+également un ordre de champs stable indépendant de leur nom Rust.
+
+Cette couche couvre la parité des field elements consommés par Pickles. Le
+codec RPC Mina/bin_prot complet (versions Stable et enveloppes réseau) reste
+distinct : aucun crate bin_prot ni vecteur Mina correspondant n'est présent
+dans ce workspace, il ne doit donc pas être confondu avec ce payload.
+
 ### Ce qu'il manque maintenant
 
 - **Récursion N>1 / règles inductives** : transformer le harness
