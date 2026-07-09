@@ -24,7 +24,7 @@ use pickles::{
         prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
         step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness,
-        DirectRecursiveBackendError,
+        DirectN2Backend, DirectN2Witness, DirectRecursiveBackendError,
     },
     side_loaded::SideLoadedVerificationKey,
 };
@@ -320,6 +320,59 @@ fn direct_n1_backend_exports_and_checks_mina_network_encoding() {
         .unwrap();
 
     assert_eq!(encoded.statement, proof.cycle.wrap.statement.to_vec());
+    assert!(!encoded.wrap_wire_proof.is_empty());
+    assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    backend
+        .verify_with_mina_encoding(&public, &proof, &encoded)
+        .unwrap();
+
+    let json = encoded.to_o1js_json_string().unwrap();
+    let decoded = pickles::api::MinaWrapProof::from_o1js_json_string(&json).unwrap();
+    backend
+        .verify_with_mina_encoding(&public, &proof, &decoded)
+        .unwrap();
+
+    let mut tampered = decoded;
+    tampered.wrap_wire_proof.push(0);
+    assert_eq!(
+        backend.verify_with_mina_encoding(&public, &proof, &tampered),
+        Err(DirectRecursiveBackendError::MinaEncodingMismatch)
+    );
+}
+
+#[test]
+fn direct_n2_backend_exports_and_checks_mina_network_encoding() {
+    let first_base =
+        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(43u64));
+    let second_base =
+        prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(47u64));
+    let rule = InductiveRule::new(RuleId(2), "recursive-width2", ProofsVerified::N2, 16);
+    let mut backend = DirectN2Backend::<
+        SquareApp,
+        ROUNDS,
+        WROUNDS,
+        STMT_LEN,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
+    >::compile(&rule)
+    .unwrap();
+    let public = vec![Fp::from(43u64) * Fp::from(43u64) + Fp::from(47u64) * Fp::from(47u64)];
+    let (proof, encoded) = backend
+        .prove_with_mina_encoding(
+            &public,
+            DirectN2Witness {
+                bases: [first_base, second_base],
+                previous_app_states: [
+                    vec![Fp::from(43u64) * Fp::from(43u64)],
+                    vec![Fp::from(47u64) * Fp::from(47u64)],
+                ],
+            },
+        )
+        .unwrap();
+
+    assert_eq!(encoded.statement, proof.wrap.statement.to_vec());
     assert!(!encoded.wrap_wire_proof.is_empty());
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
     backend
