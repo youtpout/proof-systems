@@ -27,6 +27,7 @@ use crate::{
     composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified},
     finalize::{FinalizeParams, ShiftKind},
     incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm},
+    inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId},
     plonk_curve_ops::ShiftedScalar,
     scalar_challenge::ScalarChallenge,
     step_main::{step_main, PerProofInput},
@@ -519,6 +520,205 @@ pub struct RecursiveCycleProof<
 > {
     pub step: RecursiveStepProof<PREV_ROUNDS, VERIFIED_WRAP_ROUNDS, STEP_STMT_LEN>,
     pub wrap: RecursiveWrapProof<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>,
+}
+
+pub struct DirectN1Witness<A: StepApp, const R: usize, const S: usize> {
+    pub base: BaseCaseProof<A, R, S>,
+}
+
+pub struct DirectN1Proof<
+    const R: usize,
+    const WR: usize,
+    const SR: usize,
+    const SS: usize,
+    const WS: usize,
+> {
+    pub cycle: RecursiveCycleProof<R, WR, SR, SS, WS>,
+    pub wrap_vk_pts: Vec<(Fp, Fp)>,
+}
+
+pub struct DirectN1Backend<
+    A: StepApp,
+    const R: usize,
+    const WR: usize,
+    const SR: usize,
+    const BS: usize,
+    const SS: usize,
+    const WS: usize,
+>(std::marker::PhantomData<A>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectRecursiveBackendError {
+    WrongArity(RuleId),
+    PublicDigestMismatch,
+    InvalidProof,
+}
+
+impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usize, const SS: usize, const WS: usize>
+    DirectN1Backend<A, R, WR, SR, BS, SS, WS>
+{
+    pub fn compile(rule: &InductiveRule) -> Result<Self, DirectRecursiveBackendError> {
+        (rule.proofs_verified == ProofsVerified::N1)
+            .then_some(Self(std::marker::PhantomData))
+            .ok_or(DirectRecursiveBackendError::WrongArity(rule.id))
+    }
+}
+
+pub struct DirectN2Witness<A: StepApp, const R: usize, const S: usize> {
+    pub bases: [BaseCaseProof<A, R, S>; 2],
+    pub previous_app_states: [Vec<Fp>; 2],
+}
+
+pub struct DirectN2Proof<
+    const R: usize,
+    const WR: usize,
+    const W1S: usize,
+    const SS: usize,
+    const SR: usize,
+    const WS: usize,
+> {
+    pub step: RecursiveStepWidth2Proof<R, WR, W1S, SS>,
+    pub wrap: RecursiveWrapProof<SR, WS>,
+    pub wrap_vk_pts: Vec<(Fp, Fp)>,
+    pub accumulators: [(Fp, Fp); 2],
+    pub challenges: [Vec<Fp>; 2],
+}
+
+pub struct DirectN2Backend<
+    A: StepApp,
+    const R: usize,
+    const WR: usize,
+    const BS: usize,
+    const W1S: usize,
+    const SS: usize,
+    const SR: usize,
+    const WS: usize,
+>(std::marker::PhantomData<A>);
+
+impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
+    DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
+{
+    pub fn compile(rule: &InductiveRule) -> Result<Self, DirectRecursiveBackendError> {
+        (rule.proofs_verified == ProofsVerified::N2)
+            .then_some(Self(std::marker::PhantomData))
+            .ok_or(DirectRecursiveBackendError::WrongArity(rule.id))
+    }
+}
+
+impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
+    CompiledRuleBackend for DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
+{
+    type PublicInput = Vec<Fp>;
+    type Witness = DirectN2Witness<A, R, BS>;
+    type Proof = DirectN2Proof<R, WR, W1S, SS, SR, WS>;
+    type Error = DirectRecursiveBackendError;
+
+    fn prove(&mut self, public: &Vec<Fp>, witness: Self::Witness) -> Result<Self::Proof, Self::Error> {
+        let vk0 = crate::api::wrap_verification_key_points(&witness.bases[0].wrap_verifier);
+        let vk1 = crate::api::wrap_verification_key_points(&witness.bases[1].wrap_verifier);
+        if vk0 != vk1 {
+            return Err(DirectRecursiveBackendError::InvalidProof);
+        }
+        let first = prepare_recursive_step::<A, R, WR, BS, W1S>(
+            &witness.bases[0],
+            vk0.clone(),
+            witness.previous_app_states[0].clone(),
+        );
+        let second = prepare_recursive_step::<A, R, WR, BS, W1S>(
+            &witness.bases[1],
+            vk0.clone(),
+            witness.previous_app_states[1].clone(),
+        );
+        let accumulators = [first.verified_wrap_accumulator, second.verified_wrap_accumulator];
+        let challenges = [
+            first.finalized_step_challenges.clone(),
+            second.finalized_step_challenges.clone(),
+        ];
+        let prepared = prepare_recursive_step_width2::<WR, W1S, SS>(first, second, public.clone());
+        let step = prove_recursive_step_width2::<R, WR, W1S, SS>(prepared);
+        let prepared_wrap = prepare_recursive_wrap_width2::<A, R, BS, R, WR, W1S, SS, SR, WS>(
+            [&witness.bases[0], &witness.bases[1]],
+            &step,
+        );
+        let wrap = prove_recursive_wrap(prepared_wrap);
+        Ok(DirectN2Proof {
+            step,
+            wrap,
+            wrap_vk_pts: vk0,
+            accumulators,
+            challenges,
+        })
+    }
+
+    fn verify(&self, public: &Vec<Fp>, proof: &Self::Proof) -> Result<(), Self::Error> {
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &proof.wrap_vk_pts,
+            public,
+            &proof.accumulators,
+            &proof.challenges,
+        );
+        if proof.step.statement[SS - 2] != digest {
+            return Err(DirectRecursiveBackendError::PublicDigestMismatch);
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof.step.verifier.verify::<VestaBase, VestaScalar>(
+                proof.step.proof.clone(),
+                proof.step.statement,
+                (),
+            );
+            proof.wrap.verifier.verify::<PallasBase, PallasScalar>(
+                proof.wrap.proof.clone(),
+                proof.wrap.statement,
+                (),
+            );
+        }))
+        .map_err(|_| DirectRecursiveBackendError::InvalidProof)
+    }
+}
+
+impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usize, const SS: usize, const WS: usize>
+    CompiledRuleBackend for DirectN1Backend<A, R, WR, SR, BS, SS, WS>
+{
+    type PublicInput = Vec<Fp>;
+    type Witness = DirectN1Witness<A, R, BS>;
+    type Proof = DirectN1Proof<R, WR, SR, SS, WS>;
+    type Error = DirectRecursiveBackendError;
+
+    fn prove(&mut self, public: &Vec<Fp>, witness: Self::Witness) -> Result<Self::Proof, Self::Error> {
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&witness.base.wrap_verifier);
+        let cycle = prove_first_recursive_cycle_with_real_vk::<A, R, WR, SR, BS, SS, WS>(
+            &witness.base,
+            public.clone(),
+        );
+        Ok(DirectN1Proof { cycle, wrap_vk_pts })
+    }
+
+    fn verify(&self, public: &Vec<Fp>, proof: &Self::Proof) -> Result<(), Self::Error> {
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &proof.wrap_vk_pts,
+            public,
+            &[proof.cycle.step.verified_wrap_accumulator],
+            &[proof.cycle.step.finalized_step_challenges.clone()],
+        );
+        if proof.cycle.step.statement[SS - 2] != digest {
+            return Err(DirectRecursiveBackendError::PublicDigestMismatch);
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof.cycle.step.verifier.verify::<VestaBase, VestaScalar>(
+                proof.cycle.step.proof.clone(),
+                proof.cycle.step.statement,
+                (),
+            );
+            proof.cycle.wrap.verifier.verify::<PallasBase, PallasScalar>(
+                proof.cycle.wrap.proof.clone(),
+                proof.cycle.wrap.statement,
+                (),
+            );
+        }))
+        .map_err(|_| DirectRecursiveBackendError::InvalidProof)
+    }
 }
 
 /// Builds the witness, width-1 statement and recursion challenge for the first

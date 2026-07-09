@@ -363,6 +363,11 @@ Les branches récursives disposent maintenant de `N1RuleBackend` et
 d'appeler le prover concret fourni par la branche, l'adapter construit les
 slots Pickles `[dummy, réel]` ou `[réel, réel]`.
 
+`DirectN1Backend` et `DirectN2Backend` raccordent maintenant directement ces
+branches aux harnesses cryptographiques : préparation des anciens proofs,
+preuve step récursive, preuve wrap, recalcul du digest public et vérification
+Kimchi des deux couches. Aucune closure de proving n'est requise.
+
 `HeterogeneousPicklesProgram` permet de réunir ces branches avec le backend
 `N0` même lorsque leurs public inputs, witnesses et preuves Rust diffèrent.
 L'effacement de types reste limité à la table de routage ; chaque appel
