@@ -96,4 +96,16 @@ mod tests {
         use ark_ff::{BigInteger, PrimeField as _};
         assert!(x1.into_bigint().to_bits_le()[128..].iter().all(|b| !b));
     }
+
+    /// Official Mina `test_ro.ml` regression vector.
+    #[test]
+    fn bits_random_oracle_matches_mina_regression_vector() {
+        let expected = "0100000110111000111111110001100001100010001010001101001011011001\
+                        0011101101101000001110001110100101010100001000001110101110111010"
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c == '1')
+            .collect::<Vec<_>>();
+        assert_eq!(bits_random_oracle(128, "BitsRandomOracle"), expected);
+    }
 }

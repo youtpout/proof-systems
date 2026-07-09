@@ -378,16 +378,21 @@ de chaque point à Pallas et à son sous-groupe. Une clé peut être extraite d'
 vrai index wrap puis convertie sans ambiguïté vers
 `PlonkVerificationKeyEvals`.
 
-La représentation circuit-facing est maintenant stable : métadonnées puis 28
-points dans l'ordre VK, chaque coordonnée étant encodée comme un élément Pasta
-canonique little-endian de 32 octets. Le décodeur rejette longueurs, champs
-non canoniques, points invalides et métadonnées incohérentes. Les règles ont
-également un ordre de champs stable indépendant de leur nom Rust.
+La représentation circuit-facing suit maintenant exactement
+`Pickles_base.Side_loaded_verification_key.to_input` : one-hot de
+`max_proofs_verified`, one-hot de `actual_wrap_domain_size`, puis 28 points
+dans l'ordre VK. Chaque coordonnée utilise un élément Pasta canonique
+little-endian de 32 octets. Le décodeur rejette longueurs, champs non
+canoniques, points invalides et métadonnées incohérentes.
 
 Cette couche couvre la parité des field elements consommés par Pickles. Le
 codec RPC Mina/bin_prot complet (versions Stable et enveloppes réseau) reste
 distinct : aucun crate bin_prot ni vecteur Mina correspondant n'est présent
 dans ce workspace, il ne doit donc pas être confondu avec ce payload.
+
+La référence Mina officielle `6f65312c4caebc3cb0ef25f74ba7ea641c91b033`
+a été auditée. Le vecteur officiel `test_ro.ml` pour
+`bits_random_oracle("BitsRandomOracle")` est maintenant exécuté côté Rust.
 
 `SideLoadedStepCircuit` consomme maintenant une clé side-loaded comme témoin
 de taille fixe. Il contraint l'arité et les domaines à la règle compilée,
