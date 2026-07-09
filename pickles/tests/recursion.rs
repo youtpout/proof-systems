@@ -162,18 +162,30 @@ fn pickles_recursive_step_width2() {
         Fp::from(11u64),
         wrap_vk_pts.clone(),
     );
-    let app_state = vec![Fp::from(121u64)];
+    let second_base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(13u64),
+        wrap_vk_pts.clone(),
+    );
     let first = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
         &base,
         wrap_vk_pts.clone(),
-        app_state.clone(),
+        vec![Fp::from(121u64)],
     );
     let second = prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
-        &base,
+        &second_base,
         wrap_vk_pts,
-        app_state,
+        vec![Fp::from(169u64)],
     );
-    let prepared = prepare_recursive_step_width2::<WROUNDS, K2, K_WIDTH2>(first, second);
+    assert_ne!(
+        first.verified_wrap_accumulator,
+        second.verified_wrap_accumulator
+    );
+    let prepared = prepare_recursive_step_width2::<WROUNDS, K2, K_WIDTH2>(
+        first,
+        second,
+        vec![Fp::from(290u64)],
+    );
     assert_eq!(prepared.statement.len(), K_WIDTH2);
     let proof = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(prepared);
     assert_eq!(proof.statement.len(), K_WIDTH2);
@@ -190,7 +202,7 @@ fn pickles_recursive_step_width2() {
         K_WIDTH2,
         WIDTH2_STEP_ROUNDS,
         WIDTH2_WRAP_STMT_LEN,
-    >(&base, &proof);
+    >([&base, &second_base], &proof);
     assert_eq!(prepared_wrap.data.unfinalized.len(), 2);
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);

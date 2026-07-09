@@ -442,6 +442,7 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
 pub struct PreparedRecursiveStepWidth2<const WIDTH1_INPUT_LEN: usize, const PUBLIC_INPUT_LEN: usize>
 {
     pub proofs: [RecursiveStepData; 2],
+    pub app_state: Vec<Fp>,
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub recursions: [kimchi::proof::RecursionChallenge<Vesta>; 2],
 }
@@ -453,6 +454,7 @@ pub struct RecursiveStepWidth2Circuit<
     const PUBLIC_INPUT_LEN: usize,
 > {
     pub proofs: [RecursiveStepData; 2],
+    pub app_state: Vec<Fp>,
 }
 
 pub struct RecursiveStepWidth2Proof<
@@ -814,11 +816,11 @@ pub fn prepare_recursive_step_width2<
 >(
     first: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
     second: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
+    app_state: Vec<Fp>,
 ) -> PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
     assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
     assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
     assert_eq!(first.data.wrap_vk_pts, second.data.wrap_vk_pts);
-    assert_eq!(first.data.prev_app_state, second.data.prev_app_state);
     assert_eq!(
         first.statement[WIDTH1_INPUT_LEN - 1],
         second.statement[WIDTH1_INPUT_LEN - 1]
@@ -835,7 +837,7 @@ pub fn prepare_recursive_step_width2<
     let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
         &first.data.wrap_vk_pts,
-        &first.data.prev_app_state,
+        &app_state,
         &cpcs,
         &challenges,
     );
@@ -848,6 +850,7 @@ pub fn prepare_recursive_step_width2<
 
     PreparedRecursiveStepWidth2 {
         proofs: [first.data, second.data],
+        app_state,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
         recursions: [first.recursion, second.recursion],
     }
@@ -869,6 +872,7 @@ pub fn prove_recursive_step_width2<
         PUBLIC_INPUT_LEN,
     > {
         proofs: prepared.proofs,
+        app_state: prepared.app_state,
     };
     let (mut prover, verifier) = circuit.compile_to_indexes().unwrap();
     let (proof, _) = prover
@@ -1153,7 +1157,7 @@ pub fn prepare_recursive_wrap_width2<
     const STEP_PROOF_ROUNDS: usize,
     const WRAP_STMT_LEN: usize,
 >(
-    base: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    bases: [&BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>; 2],
     step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN>,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     let sg_olds: Vec<Vesta> = step
@@ -1168,8 +1172,8 @@ pub fn prepare_recursive_wrap_width2<
         &step.statement,
         step_statement_slots::<WRAP_ROUNDS>(&step.statement, 2),
         vec![
-            wrap_unfinalized_from_base(base),
-            wrap_unfinalized_from_base(base),
+            wrap_unfinalized_from_base(bases[0]),
+            wrap_unfinalized_from_base(bases[1]),
         ],
         sg_olds,
         ProofsVerified::N2,
@@ -1909,26 +1913,29 @@ impl<
             .collect();
         let mut proofs = Vec::with_capacity(2);
         let mut shared_index = None;
-        let mut app_state = None;
         for i in 0..2 {
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
-            let (proof, index, state) = recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
-                sys,
-                &self.proofs[i],
-                segment,
-                &mds,
+            let (proof, index, _previous_app_state) = recursive_per_proof_input::<
+                PREV_ROUNDS,
+                WRAP_ROUNDS,
+            >(
+                sys, &self.proofs[i], segment, &mds
             )?;
             if i == 0 {
                 shared_index = Some(index);
-                app_state = Some(state);
             }
             proofs.push(proof);
         }
+        let app_state = self
+            .app_state
+            .iter()
+            .map(|&value| sys.compute(loc!(), move |_| value))
+            .collect::<SnarkyResult<Vec<_>>>()?;
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         let digest = step_main::<Fp, PallasParameters>(
             sys,
             loc!(),
-            &app_state.unwrap(),
+            &app_state,
             &shared_index.unwrap(),
             &proofs,
             &params,

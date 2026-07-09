@@ -266,11 +266,14 @@ vectors. `prepare_recursive_step_width2` assemble les deux segments
 Unfinalized et les deux recursion challenges ; `prove_recursive_step_width2`
 compile, prouve et vérifie le branch.
 
-Le test `pickles_recursive_step_width2` passe avec deux slots réels. La
-construction `RecursiveStepData → PerProofInput` est extraite et le circuit
-appelle directement une seule fois `step_main(&[PerProofInput; 2])` : les deux
-preuves partagent donc le VK, le sponge d'index et le calcul du digest final,
-comme le branch multi-preuves Pickles.
+Le test `pickles_recursive_step_width2` passe avec deux slots réels et
+désormais deux preuves de base distinctes. La construction
+`RecursiveStepData → PerProofInput` est extraite et le circuit appelle
+directement une seule fois `step_main(&[PerProofInput; 2])` : les deux preuves
+partagent donc le VK et le sponge d'index, mais conservent leurs propres états
+applicatifs précédents. L'état applicatif courant est fourni explicitement au
+branch et alimente le calcul du digest final, comme dans le branch
+multi-preuves Pickles.
 
 ### Mise à jour : WRAP WIDTH-2 PROUVÉ
 
@@ -278,10 +281,12 @@ La préparation wrap est désormais indépendante du wrapper width-1 : elle
 consomme directement index, proof, statement, slots, liste d'Unfinalized et
 anciens accumulateurs. `prepare_recursive_wrap_width2` fournit deux
 Unfinalized, utilise les slots du statement width-2 et encode
-`ProofsVerified::N2`.
+`ProofsVerified::N2`. L'API width-2 reçoit les deux preuves de base et construit
+deux témoins Unfinalized et deux anciens accumulateurs réellement distincts ;
+elle ne duplique plus silencieusement le premier témoin.
 
 Le test width-2 couvre maintenant le pipeline complet :
-deux slots wrap réels → preuve step récursive avec deux recursion challenges →
+deux slots wrap réels distincts → preuve step récursive avec deux recursion challenges →
 finalisation des deux anciens proofs dans `wrap_main` → équation IPA →
 preuve wrap Pallas vérifiée. Le step width-2 compile ici à 15 rounds.
 
