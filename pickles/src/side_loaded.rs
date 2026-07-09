@@ -18,6 +18,7 @@ use crate::{
 pub struct SideLoadedVerificationKey {
     pub step_domain_log2: u8,
     pub wrap_domain_log2: u8,
+    pub max_proofs_verified: ProofsVerified,
     pub proofs_verified: ProofsVerified,
     commitments: Vec<(Fp, Fp)>,
 }
@@ -51,7 +52,7 @@ impl From<&SideLoadedVerificationKey> for SideLoadedKeyWitness {
 impl SideLoadedVerificationKey {
     pub const COMMITMENT_COUNT: usize = 28;
     pub const MINA_FIELD_BYTES: usize = 32;
-    pub const MINA_PAYLOAD_FIELDS: usize = 3 + 2 * Self::COMMITMENT_COUNT;
+    pub const MINA_PAYLOAD_FIELDS: usize = 6 + 2 * Self::COMMITMENT_COUNT;
     pub const MINA_PAYLOAD_BYTES: usize = Self::MINA_PAYLOAD_FIELDS * Self::MINA_FIELD_BYTES;
 
     pub fn new(
@@ -63,6 +64,7 @@ impl SideLoadedVerificationKey {
         let key = Self {
             step_domain_log2,
             wrap_domain_log2,
+            max_proofs_verified: proofs_verified,
             proofs_verified,
             commitments,
         };
@@ -85,6 +87,9 @@ impl SideLoadedVerificationKey {
     }
 
     pub fn validate(&self) -> Result<(), SideLoadedKeyError> {
+        if self.max_proofs_verified.to_usize() < self.proofs_verified.to_usize() {
+            return Err(SideLoadedKeyError::ActualWidthExceedsMaximum);
+        }
         if usize::from(self.step_domain_log2) > TICK_ROUNDS {
             return Err(SideLoadedKeyError::StepDomainTooLarge(
                 self.step_domain_log2,
@@ -143,14 +148,17 @@ impl SideLoadedVerificationKey {
         }
     }
 
-    /// Circuit-facing Mina field order: step domain, wrap domain,
-    /// proofs-verified, then the 28 commitment `(x,y)` pairs in canonical VK
-    /// order. This representation is independent of Rust struct layout.
+    /// Mina `to_input` field order: one-hot `max_proofs_verified`, one-hot
+    /// `actual_wrap_domain_size`, then the 28 commitment `(x,y)` pairs.
     pub fn to_mina_field_elements(&self) -> Vec<Fp> {
         let mut fields = Vec::with_capacity(Self::MINA_PAYLOAD_FIELDS);
-        fields.push(Fp::from(u64::from(self.step_domain_log2)));
-        fields.push(Fp::from(u64::from(self.wrap_domain_log2)));
-        fields.push(Fp::from(self.proofs_verified.to_usize() as u64));
+        let one_hot = |proofs: ProofsVerified| {
+            std::array::from_fn::<Fp, 3, _>(|index| {
+                Fp::from(u64::from(index == proofs.to_usize()))
+            })
+        };
+        fields.extend(one_hot(self.max_proofs_verified));
+        fields.extend(one_hot(self.proofs_verified));
         for &(x, y) in &self.commitments {
             fields.push(x);
             fields.push(y);
@@ -187,29 +195,33 @@ impl SideLoadedVerificationKey {
             fields.push(field);
         }
 
-        let decode_u8 = |index: usize| -> Result<u8, SideLoadedKeyError> {
-            (0..=u8::MAX)
-                .find(|value| fields[index] == Fp::from(u64::from(*value)))
-                .ok_or(SideLoadedKeyError::InvalidMetadataField(index))
+        let decode_one_hot = |offset: usize| -> Result<ProofsVerified, SideLoadedKeyError> {
+            let bits = &fields[offset..offset + 3];
+            (0..3)
+                .find(|&selected| {
+                    bits.iter().enumerate().all(|(index, value)| {
+                        *value == Fp::from(u64::from(index == selected))
+                    })
+                })
+                .map(ProofsVerified::from_usize)
+                .ok_or(SideLoadedKeyError::InvalidMetadataField(offset))
         };
-        let step_domain_log2 = decode_u8(0)?;
-        let wrap_domain_log2 = decode_u8(1)?;
-        let proofs_verified = match decode_u8(2)? {
-            0 => ProofsVerified::N0,
-            1 => ProofsVerified::N1,
-            2 => ProofsVerified::N2,
-            _ => return Err(SideLoadedKeyError::InvalidMetadataField(2)),
-        };
-        let commitments = fields[3..]
+        let max_proofs_verified = decode_one_hot(0)?;
+        let proofs_verified = decode_one_hot(3)?;
+        let commitments = fields[6..]
             .chunks_exact(2)
             .map(|point| (point[0], point[1]))
             .collect();
-        Self::new(
-            step_domain_log2,
+        let wrap_domain_log2 =
+            crate::common::wrap_domain_log2(proofs_verified.to_usize()) as u8;
+        let mut key = Self::new(
+            crate::common::TICK_ROUNDS as u8,
             wrap_domain_log2,
             proofs_verified,
             commitments,
-        )
+        )?;
+        key.max_proofs_verified = max_proofs_verified;
+        Ok(key)
     }
 }
 
@@ -231,6 +243,7 @@ pub enum SideLoadedKeyError {
     WrongSerializedLength(usize),
     NonCanonicalField(usize),
     InvalidMetadataField(usize),
+    ActualWidthExceedsMaximum,
 }
 
 #[cfg(test)]
@@ -346,21 +359,21 @@ mod tests {
                 .unwrap();
         let bytes = key.to_mina_field_bytes();
         assert_eq!(bytes.len(), SideLoadedVerificationKey::MINA_PAYLOAD_BYTES);
-        assert_eq!(&bytes[..4], &[16, 0, 0, 0]);
+        assert_eq!(&bytes[..4], &[0, 0, 0, 0]);
         assert_eq!(
             &bytes[SideLoadedVerificationKey::MINA_FIELD_BYTES
                 ..SideLoadedVerificationKey::MINA_FIELD_BYTES + 4],
-            &[14, 0, 0, 0]
+            &[1, 0, 0, 0]
         );
         assert_eq!(
             &bytes[2 * SideLoadedVerificationKey::MINA_FIELD_BYTES
                 ..2 * SideLoadedVerificationKey::MINA_FIELD_BYTES + 4],
-            &[1, 0, 0, 0]
+            &[0, 0, 0, 0]
         );
-        assert_eq!(
-            SideLoadedVerificationKey::from_mina_field_bytes(&bytes).unwrap(),
-            key
-        );
+        let decoded = SideLoadedVerificationKey::from_mina_field_bytes(&bytes).unwrap();
+        assert_eq!(decoded.commitments, key.commitments);
+        assert_eq!(decoded.max_proofs_verified, ProofsVerified::N1);
+        assert_eq!(decoded.proofs_verified, ProofsVerified::N1);
     }
 
     #[test]
