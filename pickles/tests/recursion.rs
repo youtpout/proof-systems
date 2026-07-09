@@ -24,6 +24,7 @@ use pickles::{
         prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
         step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness,
+        DirectRecursiveBackendError,
     },
     side_loaded::SideLoadedVerificationKey,
 };
@@ -302,6 +303,41 @@ fn recursive_cycle_uses_the_real_wrap_vk() {
         .unwrap();
     backend.verify(&vec![Fp::from(529u64)], &proof).unwrap();
     assert_eq!(proof.cycle.wrap.proof.proof.lr.len(), WRAP2_PROOF_ROUNDS);
+}
+
+#[test]
+fn direct_n1_backend_exports_and_checks_mina_network_encoding() {
+    let base = prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(41u64));
+    let rule = InductiveRule::new(RuleId(1), "recursive", ProofsVerified::N1, 16);
+    let mut backend =
+        DirectN1Backend::<SquareApp, ROUNDS, WROUNDS, R2, STMT_LEN, K2, WRAP2_STMT_LEN>::compile(
+            &rule,
+        )
+        .unwrap();
+    let public = vec![Fp::from(41u64) * Fp::from(41u64)];
+    let (proof, encoded) = backend
+        .prove_with_mina_encoding(&public, DirectN1Witness { base })
+        .unwrap();
+
+    assert_eq!(encoded.statement, proof.cycle.wrap.statement.to_vec());
+    assert!(!encoded.wrap_wire_proof.is_empty());
+    assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
+    backend
+        .verify_with_mina_encoding(&public, &proof, &encoded)
+        .unwrap();
+
+    let json = encoded.to_o1js_json_string().unwrap();
+    let decoded = pickles::api::MinaBaseCaseProof::from_o1js_json_string(&json).unwrap();
+    backend
+        .verify_with_mina_encoding(&public, &proof, &decoded)
+        .unwrap();
+
+    let mut tampered = decoded;
+    tampered.wrap_wire_proof.push(0);
+    assert_eq!(
+        backend.verify_with_mina_encoding(&public, &proof, &tampered),
+        Err(DirectRecursiveBackendError::MinaEncodingMismatch)
+    );
 }
 
 #[test]
