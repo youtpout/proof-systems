@@ -91,7 +91,6 @@ impl<
                     Zero => None,
                     Generic => Some(&self.verifier_index.generic_comm),
                     Lookup => None,
-                    CairoClaim | CairoInstruction | CairoFlags | CairoTransition => None,
                     CompleteAdd => Some(&self.verifier_index.complete_add_comm),
                     VarBaseMul => Some(&self.verifier_index.mul_comm),
                     EndoMul => Some(&self.verifier_index.emul_comm),
