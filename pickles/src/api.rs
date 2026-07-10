@@ -103,6 +103,38 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
             );
             pts.push(Point::new(px, py));
         }
+        // The wrap key crosses a trust boundary (it is only known at proving
+        // time), so each commitment is constrained to the Pallas curve —
+        // mirroring OCaml snarky_curve's `assert_on_curve` emitted by the
+        // `exists Inner_curve.typ` in step_main: x² (square), x³ = x²·x
+        // (r1cs), y² = x³ + b (square) with b = 5.
+        for pt in &pts {
+            let x = pt.x.clone();
+            let y = pt.y.clone();
+            let x2: FieldVar<Fp> = sys.compute(loc!(), {
+                let x = x.clone();
+                move |env| {
+                    let v: Fp = env.read_var(&x);
+                    v * v
+                }
+            })?;
+            sys.add_constraint(
+                snarky::runner::Constraint::BasicSnarkyConstraint(
+                    snarky::constraint_system::BasicSnarkyConstraint::Square(x.clone(), x2.clone()),
+                ),
+                Some("vk point x^2".into()),
+                loc!(),
+            )?;
+            let x3 = x2.mul(&x, Some("vk point x^3".into()), loc!(), sys)?;
+            let rhs = x3 + FieldVar::Constant(Fp::from(5u64));
+            sys.add_constraint(
+                snarky::runner::Constraint::BasicSnarkyConstraint(
+                    snarky::constraint_system::BasicSnarkyConstraint::Square(y, rhs),
+                ),
+                Some("vk point on curve".into()),
+                loc!(),
+            )?;
+        }
         let mut it = pts.into_iter();
         let vk = PlonkVerificationKeyEvals {
             sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
@@ -710,9 +742,18 @@ pub fn prove_base_case_two_pass<A: StepApp + Clone, const ROUNDS: usize, const S
 where
     A::Witness: Clone,
 {
-    let bootstrap_points = (0..28u64)
-        .map(|i| (Fp::from(1_000_000 + i), Fp::from(2_000_000 + i)))
-        .collect();
+    // The bootstrap key must satisfy the step circuit's on-curve checks, so
+    // use distinct multiples of the Pallas generator as placeholder points.
+    let bootstrap_points = {
+        use ark_ec::{AffineRepr, CurveGroup};
+        let g = Pallas::generator().into_group();
+        (1..=28u64)
+            .map(|i| {
+                let p = (g * mina_curves::pasta::Fq::from(i)).into_affine();
+                (p.x, p.y)
+            })
+            .collect()
+    };
     let bootstrap =
         prove_base_case::<A, ROUNDS, STMT_LEN>(app.clone(), witness.clone(), bootstrap_points);
     let actual_points = wrap_verification_key_points(&bootstrap.wrap_verifier);
