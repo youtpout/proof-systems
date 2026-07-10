@@ -102,7 +102,11 @@ pub struct LinComb {
         with = "fp_decimal::option"
     )]
     pub constant: Option<Fp>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "fp_decimal::terms")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "fp_decimal::terms"
+    )]
     pub terms: Vec<(Fp, u32)>,
 }
 
@@ -190,7 +194,9 @@ pub enum RecordedConstraint {
         x21_inv: LinComb,
     },
     /// Variable-base scalar multiplication rounds (VarBaseMul gates).
-    EcScale { rounds: Vec<RecordedScaleRound> },
+    EcScale {
+        rounds: Vec<RecordedScaleRound>,
+    },
     /// Endomorphism-based scalar multiplication rounds (EndoMul gates).
     EcEndoscale {
         rounds: Vec<RecordedEndoscaleRound>,
@@ -204,7 +210,9 @@ pub enum RecordedConstraint {
     },
     /// The 4-row multi-range-check gadget (three 88-bit values); each row
     /// holds 15 variables in column order.
-    RangeCheck { rows: Vec<Vec<LinComb>> },
+    RangeCheck {
+        rows: Vec<Vec<LinComb>>,
+    },
     /// A single 88-bit range-check row: 15 variables in column order
     /// `[v, vp0..vp5, vc0..vc7]`, plus the `compact` coefficient (0 or 1).
     RangeCheck0 {
@@ -219,7 +227,9 @@ pub enum RecordedConstraint {
         next: Vec<LinComb>,
     },
     /// A lookup row: the 7 variables `[w0..w6]`.
-    Lookup { row: Vec<LinComb> },
+    Lookup {
+        row: Vec<LinComb>,
+    },
 }
 
 /// One VarBaseMul round (see [`ScaleRound`]).
@@ -285,8 +295,20 @@ impl RecordedScaleRound {
 impl RecordedEndoscaleRound {
     fn lincombs(&self) -> impl Iterator<Item = &LinComb> {
         [
-            &self.xt, &self.yt, &self.xp, &self.yp, &self.n_acc, &self.xr, &self.yr, &self.s1,
-            &self.s3, &self.b1, &self.b2, &self.b3, &self.b4, &self.inv,
+            &self.xt,
+            &self.yt,
+            &self.xp,
+            &self.yp,
+            &self.n_acc,
+            &self.xr,
+            &self.yr,
+            &self.s1,
+            &self.s3,
+            &self.b1,
+            &self.b2,
+            &self.b3,
+            &self.b4,
+            &self.inv,
         ]
         .into_iter()
     }
@@ -323,10 +345,7 @@ pub enum RecordedCircuitError {
     /// A Poseidon constraint has malformed state dimensions.
     MalformedPoseidon,
     /// A range-check or lookup constraint has the wrong row shape.
-    MalformedRow {
-        expected: usize,
-        actual: usize,
-    },
+    MalformedRow { expected: usize, actual: usize },
     /// A multi-range-check gadget does not have exactly 4 rows.
     MalformedRangeCheck(usize),
 }
@@ -418,7 +437,10 @@ impl RecordedCircuit {
                     }
                 }
                 RecordedConstraint::EcEndoscalar { rounds } => {
-                    for lincomb in rounds.iter().flat_map(RecordedEndoscaleScalarRound::lincombs) {
+                    for lincomb in rounds
+                        .iter()
+                        .flat_map(RecordedEndoscaleScalarRound::lincombs)
+                    {
                         check(lincomb)?;
                     }
                 }
@@ -512,13 +534,15 @@ impl StepApp for RecordedApp {
                     None,
                     loc!(),
                 )?,
-                RecordedConstraint::R1cs { a, b, c } => sys.add_constraint(
-                    snarky::runner::Constraint::BasicSnarkyConstraint(
-                        BasicSnarkyConstraint::R1CS(resolve(a), resolve(b), resolve(c)),
-                    ),
-                    None,
-                    loc!(),
-                )?,
+                RecordedConstraint::R1cs { a, b, c } => {
+                    sys.add_constraint(
+                        snarky::runner::Constraint::BasicSnarkyConstraint(
+                            BasicSnarkyConstraint::R1CS(resolve(a), resolve(b), resolve(c)),
+                        ),
+                        None,
+                        loc!(),
+                    )?
+                }
                 RecordedConstraint::Generic {
                     cl,
                     l,
@@ -564,8 +588,8 @@ impl StepApp for RecordedApp {
                     inf_z,
                     x21_inv,
                 } => sys.add_constraint(
-                    snarky::runner::Constraint::KimchiConstraint(
-                        KimchiConstraint::EcAddComplete(EcAddCompleteInput {
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::EcAddComplete(
+                        EcAddCompleteInput {
                             p1: (resolve(&p1.0), resolve(&p1.1)),
                             p2: (resolve(&p2.0), resolve(&p2.1)),
                             p3: (resolve(&p3.0), resolve(&p3.1)),
@@ -574,8 +598,8 @@ impl StepApp for RecordedApp {
                             slope: resolve(slope),
                             inf_z: resolve(inf_z),
                             x21_inv: resolve(x21_inv),
-                        }),
-                    ),
+                        },
+                    )),
                     None,
                     loc!(),
                 )?,
@@ -806,6 +830,19 @@ pub struct RecordedN1Proof {
     pub dlog_plonk_index: Vec<(Fp, Fp)>,
 }
 
+/// The result of proving a recorded circuit through a stable recursive N1
+/// chain. This is the envelope of the final wrap proof plus the final
+/// same-field reduced messages needed for standalone verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedStableN1Proof {
+    pub app_state: Vec<Fp>,
+    pub proof: MinaWrapProof,
+    pub challenge_polynomial_commitment: (Fp, Fp),
+    pub old_bulletproof_challenges: Vec<Fp>,
+    pub dlog_plonk_index: Vec<(Fp, Fp)>,
+    pub stable_cycles: usize,
+}
+
 /// The wrap circuit of the base (`N0`) program always compiles to a 2^13
 /// domain (`wrap_domains(0)`).
 const RECORDED_BASE_WRAP_ROUNDS: usize = 13;
@@ -815,6 +852,9 @@ const RECORDED_N1_STEP_ROUNDS: usize = 14;
 const RECORDED_N1_STEP_STMT_LEN: usize =
     crate::recursive_step::width1_step_statement_len(RECORDED_BASE_WRAP_ROUNDS);
 const RECORDED_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
+const RECORDED_STABLE_N1_STEP_STMT_LEN: usize =
+    crate::recursive_step::width1_step_statement_len(RECORDED_N1_STEP_ROUNDS);
+const RECORDED_STABLE_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
 
 macro_rules! prove_n1_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $($rounds:literal),+) => {
@@ -889,6 +929,76 @@ pub fn prove_recorded_n1(
     let app = RecordedApp { circuit };
     let public = app_state;
     prove_n1_at_rounds!(app, witness, public; 9, 10, 11, 12, 13, 14, 15, 16)
+}
+
+macro_rules! prove_stable_n1_at_rounds {
+    ($app:ident, $witness:ident, $public:ident, $additional_stable_cycles:ident; $($rounds:literal),+) => {
+        match measure_step_rounds($app.clone())
+            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        {
+            $(
+                $rounds => {
+                    let base = crate::api::prove_base_case_two_pass::<
+                        RecordedApp,
+                        $rounds,
+                        { 13 + $rounds + 9 },
+                    >($app, $witness);
+                    let proof = crate::recursive_step::prove_direct_n1_stable_cycles_with_real_vk::<
+                        RecordedApp,
+                        $rounds,
+                        RECORDED_BASE_WRAP_ROUNDS,
+                        RECORDED_N1_STEP_ROUNDS,
+                        { 13 + $rounds + 9 },
+                        RECORDED_N1_STEP_STMT_LEN,
+                        RECORDED_N1_WRAP_STMT_LEN,
+                        RECORDED_STABLE_N1_STEP_STMT_LEN,
+                        RECORDED_STABLE_N1_WRAP_STMT_LEN,
+                    >(&base, $public.clone(), $additional_stable_cycles);
+                    let encoded = proof
+                        .to_mina_network_proof()
+                        .map_err(RecordedProveError::RecursiveBackend)?;
+                    let [challenge_polynomial_commitment] = proof.final_accumulators();
+                    let [old_bulletproof_challenges] = proof.final_challenges();
+                    Ok(RecordedStableN1Proof {
+                        app_state: $public.clone(),
+                        proof: encoded,
+                        challenge_polynomial_commitment,
+                        old_bulletproof_challenges,
+                        dlog_plonk_index: proof.final_step_vk_pts().to_vec(),
+                        stable_cycles: proof.stable_cycles.len(),
+                    })
+                }
+            )+
+            rounds => Err(RecordedProveError::UnsupportedStepRounds(rounds)),
+        }
+    };
+}
+
+/// Proves a recorded circuit through the base-case pipeline and then through
+/// a stable recursive N1 chain. `additional_stable_cycles = 0` still proves
+/// the first stable transition after the initial N1 cycle; larger values append
+/// repeated stable step→wrap cycles.
+pub fn prove_recorded_stable_n1(
+    circuit: RecordedCircuit,
+    witness: Vec<Fp>,
+    additional_stable_cycles: usize,
+) -> Result<RecordedStableN1Proof, RecordedProveError> {
+    circuit.validate()?;
+    if witness.len() != circuit.aux_count as usize {
+        return Err(RecordedProveError::Circuit(
+            RecordedCircuitError::WrongWitnessLength(witness.len()),
+        ));
+    }
+    let app_state = circuit.state(&witness);
+    let app = RecordedApp { circuit };
+    let public = app_state;
+    prove_stable_n1_at_rounds!(
+        app,
+        witness,
+        public,
+        additional_stable_cycles;
+        9, 10, 11, 12, 13, 14, 15, 16
+    )
 }
 
 /// A base-case proof kept alive for chaining: the full in-memory

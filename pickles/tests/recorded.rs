@@ -190,6 +190,41 @@ fn recorded_n1_cycle_proves_and_verifies_standalone() {
 }
 
 #[test]
+fn recorded_stable_n1_chain_proves_and_verifies_standalone() {
+    use pickles::recorded::prove_recorded_stable_n1;
+    use pickles::verify::verify_side_loaded_with_step_vk;
+
+    let witness = vec![Fp::from(9u64), Fp::from(81u64)];
+    let proved = prove_recorded_stable_n1(square_circuit(), witness, 1).unwrap();
+    assert_eq!(proved.app_state, vec![Fp::from(81u64)]);
+    assert_eq!(proved.stable_cycles, 2);
+
+    let vk = verify_side_loaded_with_step_vk(
+        &proved.app_state,
+        Some(proved.dlog_plonk_index.as_slice()),
+        &[proved.challenge_polynomial_commitment],
+        &[proved.old_bulletproof_challenges.clone()],
+        &proved.proof,
+    )
+    .unwrap();
+    assert_eq!(
+        vk.proofs_verified,
+        pickles::composition_types::ProofsVerified::N1
+    );
+
+    assert!(matches!(
+        verify_side_loaded_with_step_vk(
+            &[Fp::from(82u64)],
+            Some(proved.dlog_plonk_index.as_slice()),
+            &[proved.challenge_polynomial_commitment],
+            &[proved.old_bulletproof_challenges.clone()],
+            &proved.proof,
+        ),
+        Err(StandaloneVerifyError::AppStateMismatch)
+    ));
+}
+
+#[test]
 fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
     use pickles::recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over};
     use pickles::verify::verify_side_loaded_with_step_vk;
