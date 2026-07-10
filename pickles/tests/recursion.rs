@@ -513,3 +513,87 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
         Err(BaseCaseBackendError::O1jsJsonField)
     );
 }
+
+#[test]
+fn standalone_verify_accepts_a_real_proof_and_rejects_tampering() {
+    use pickles::verify::{
+        verify_side_loaded_base_case, verify_wrap_proof, StandaloneVerifyError,
+    };
+
+    let rule = InductiveRule::new(RuleId(0), "base", ProofsVerified::N0, ROUNDS as u8);
+    let mut backend =
+        BaseCaseRuleBackend::<SquareApp, ROUNDS, STMT_LEN>::compile(&rule, SquareApp).unwrap();
+    let public_state = vec![Fp::from(41u64) * Fp::from(41u64)];
+    let (_, encoded) = backend
+        .prove_with_mina_encoding(&public_state, Fp::from(41u64))
+        .unwrap();
+
+    // Standalone verification: only the Mina-encoded proof and the claimed
+    // application state, no prover backend.
+    let vk = verify_side_loaded_base_case(&public_state, &encoded).unwrap();
+    assert_eq!(vk.proofs_verified, ProofsVerified::N0);
+
+    // A wrong application state fails the digest binding.
+    assert!(matches!(
+        verify_side_loaded_base_case(&[Fp::from(1u64)], &encoded),
+        Err(StandaloneVerifyError::AppStateMismatch)
+    ));
+
+    // A tampered statement fails the kimchi check against the reconstructed
+    // verifier index.
+    let mut tampered = encoded.clone();
+    tampered.statement[0] += mina_curves::pasta::Fq::from(1u64);
+    assert!(matches!(
+        verify_wrap_proof(&vk, &tampered),
+        Err(StandaloneVerifyError::KimchiRejection(_))
+    ));
+
+    // A corrupted wire proof fails to decode.
+    let mut corrupted = encoded;
+    corrupted.wrap_wire_proof.truncate(10);
+    assert!(matches!(
+        verify_wrap_proof(&vk, &corrupted),
+        Err(StandaloneVerifyError::ProofDecoding)
+    ));
+}
+
+#[test]
+fn standalone_verify_accepts_a_real_n1_proof() {
+    use pickles::verify::{verify_side_loaded_with_step_vk, StandaloneVerifyError};
+
+    let base = prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(43u64));
+    let rule = InductiveRule::new(RuleId(1), "recursive", ProofsVerified::N1, 16);
+    let mut backend =
+        DirectN1Backend::<SquareApp, ROUNDS, WROUNDS, R2, STMT_LEN, K2, WRAP2_STMT_LEN>::compile(
+            &rule,
+        )
+        .unwrap();
+    let public = vec![Fp::from(43u64) * Fp::from(43u64)];
+    let (proof, encoded) = backend
+        .prove_with_mina_encoding(&public, DirectN1Witness { base })
+        .unwrap();
+
+    // The recursion messages carried by the proof: the verified wrap proof's
+    // accumulator and the finalized step challenges.
+    let accumulators = [proof.cycle.step.verified_wrap_accumulator];
+    let challenges = [proof.cycle.step.finalized_step_challenges.clone()];
+    // The digest binds the base program's wrap VK, which in this direct
+    // backend differs from the wrap2 key wrapping the recursive step.
+    let step_vk = Some(proof.wrap_vk_pts.as_slice());
+    let vk =
+        verify_side_loaded_with_step_vk(&public, step_vk, &accumulators, &challenges, &encoded)
+            .unwrap();
+    assert_eq!(vk.proofs_verified, ProofsVerified::N1);
+
+    // Dropping the recursion messages breaks the digest binding.
+    assert!(matches!(
+        verify_side_loaded_with_step_vk(&public, step_vk, &[], &[], &encoded),
+        Err(StandaloneVerifyError::AppStateMismatch)
+    ));
+
+    // Mismatched message arity is rejected before hashing.
+    assert!(matches!(
+        verify_side_loaded_with_step_vk(&public, step_vk, &accumulators, &[], &encoded),
+        Err(StandaloneVerifyError::MalformedMessages)
+    ));
+}

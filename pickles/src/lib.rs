@@ -44,6 +44,7 @@ pub mod sponge;
 pub mod step_main;
 pub mod step_verifier;
 pub mod step_witness;
+pub mod verify;
 pub mod wrap;
 pub mod wrap_deferred_values;
 pub mod wrap_main;
