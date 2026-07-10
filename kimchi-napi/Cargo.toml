@@ -28,6 +28,7 @@ kimchi_wasm.workspace = true
 mina-curves = { path = "../curves" }
 mina-poseidon = { path = "../poseidon" }
 o1-utils = { path = "../utils" }
+pickles = { path = "../pickles" }
 poly-commitment = { path = "../poly-commitment" }
 
 base64.workspace = true

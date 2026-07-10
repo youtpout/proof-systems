@@ -1792,6 +1792,7 @@ dependencies = [
  "o1-utils",
  "once_cell",
  "paste",
+ "pickles",
  "poly-commitment",
  "rand 0.8.5",
  "rayon",

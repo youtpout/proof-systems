@@ -4,6 +4,7 @@ mod gate_vector;
 mod oracles;
 mod pasta_fp_plonk_index;
 mod pasta_fq_plonk_index;
+mod pickles;
 mod plonk_verifier_index;
 mod poly_comm;
 mod poseidon;
@@ -52,6 +53,7 @@ pub use pasta_fq_plonk_index::{
     caml_pasta_fq_plonk_index_read, caml_pasta_fq_plonk_index_write, prover_index_fq_deserialize,
     prover_index_fq_serialize, WasmPastaFqPlonkIndex,
 };
+pub use pickles::rust_pickles_square_base_proof_json;
 pub use plonk_verifier_index::{
     fp::{
         caml_pasta_fp_plonk_verifier_index_create, caml_pasta_fp_plonk_verifier_index_deep_copy,
