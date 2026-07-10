@@ -340,6 +340,33 @@ fn stable_recursive_cycles_hash_each_previous_wrap_vk() {
         direct.verify(&[Fp::from(1u64)]),
         Err(DirectRecursiveBackendError::PublicDigestMismatch)
     );
+
+    let encoded = direct.to_mina_network_proof().unwrap();
+    direct.ensure_mina_network_proof_matches(&encoded).unwrap();
+    assert_eq!(encoded.statement, final_cycle.wrap.statement.to_vec());
+    assert!(!encoded.wrap_wire_proof.is_empty());
+    let stable_v3 = direct.to_mina_stable_v3().unwrap();
+    assert_eq!(stable_v3.statement, final_cycle.wrap.statement.to_vec());
+    assert_eq!(
+        stable_v3.prev_evals.ft_eval1,
+        final_cycle.step.proof.ft_eval1
+    );
+    assert_eq!(
+        stable_v3.proof,
+        pickles::mina_bin_prot::WrapWireProofV1::from_prover_proof(&final_cycle.wrap.proof)
+            .unwrap()
+    );
+
+    let accumulators = direct.final_accumulators();
+    let challenges = direct.final_challenges();
+    pickles::verify::verify_side_loaded_with_step_vk(
+        &[Fp::from(841u64)],
+        Some(direct.final_step_vk_pts()),
+        &accumulators,
+        &challenges,
+        &encoded,
+    )
+    .unwrap();
 }
 
 #[test]

@@ -720,6 +720,50 @@ impl<
         }
         Ok(())
     }
+
+    pub fn final_accumulators(&self) -> [(Fp, Fp); 1] {
+        [self.final_cycle().step.verified_wrap_accumulator]
+    }
+
+    pub fn final_challenges(&self) -> [Vec<Fp>; 1] {
+        [self.final_cycle().step.finalized_step_challenges.clone()]
+    }
+
+    pub fn final_step_vk_pts(&self) -> &[(Fp, Fp)] {
+        self.final_cycle()
+            .step
+            .messages_for_next_step_vk_pts
+            .as_slice()
+    }
+
+    pub fn to_mina_network_proof(&self) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
+        let final_cycle = self.final_cycle();
+        let step_domain_log2 = final_cycle.step.verifier.index.domain.log_size_of_group as u8;
+        final_cycle.wrap.to_mina_network_proof(step_domain_log2)
+    }
+
+    pub fn ensure_mina_network_proof_matches(
+        &self,
+        encoded: &MinaWrapProof,
+    ) -> Result<(), DirectRecursiveBackendError> {
+        let final_cycle = self.final_cycle();
+        let step_domain_log2 = final_cycle.step.verifier.index.domain.log_size_of_group as u8;
+        final_cycle
+            .wrap
+            .ensure_mina_network_proof_matches(step_domain_log2, encoded)
+    }
+
+    pub fn to_mina_stable_v3(
+        &self,
+    ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, DirectRecursiveBackendError> {
+        let final_cycle = self.final_cycle();
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs_with_statement(
+            final_cycle.wrap.stable_statement.clone(),
+            &final_cycle.step.proof,
+            &final_cycle.wrap.proof,
+        )
+        .map_err(|_| DirectRecursiveBackendError::MinaProofEncoding)
+    }
 }
 
 pub fn prove_direct_n1_stable_cycles_with_real_vk<
