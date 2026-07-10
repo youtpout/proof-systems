@@ -72,3 +72,84 @@ fn recorded_square_circuit_proves_and_verifies_standalone() {
     ))
     .is_err());
 }
+
+/// Recorded EC complete addition of two Vesta points (base field Fp),
+/// output = x3. Witness layout: [x1, y1, x2, y2, x3, y3, slope, x21_inv].
+fn ec_add_circuit() -> RecordedCircuit {
+    use pickles::recorded::RecordedConstraint::EcAddComplete;
+    let zero = LinComb::default;
+    RecordedCircuit {
+        aux_count: 8,
+        output: vec![LinComb::var(4)],
+        constraints: vec![EcAddComplete {
+            p1: (LinComb::var(0), LinComb::var(1)),
+            p2: (LinComb::var(2), LinComb::var(3)),
+            p3: (LinComb::var(4), LinComb::var(5)),
+            inf: zero(),
+            same_x: zero(),
+            slope: LinComb::var(6),
+            inf_z: zero(),
+            x21_inv: LinComb::var(7),
+        }],
+    }
+}
+
+#[test]
+fn recorded_gate_variants_round_trip_and_validate() {
+    use pickles::recorded::RecordedConstraint;
+
+    let range_check0 = RecordedCircuit {
+        aux_count: 15,
+        output: vec![],
+        constraints: vec![RecordedConstraint::RangeCheck0 {
+            row: (0..15).map(LinComb::var).collect(),
+            compact: Fp::from(0u64),
+        }],
+    };
+    let json = serde_json::to_string(&range_check0).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RecordedCircuit>(&json).unwrap(),
+        range_check0
+    );
+
+    // Wrong row width is rejected.
+    let bad = RecordedCircuit {
+        aux_count: 15,
+        output: vec![],
+        constraints: vec![RecordedConstraint::Lookup {
+            row: (0..5).map(LinComb::var).collect(),
+        }],
+    };
+    assert_eq!(
+        bad.validate(),
+        Err(pickles::recorded::RecordedCircuitError::MalformedRow {
+            expected: 7,
+            actual: 5
+        })
+    );
+
+    let ec = ec_add_circuit();
+    let json = serde_json::to_string(&ec).unwrap();
+    assert_eq!(serde_json::from_str::<RecordedCircuit>(&json).unwrap(), ec);
+}
+
+#[test]
+fn recorded_ec_add_circuit_proves_and_verifies_standalone() {
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ff::Field;
+    use mina_curves::pasta::Pallas;
+
+    // Two distinct Pallas points (coordinates in Fp, the step circuit field)
+    // and their sum, plus the CompleteAdd witnesses (distinct x, so
+    // inf = same_x = inf_z = 0).
+    let p1 = Pallas::generator();
+    let p2 = (p1 + p1).into_affine();
+    let p3 = (p1 + p2).into_affine();
+    let x21_inv = (p2.x - p1.x).inverse().unwrap();
+    let slope = (p2.y - p1.y) * x21_inv;
+    let witness = vec![p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, slope, x21_inv];
+
+    let proved = prove_recorded_base_case(ec_add_circuit(), witness).unwrap();
+    assert_eq!(proved.app_state, vec![p3.x]);
+    verify_side_loaded_base_case(&proved.app_state, &proved.proof).unwrap();
+}

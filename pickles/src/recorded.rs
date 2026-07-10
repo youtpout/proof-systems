@@ -13,7 +13,10 @@
 use ark_ff::Zero;
 use mina_curves::pasta::Fp;
 use snarky::{
-    constraint_system::{BasicInput, BasicSnarkyConstraint, KimchiConstraint, PoseidonInput},
+    constraint_system::{
+        BasicInput, BasicSnarkyConstraint, EcAddCompleteInput, EcEndoscaleInput, EndoscaleRound,
+        EndoscaleScalarRound, KimchiConstraint, PoseidonInput, ScaleRound,
+    },
     loc, FieldVar, RunState, SnarkyResult,
 };
 
@@ -175,6 +178,128 @@ pub enum RecordedConstraint {
         states: Vec<Vec<LinComb>>,
         last: Vec<LinComb>,
     },
+    /// Complete EC addition: `p3 = p1 + p2` with the exception witnesses.
+    EcAddComplete {
+        p1: (LinComb, LinComb),
+        p2: (LinComb, LinComb),
+        p3: (LinComb, LinComb),
+        inf: LinComb,
+        same_x: LinComb,
+        slope: LinComb,
+        inf_z: LinComb,
+        x21_inv: LinComb,
+    },
+    /// Variable-base scalar multiplication rounds (VarBaseMul gates).
+    EcScale { rounds: Vec<RecordedScaleRound> },
+    /// Endomorphism-based scalar multiplication rounds (EndoMul gates).
+    EcEndoscale {
+        rounds: Vec<RecordedEndoscaleRound>,
+        xs: LinComb,
+        ys: LinComb,
+        n_acc: LinComb,
+    },
+    /// Endomorphism scalar conversion rounds (EndoMulScalar gates).
+    EcEndoscalar {
+        rounds: Vec<RecordedEndoscaleScalarRound>,
+    },
+    /// The 4-row multi-range-check gadget (three 88-bit values); each row
+    /// holds 15 variables in column order.
+    RangeCheck { rows: Vec<Vec<LinComb>> },
+    /// A single 88-bit range-check row: 15 variables in column order
+    /// `[v, vp0..vp5, vc0..vc7]`, plus the `compact` coefficient (0 or 1).
+    RangeCheck0 {
+        row: Vec<LinComb>,
+        #[serde(with = "fp_decimal")]
+        compact: Fp,
+    },
+    /// The two rows of the RangeCheck1 gate: current row and next (Zero)
+    /// row, each 15 variables in column order.
+    RangeCheck1 {
+        row: Vec<LinComb>,
+        next: Vec<LinComb>,
+    },
+    /// A lookup row: the 7 variables `[w0..w6]`.
+    Lookup { row: Vec<LinComb> },
+}
+
+/// One VarBaseMul round (see [`ScaleRound`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedScaleRound {
+    pub accs: Vec<(LinComb, LinComb)>,
+    pub bits: Vec<LinComb>,
+    pub ss: Vec<LinComb>,
+    pub base: (LinComb, LinComb),
+    pub n_prev: LinComb,
+    pub n_next: LinComb,
+}
+
+/// One EndoMul round (see [`EndoscaleRound`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedEndoscaleRound {
+    pub xt: LinComb,
+    pub yt: LinComb,
+    pub xp: LinComb,
+    pub yp: LinComb,
+    pub n_acc: LinComb,
+    pub xr: LinComb,
+    pub yr: LinComb,
+    pub s1: LinComb,
+    pub s3: LinComb,
+    pub b1: LinComb,
+    pub b2: LinComb,
+    pub b3: LinComb,
+    pub b4: LinComb,
+    pub inv: LinComb,
+}
+
+/// One EndoMulScalar round (see [`EndoscaleScalarRound`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedEndoscaleScalarRound {
+    pub n0: LinComb,
+    pub n8: LinComb,
+    pub a0: LinComb,
+    pub b0: LinComb,
+    pub a8: LinComb,
+    pub b8: LinComb,
+    pub x0: LinComb,
+    pub x1: LinComb,
+    pub x2: LinComb,
+    pub x3: LinComb,
+    pub x4: LinComb,
+    pub x5: LinComb,
+    pub x6: LinComb,
+    pub x7: LinComb,
+}
+
+impl RecordedScaleRound {
+    fn lincombs(&self) -> impl Iterator<Item = &LinComb> {
+        self.accs
+            .iter()
+            .flat_map(|(x, y)| [x, y])
+            .chain(self.bits.iter())
+            .chain(self.ss.iter())
+            .chain([&self.base.0, &self.base.1, &self.n_prev, &self.n_next])
+    }
+}
+
+impl RecordedEndoscaleRound {
+    fn lincombs(&self) -> impl Iterator<Item = &LinComb> {
+        [
+            &self.xt, &self.yt, &self.xp, &self.yp, &self.n_acc, &self.xr, &self.yr, &self.s1,
+            &self.s3, &self.b1, &self.b2, &self.b3, &self.b4, &self.inv,
+        ]
+        .into_iter()
+    }
+}
+
+impl RecordedEndoscaleScalarRound {
+    fn lincombs(&self) -> impl Iterator<Item = &LinComb> {
+        [
+            &self.n0, &self.n8, &self.a0, &self.b0, &self.a8, &self.b8, &self.x0, &self.x1,
+            &self.x2, &self.x3, &self.x4, &self.x5, &self.x6, &self.x7,
+        ]
+        .into_iter()
+    }
 }
 
 /// A replayable application circuit.
@@ -197,6 +322,13 @@ pub enum RecordedCircuitError {
     WrongWitnessLength(usize),
     /// A Poseidon constraint has malformed state dimensions.
     MalformedPoseidon,
+    /// A range-check or lookup constraint has the wrong row shape.
+    MalformedRow {
+        expected: usize,
+        actual: usize,
+    },
+    /// A multi-range-check gadget does not have exactly 4 rows.
+    MalformedRangeCheck(usize),
 }
 
 impl RecordedCircuit {
@@ -206,6 +338,16 @@ impl RecordedCircuit {
                 Err(RecordedCircuitError::VariableOutOfRange(index))
             }
             _ => Ok(()),
+        };
+        let check_row = |row: &[LinComb], expected: usize| {
+            if row.len() == expected {
+                Ok(())
+            } else {
+                Err(RecordedCircuitError::MalformedRow {
+                    expected,
+                    actual: row.len(),
+                })
+            }
         };
         for lincomb in &self.output {
             check(lincomb)?;
@@ -236,6 +378,78 @@ impl RecordedCircuit {
                         return Err(RecordedCircuitError::MalformedPoseidon);
                     }
                     for lincomb in states.iter().flatten().chain(last.iter()) {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::EcAddComplete {
+                    p1,
+                    p2,
+                    p3,
+                    inf,
+                    same_x,
+                    slope,
+                    inf_z,
+                    x21_inv,
+                } => {
+                    for lincomb in [
+                        &p1.0, &p1.1, &p2.0, &p2.1, &p3.0, &p3.1, inf, same_x, slope, inf_z,
+                        x21_inv,
+                    ] {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::EcScale { rounds } => {
+                    for lincomb in rounds.iter().flat_map(RecordedScaleRound::lincombs) {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::EcEndoscale {
+                    rounds,
+                    xs,
+                    ys,
+                    n_acc,
+                } => {
+                    for lincomb in rounds
+                        .iter()
+                        .flat_map(RecordedEndoscaleRound::lincombs)
+                        .chain([xs, ys, n_acc])
+                    {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::EcEndoscalar { rounds } => {
+                    for lincomb in rounds.iter().flat_map(RecordedEndoscaleScalarRound::lincombs) {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::RangeCheck { rows } => {
+                    if rows.len() != 4 {
+                        return Err(RecordedCircuitError::MalformedRangeCheck(rows.len()));
+                    }
+                    for row in rows {
+                        check_row(row, 15)?;
+                        for lincomb in row {
+                            check(lincomb)?;
+                        }
+                    }
+                }
+                RecordedConstraint::RangeCheck0 { row, .. } => {
+                    check_row(row, 15)?;
+                    for lincomb in row {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::RangeCheck1 { row, next } => {
+                    for row in [row, next] {
+                        check_row(row, 15)?;
+                        for lincomb in row {
+                            check(lincomb)?;
+                        }
+                    }
+                }
+                RecordedConstraint::Lookup { row } => {
+                    check_row(row, 7)?;
+                    for lincomb in row {
                         check(lincomb)?;
                     }
                 }
@@ -336,6 +550,144 @@ impl StepApp for RecordedApp {
                                 .collect(),
                             last: last.iter().map(resolve).collect(),
                         },
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::EcAddComplete {
+                    p1,
+                    p2,
+                    p3,
+                    inf,
+                    same_x,
+                    slope,
+                    inf_z,
+                    x21_inv,
+                } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(
+                        KimchiConstraint::EcAddComplete(EcAddCompleteInput {
+                            p1: (resolve(&p1.0), resolve(&p1.1)),
+                            p2: (resolve(&p2.0), resolve(&p2.1)),
+                            p3: (resolve(&p3.0), resolve(&p3.1)),
+                            inf: resolve(inf),
+                            same_x: resolve(same_x),
+                            slope: resolve(slope),
+                            inf_z: resolve(inf_z),
+                            x21_inv: resolve(x21_inv),
+                        }),
+                    ),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::EcScale { rounds } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::EcScale(
+                        rounds
+                            .iter()
+                            .map(|round| ScaleRound {
+                                accs: round
+                                    .accs
+                                    .iter()
+                                    .map(|(x, y)| (resolve(x), resolve(y)))
+                                    .collect(),
+                                bits: round.bits.iter().map(resolve).collect(),
+                                ss: round.ss.iter().map(resolve).collect(),
+                                base: (resolve(&round.base.0), resolve(&round.base.1)),
+                                n_prev: resolve(&round.n_prev),
+                                n_next: resolve(&round.n_next),
+                            })
+                            .collect(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::EcEndoscale {
+                    rounds,
+                    xs,
+                    ys,
+                    n_acc,
+                } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::EcEndoscale(
+                        EcEndoscaleInput {
+                            state: rounds
+                                .iter()
+                                .map(|round| EndoscaleRound {
+                                    xt: resolve(&round.xt),
+                                    yt: resolve(&round.yt),
+                                    xp: resolve(&round.xp),
+                                    yp: resolve(&round.yp),
+                                    n_acc: resolve(&round.n_acc),
+                                    xr: resolve(&round.xr),
+                                    yr: resolve(&round.yr),
+                                    s1: resolve(&round.s1),
+                                    s3: resolve(&round.s3),
+                                    b1: resolve(&round.b1),
+                                    b2: resolve(&round.b2),
+                                    b3: resolve(&round.b3),
+                                    b4: resolve(&round.b4),
+                                    inv: resolve(&round.inv),
+                                })
+                                .collect(),
+                            xs: resolve(xs),
+                            ys: resolve(ys),
+                            n_acc: resolve(n_acc),
+                        },
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::EcEndoscalar { rounds } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::EcEndoscalar(
+                        rounds
+                            .iter()
+                            .map(|round| EndoscaleScalarRound {
+                                n0: resolve(&round.n0),
+                                n8: resolve(&round.n8),
+                                a0: resolve(&round.a0),
+                                b0: resolve(&round.b0),
+                                a8: resolve(&round.a8),
+                                b8: resolve(&round.b8),
+                                x0: resolve(&round.x0),
+                                x1: resolve(&round.x1),
+                                x2: resolve(&round.x2),
+                                x3: resolve(&round.x3),
+                                x4: resolve(&round.x4),
+                                x5: resolve(&round.x5),
+                                x6: resolve(&round.x6),
+                                x7: resolve(&round.x7),
+                            })
+                            .collect(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::RangeCheck { rows } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::RangeCheck(
+                        rows.iter()
+                            .map(|row| row.iter().map(resolve).collect())
+                            .collect(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::RangeCheck0 { row, compact } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::RangeCheck0(
+                        row.iter().map(resolve).collect(),
+                        *compact,
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::RangeCheck1 { row, next } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::RangeCheck1(
+                        row.iter().map(resolve).collect(),
+                        next.iter().map(resolve).collect(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::Lookup { row } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::Lookup(
+                        row.iter().map(resolve).collect(),
                     )),
                     None,
                     loc!(),
