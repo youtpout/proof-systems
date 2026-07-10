@@ -461,6 +461,13 @@ pub fn rust_pickles_decode_side_loaded_vk(encoded: String, format: String) -> Re
     let envelope = serde_json::json!({
         "maxProofsVerified": key.max_proofs_verified.to_usize(),
         "actualWrapDomainSize": key.actual_wrap_domain_size.to_usize(),
+        "base64": BASE64_STANDARD.encode(
+            key.to_bin_prot()
+                .map_err(|err| Error::from_reason(format!("VK bin_prot encoding failed: {err:?}")))?
+        ),
+        "base58": key
+            .to_base58_check()
+            .map_err(|err| Error::from_reason(format!("VK base58 encoding failed: {err:?}")))?,
         "commitments": key
             .commitments
             .iter()
