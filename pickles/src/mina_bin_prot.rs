@@ -98,7 +98,7 @@ pub struct WrapMessagesForNextWrapProofV1 {
 pub struct StepMessagesForNextProofV1 {
     /// Side-loaded Mina proofs use `unit` app_state at this boundary.
     pub challenge_polynomial_commitments: Vec<(Fp, Fp)>,
-    pub old_bulletproof_challenges: Vec<Vec<Fq>>,
+    pub old_bulletproof_challenges: Vec<Vec<Fp>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -869,7 +869,7 @@ impl WrapMessagesForNextWrapProofV1 {
         encode_vesta_point(self.challenge_polynomial_commitment, out)?;
         encode_u8_len_exact(self.old_bulletproof_challenges.len(), 2, out)?;
         for challenges in &self.old_bulletproof_challenges {
-            encode_challenge_vector(challenges, out)?;
+            encode_challenge_vector(challenges, 15, out)?;
         }
         Ok(())
     }
@@ -904,7 +904,7 @@ impl StepMessagesForNextProofV1 {
         }
         encode_u8_len_exact(self.old_bulletproof_challenges.len(), 2, out)?;
         for challenges in &self.old_bulletproof_challenges {
-            encode_challenge_vector(challenges, out)?;
+            encode_challenge_vector(challenges, 16, out)?;
         }
         Ok(())
     }
@@ -1157,7 +1157,10 @@ fn field_low_limbs<F: PrimeField>(field: F, limbs: usize) -> Vec<u64> {
         .collect()
 }
 
-fn encode_challenge_constant(field: Fq, out: &mut Vec<u8>) -> Result<(), BinProtError> {
+fn encode_challenge_constant<F: PrimeField>(
+    field: F,
+    out: &mut Vec<u8>,
+) -> Result<(), BinProtError> {
     let limbs = field_low_limbs(field, 2);
     if field_low_limbs(field, 4)[2..].iter().any(|&limb| limb != 0) {
         return Err(BinProtError::NonCanonicalChallenge(0));
@@ -1176,15 +1179,22 @@ fn encode_digest_constant(field: Fq, out: &mut Vec<u8>) -> Result<(), BinProtErr
     Ok(())
 }
 
-fn encode_challenge_vector(challenges: &[Fq], out: &mut Vec<u8>) -> Result<(), BinProtError> {
-    if challenges.len() != 16 {
+fn encode_challenge_vector<F: PrimeField>(
+    challenges: &[F],
+    expected_len: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), BinProtError> {
+    if challenges.len() > expected_len {
         return Err(BinProtError::WrongVectorLength {
-            expected: 16,
+            expected: expected_len,
             actual: challenges.len(),
         });
     }
     for &challenge in challenges {
         encode_challenge_constant(challenge, out)?;
+    }
+    for _ in challenges.len()..expected_len {
+        encode_challenge_constant(F::zero(), out)?;
     }
     out.push(0); // fixed Step_bp_vec terminator
     Ok(())

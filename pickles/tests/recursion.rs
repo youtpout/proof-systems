@@ -23,8 +23,8 @@ use pickles::{
         prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
         prove_recursive_wrap, prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds,
         step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
-        wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness,
-        DirectN2Backend, DirectN2Witness, DirectRecursiveBackendError,
+        wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness, DirectN2Backend,
+        DirectN2Witness, DirectRecursiveBackendError,
     },
     side_loaded::SideLoadedVerificationKey,
 };
@@ -324,7 +324,19 @@ fn direct_n1_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
     let stable_v3 = proof.to_mina_stable_v3().unwrap();
     assert_eq!(stable_v3.statement, proof.cycle.wrap.statement.to_vec());
-    assert_eq!(stable_v3.prev_evals.ft_eval1, proof.cycle.step.proof.ft_eval1);
+    assert_eq!(
+        stable_v3
+            .stable_statement
+            .messages_for_next_step_proof
+            .challenge_polynomial_commitments
+            .len(),
+        1
+    );
+    assert!(!stable_v3.to_mina_bin_prot().unwrap().is_empty());
+    assert_eq!(
+        stable_v3.prev_evals.ft_eval1,
+        proof.cycle.step.proof.ft_eval1
+    );
     assert_eq!(
         stable_v3.proof,
         pickles::mina_bin_prot::WrapWireProofV1::from_prover_proof(&proof.cycle.wrap.proof)
@@ -385,6 +397,15 @@ fn direct_n2_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
     let stable_v3 = proof.to_mina_stable_v3().unwrap();
     assert_eq!(stable_v3.statement, proof.wrap.statement.to_vec());
+    assert_eq!(
+        stable_v3
+            .stable_statement
+            .messages_for_next_step_proof
+            .challenge_polynomial_commitments
+            .len(),
+        2
+    );
+    assert!(!stable_v3.to_mina_bin_prot().unwrap().is_empty());
     assert_eq!(stable_v3.prev_evals.ft_eval1, proof.step.proof.ft_eval1);
     assert_eq!(
         stable_v3.proof,
@@ -456,6 +477,12 @@ fn base_backend_exports_and_checks_mina_network_encoding() {
     assert_eq!(encoded.side_loaded_verification_key.len(), 2459);
     let stable_v3 = proof.to_mina_stable_v3().unwrap();
     assert_eq!(stable_v3.statement, proof.statement);
+    assert!(stable_v3
+        .stable_statement
+        .messages_for_next_step_proof
+        .challenge_polynomial_commitments
+        .is_empty());
+    assert!(!stable_v3.to_mina_bin_prot().unwrap().is_empty());
     assert_eq!(stable_v3.prev_evals.ft_eval1, proof.step_proof.ft_eval1);
     assert_eq!(
         stable_v3.proof,

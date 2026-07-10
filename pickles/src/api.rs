@@ -966,6 +966,12 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
         crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
     };
+    let dummy_wrap_raw_chals: Vec<Vec<Fq>> = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let (wrap, _) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
+        vec![wrap.prechallenges.clone(); crate::common::MAX_PROOFS_VERIFIED]
+    };
     let sg_pt = step_proof.proof.sg;
     let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
         Pallas::sponge_params(),
@@ -1012,7 +1018,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         statement.clone(),
         crate::mina_bin_prot::WrapMessagesForNextWrapProofV1 {
             challenge_polynomial_commitment: (sg_pt.x, sg_pt.y),
-            old_bulletproof_challenges: dummy_wrap_chals.clone(),
+            old_bulletproof_challenges: dummy_wrap_raw_chals,
         },
         crate::mina_bin_prot::StepMessagesForNextProofV1 {
             challenge_polynomial_commitments: Vec::new(),
