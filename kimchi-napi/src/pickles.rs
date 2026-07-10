@@ -179,6 +179,34 @@ fn n1_envelope(proved: pickles::recorded::RecordedN1Proof) -> Result<String> {
         .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
 }
 
+fn stable_n1_envelope(proved: pickles::recorded::RecordedStableN1Proof) -> Result<String> {
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+        "challengePolynomialCommitment": [
+            proved.challenge_polynomial_commitment.0.to_string(),
+            proved.challenge_polynomial_commitment.1.to_string(),
+        ],
+        "oldBulletproofChallenges": proved
+            .old_bulletproof_challenges
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "dlogPlonkIndex": proved
+            .dlog_plonk_index
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+        "stableCycles": proved.stable_cycles,
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
 /// Proves a recorded circuit through the base-case pipeline, then one
 /// recursive (N1) Pickles cycle over the resulting wrap proof. Returns
 /// `{ appState, proof, challengePolynomialCommitment,
@@ -198,6 +226,31 @@ pub fn rust_pickles_prove_recorded_n1(
     let proved = pickles::recorded::prove_recorded_n1(circuit, witness)
         .map_err(|err| Error::from_reason(format!("rust pickles N1 prove failed: {err:?}")))?;
     n1_envelope(proved)
+}
+
+/// Proves a recorded circuit through the base-case pipeline, then the stable
+/// same-field N1 recursion loop. `additional_stable_cycles = 0` means two
+/// total recursive cycles after the base proof; each increment adds one more
+/// stable cycle. Returns the N1 envelope plus `stableCycles`.
+#[napi(js_name = "rust_pickles_prove_recorded_stable_n1")]
+pub fn rust_pickles_prove_recorded_stable_n1(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+    additional_stable_cycles: u32,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let proved = pickles::recorded::prove_recorded_stable_n1(
+        circuit,
+        witness,
+        additional_stable_cycles as usize,
+    )
+    .map_err(|err| Error::from_reason(format!("rust pickles stable N1 prove failed: {err:?}")))?;
+    stable_n1_envelope(proved)
 }
 
 /// [`rust_pickles_verify_side_loaded`] with an explicit `dlog_plonk_index`
@@ -333,8 +386,10 @@ pub fn rust_pickles_prove_recorded_n1_over(
 pub fn rust_pickles_decode_side_loaded_vk(encoded: String, format: String) -> Result<String> {
     use base64::prelude::*;
     let key = match format.as_str() {
-        "base58" => pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(&encoded)
-            .map_err(|err| Error::from_reason(format!("invalid base58 VK: {err:?}")))?,
+        "base58" => {
+            pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(&encoded)
+                .map_err(|err| Error::from_reason(format!("invalid base58 VK: {err:?}")))?
+        }
         "base64" => {
             let bytes = BASE64_STANDARD
                 .decode(encoded)

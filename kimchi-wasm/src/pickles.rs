@@ -19,6 +19,40 @@ fn parse_fp_decimals(values: Vec<String>, name: &str) -> Result<Vec<Fp>, JsError
         .collect()
 }
 
+fn recorded_n1_envelope(
+    app_state: &[Fp],
+    proof: &pickles::api::MinaWrapProof,
+    challenge_polynomial_commitment: &(Fp, Fp),
+    old_bulletproof_challenges: &[Fp],
+    dlog_plonk_index: &[(Fp, Fp)],
+    stable_cycles: Option<usize>,
+) -> Result<String, JsError> {
+    let mut envelope = serde_json::json!({
+        "appState": app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proof.to_o1js_json_value(),
+        "challengePolynomialCommitment": [
+            challenge_polynomial_commitment.0.to_string(),
+            challenge_polynomial_commitment.1.to_string(),
+        ],
+        "oldBulletproofChallenges": old_bulletproof_challenges
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "dlogPlonkIndex": dlog_plonk_index
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+    });
+    if let Some(stable_cycles) = stable_cycles {
+        envelope["stableCycles"] = serde_json::json!(stable_cycles);
+    }
+    serde_json::to_string(&envelope)
+        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+}
+
 /// Proves a recorded circuit (the `pickles::recorded::RecordedCircuit` JSON
 /// envelope produced by o1js's constraint-system adapter) through the
 /// base-case Pickles pipeline, with the witness variable values as decimal
@@ -62,18 +96,19 @@ pub fn rust_pickles_verify_side_loaded(
     proof_json: String,
 ) -> Result<bool, JsError> {
     let app_state = parse_fp_decimals(app_state_decimal, "app_state")?;
-    let commitments = serde_json::from_str::<Vec<(String, String)>>(
-        &challenge_polynomial_commitments_json,
-    )
-    .map_err(|err| JsError::new(&format!("invalid challenge_polynomial_commitments: {err}")))?
-    .iter()
-    .map(|(x, y)| {
-        Ok((
-            parse_fp_decimal(x, "commitment x")?,
-            parse_fp_decimal(y, "commitment y")?,
-        ))
-    })
-    .collect::<Result<Vec<_>, JsError>>()?;
+    let commitments =
+        serde_json::from_str::<Vec<(String, String)>>(&challenge_polynomial_commitments_json)
+            .map_err(|err| {
+                JsError::new(&format!("invalid challenge_polynomial_commitments: {err}"))
+            })?
+            .iter()
+            .map(|(x, y)| {
+                Ok((
+                    parse_fp_decimal(x, "commitment x")?,
+                    parse_fp_decimal(y, "commitment y")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, JsError>>()?;
     let challenges = serde_json::from_str::<Vec<Vec<String>>>(&old_bulletproof_challenges_json)
         .map_err(|err| JsError::new(&format!("invalid old_bulletproof_challenges: {err}")))?
         .into_iter()
@@ -109,30 +144,43 @@ pub fn rust_pickles_prove_recorded_n1(
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
     let proved = pickles::recorded::prove_recorded_n1(circuit, witness)
         .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
-    let envelope = serde_json::json!({
-        "appState": proved
-            .app_state
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        "proof": proved.proof.to_o1js_json_value(),
-        "challengePolynomialCommitment": [
-            proved.challenge_polynomial_commitment.0.to_string(),
-            proved.challenge_polynomial_commitment.1.to_string(),
-        ],
-        "oldBulletproofChallenges": proved
-            .old_bulletproof_challenges
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        "dlogPlonkIndex": proved
-            .dlog_plonk_index
-            .iter()
-            .map(|(x, y)| vec![x.to_string(), y.to_string()])
-            .collect::<Vec<_>>(),
-    });
-    serde_json::to_string(&envelope)
-        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        &proved.challenge_polynomial_commitment,
+        &proved.old_bulletproof_challenges,
+        &proved.dlog_plonk_index,
+        None,
+    )
+}
+
+/// Proves a recorded circuit through the base-case pipeline, then the stable
+/// same-field N1 recursion loop. `additional_stable_cycles = 0` means two
+/// total recursive cycles after the base proof; each increment adds one more
+/// stable cycle. Returns the N1 envelope plus `stableCycles`.
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_stable_n1(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+    additional_stable_cycles: u32,
+) -> Result<String, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let proved = pickles::recorded::prove_recorded_stable_n1(
+        circuit,
+        witness,
+        additional_stable_cycles as usize,
+    )
+    .map_err(|err| JsError::new(&format!("rust pickles stable N1 prove failed: {err:?}")))?;
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        &proved.challenge_polynomial_commitment,
+        &proved.old_bulletproof_challenges,
+        &proved.dlog_plonk_index,
+        Some(proved.stable_cycles),
+    )
 }
 
 /// [`rust_pickles_verify_side_loaded`] with an explicit `dlog_plonk_index`
@@ -238,28 +286,12 @@ pub fn rust_pickles_prove_recorded_n1_over(
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
     let proved = pickles::recorded::prove_recorded_n1_over(&handle.0, circuit, witness)
         .map_err(|err| JsError::new(&format!("rust pickles N1-over prove failed: {err:?}")))?;
-    let envelope = serde_json::json!({
-        "appState": proved
-            .app_state
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        "proof": proved.proof.to_o1js_json_value(),
-        "challengePolynomialCommitment": [
-            proved.challenge_polynomial_commitment.0.to_string(),
-            proved.challenge_polynomial_commitment.1.to_string(),
-        ],
-        "oldBulletproofChallenges": proved
-            .old_bulletproof_challenges
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        "dlogPlonkIndex": proved
-            .dlog_plonk_index
-            .iter()
-            .map(|(x, y)| vec![x.to_string(), y.to_string()])
-            .collect::<Vec<_>>(),
-    });
-    serde_json::to_string(&envelope)
-        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        &proved.challenge_polynomial_commitment,
+        &proved.old_bulletproof_challenges,
+        &proved.dlog_plonk_index,
+        None,
+    )
 }
