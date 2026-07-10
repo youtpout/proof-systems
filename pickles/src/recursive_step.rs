@@ -558,6 +558,23 @@ pub struct DirectN1Proof<
     pub wrap_vk_pts: Vec<(Fp, Fp)>,
 }
 
+/// Direct N1 chain proof after the first growth transition. The final cycle is
+/// in the stable shape and every same-field reduced message uses the actual
+/// wrap verification key of the proof verified by that step.
+pub struct DirectN1StableProof<
+    const R: usize,
+    const WR: usize,
+    const SR: usize,
+    const SS: usize,
+    const WS: usize,
+    const STABLE_STEP_STMT_LEN: usize,
+    const STABLE_WRAP_STMT_LEN: usize,
+> {
+    pub first: RecursiveCycleProof<R, WR, SR, SS, WS>,
+    pub final_cycle: RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>,
+    pub base_wrap_vk_pts: Vec<(Fp, Fp)>,
+}
+
 pub struct DirectN1Backend<
     A: StepApp,
     const R: usize,
@@ -614,6 +631,79 @@ impl<
         <Self as CompiledRuleBackend>::verify(self, public, proof)?;
         proof.ensure_mina_network_proof_matches(encoded)
     }
+}
+
+impl<
+        const R: usize,
+        const WR: usize,
+        const SR: usize,
+        const SS: usize,
+        const WS: usize,
+        const STABLE_STEP_STMT_LEN: usize,
+        const STABLE_WRAP_STMT_LEN: usize,
+    > DirectN1StableProof<R, WR, SR, SS, WS, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>
+{
+    pub fn verify_final_digest(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
+        let final_vk = self
+            .final_cycle
+            .step
+            .messages_for_next_step_vk_pts
+            .as_slice();
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            final_vk,
+            public,
+            &[self.final_cycle.step.verified_wrap_accumulator],
+            &[self.final_cycle.step.finalized_step_challenges.clone()],
+        );
+        if self.final_cycle.step.statement[STABLE_STEP_STMT_LEN - 2] != digest {
+            return Err(DirectRecursiveBackendError::PublicDigestMismatch);
+        }
+        Ok(())
+    }
+}
+
+pub fn prove_direct_n1_stable_cycles_with_real_vk<
+    A: StepApp,
+    const R: usize,
+    const WR: usize,
+    const SR: usize,
+    const BS: usize,
+    const SS: usize,
+    const WS: usize,
+    const STABLE_STEP_STMT_LEN: usize,
+    const STABLE_WRAP_STMT_LEN: usize,
+>(
+    base: &BaseCaseProof<A, R, BS>,
+    public: Vec<Fp>,
+    additional_stable_cycles: usize,
+) -> DirectN1StableProof<R, WR, SR, SS, WS, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN> {
+    let base_wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
+    let first =
+        prove_first_recursive_cycle_with_real_vk::<A, R, WR, SR, BS, SS, WS>(base, public.clone());
+    let mut final_cycle = prove_next_recursive_cycle_with_real_vk::<
+        R,
+        WR,
+        SR,
+        SS,
+        WS,
+        SR,
+        STABLE_STEP_STMT_LEN,
+        SR,
+        STABLE_WRAP_STMT_LEN,
+    >(&first, public.clone());
+    final_cycle = prove_stable_recursive_cycles_with_real_vk::<
+        SR,
+        STABLE_STEP_STMT_LEN,
+        STABLE_WRAP_STMT_LEN,
+    >(final_cycle, additional_stable_cycles, public.clone());
+    let proof = DirectN1StableProof {
+        first,
+        final_cycle,
+        base_wrap_vk_pts,
+    };
+    proof.verify_final_digest(&public).unwrap();
+    proof
 }
 
 pub struct DirectN2Witness<A: StepApp, const R: usize, const S: usize> {

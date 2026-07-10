@@ -20,10 +20,10 @@ use pickles::{
     recursive_step::{
         prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
         prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
-        prove_first_recursive_cycle, prove_next_recursive_cycle, prove_recursive_step_width2,
-        prove_recursive_wrap, prove_stable_recursive_cycles,
-        prove_stable_recursive_cycles_with_real_vk, recursive_wrap_ipa_equation_holds,
-        step_statement_len, width1_step_statement_len, wrap_unfinalized_from_base,
+        prove_direct_n1_stable_cycles_with_real_vk, prove_first_recursive_cycle,
+        prove_next_recursive_cycle, prove_recursive_step_width2, prove_recursive_wrap,
+        prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds, step_statement_len,
+        width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness, DirectN2Backend,
         DirectN2Witness, DirectRecursiveBackendError,
     },
@@ -309,7 +309,7 @@ fn recursive_cycle_uses_the_real_wrap_vk() {
 #[test]
 fn stable_recursive_cycles_hash_each_previous_wrap_vk() {
     let base = prove_base_case_two_pass::<SquareApp, ROUNDS, STMT_LEN>(SquareApp, Fp::from(29u64));
-    let cycle1 = prove_first_recursive_cycle::<
+    let direct = prove_direct_n1_stable_cycles_with_real_vk::<
         SquareApp,
         ROUNDS,
         WROUNDS,
@@ -317,38 +317,22 @@ fn stable_recursive_cycles_hash_each_previous_wrap_vk() {
         STMT_LEN,
         K2,
         WRAP2_STMT_LEN,
-    >(&base, base.wrap_vk_pts.clone(), vec![Fp::from(841u64)]);
-    let cycle2 = prove_next_recursive_cycle::<
-        ROUNDS,
-        WROUNDS,
-        R2,
-        K2,
-        WRAP2_STMT_LEN,
-        WRAP2_PROOF_ROUNDS,
         K3,
-        R3,
         WRAP3_STMT_LEN,
-    >(
-        &cycle1,
-        wrap_verification_key_points(&cycle1.wrap.verifier),
-        vec![Fp::from(841u64)],
-    );
-
-    let expected_vk = wrap_verification_key_points(&cycle2.wrap.verifier);
-    let cycle3 = prove_stable_recursive_cycles_with_real_vk::<R3, K3, WRAP3_STMT_LEN>(
-        cycle2,
-        1,
-        vec![Fp::from(841u64)],
-    );
+    >(&base, vec![Fp::from(841u64)], 1);
     let digest = pickles::hash_messages::hash_messages_for_next_step_proof_ref(
         mina_curves::pasta::Vesta::sponge_params(),
-        &expected_vk,
+        &direct.final_cycle.step.messages_for_next_step_vk_pts,
         &[Fp::from(841u64)],
-        &[cycle3.step.verified_wrap_accumulator],
-        &[cycle3.step.finalized_step_challenges.clone()],
+        &[direct.final_cycle.step.verified_wrap_accumulator],
+        &[direct.final_cycle.step.finalized_step_challenges.clone()],
     );
-    assert_eq!(cycle3.step.statement[K3 - 2], digest);
-    assert_ne!(expected_vk, base.wrap_vk_pts);
+    assert_eq!(direct.final_cycle.step.statement[K3 - 2], digest);
+    assert_ne!(
+        direct.final_cycle.step.messages_for_next_step_vk_pts,
+        direct.base_wrap_vk_pts
+    );
+    direct.verify_final_digest(&[Fp::from(841u64)]).unwrap();
 }
 
 #[test]
