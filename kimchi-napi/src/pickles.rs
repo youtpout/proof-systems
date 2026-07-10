@@ -207,6 +207,34 @@ fn stable_n1_envelope(proved: pickles::recorded::RecordedStableN1Proof) -> Resul
         .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
 }
 
+fn n2_envelope(proved: pickles::recorded::RecordedN2Proof) -> Result<String> {
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+        "challengePolynomialCommitments": proved
+            .challenge_polynomial_commitments
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+        "oldBulletproofChallenges": proved
+            .old_bulletproof_challenges
+            .iter()
+            .map(|challenges| challenges.iter().map(ToString::to_string).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        "dlogPlonkIndex": proved
+            .dlog_plonk_index
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
 /// Proves a recorded circuit through the base-case pipeline, then one
 /// recursive (N1) Pickles cycle over the resulting wrap proof. Returns
 /// `{ appState, proof, challengePolynomialCommitment,
@@ -251,6 +279,37 @@ pub fn rust_pickles_prove_recorded_stable_n1(
     )
     .map_err(|err| Error::from_reason(format!("rust pickles stable N1 prove failed: {err:?}")))?;
     stable_n1_envelope(proved)
+}
+
+/// Proves a true width-2 (`N2`) recorded recursive step over two base proofs
+/// of the same recorded circuit. `app_state_decimal` is the public state
+/// bound by the N2 digest; the low-level adapter does not derive an
+/// aggregation relation from the two previous states.
+#[napi(js_name = "rust_pickles_prove_recorded_n2")]
+pub fn rust_pickles_prove_recorded_n2(
+    circuit_json: String,
+    first_witness_decimal: Vec<String>,
+    second_witness_decimal: Vec<String>,
+    app_state_decimal: Vec<String>,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let first_witness = first_witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "first_witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let second_witness = second_witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "second_witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let app_state = app_state_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "app_state"))
+        .collect::<Result<Vec<_>>>()?;
+    let proved =
+        pickles::recorded::prove_recorded_n2(circuit, first_witness, second_witness, app_state)
+            .map_err(|err| Error::from_reason(format!("rust pickles N2 prove failed: {err:?}")))?;
+    n2_envelope(proved)
 }
 
 /// [`rust_pickles_verify_side_loaded`] with an explicit `dlog_plonk_index`

@@ -225,6 +225,51 @@ fn recorded_stable_n1_chain_proves_and_verifies_standalone() {
 }
 
 #[test]
+fn recorded_n2_cycle_proves_and_verifies_standalone() {
+    std::thread::Builder::new()
+        .name("recorded-n2-proof".to_string())
+        .stack_size(128 * 1024 * 1024)
+        .spawn(|| {
+            use pickles::recorded::prove_recorded_n2;
+            use pickles::verify::verify_side_loaded_with_step_vk;
+
+            let first = vec![Fp::from(10u64), Fp::from(100u64)];
+            let second = vec![Fp::from(11u64), Fp::from(121u64)];
+            let app_state = vec![Fp::from(221u64)];
+            let proved =
+                prove_recorded_n2(square_circuit(), first, second, app_state.clone()).unwrap();
+            assert_eq!(proved.app_state, app_state);
+
+            let vk = verify_side_loaded_with_step_vk(
+                &proved.app_state,
+                Some(proved.dlog_plonk_index.as_slice()),
+                &proved.challenge_polynomial_commitments,
+                &proved.old_bulletproof_challenges,
+                &proved.proof,
+            )
+            .unwrap();
+            assert_eq!(
+                vk.proofs_verified,
+                pickles::composition_types::ProofsVerified::N2
+            );
+
+            assert!(matches!(
+                verify_side_loaded_with_step_vk(
+                    &[Fp::from(222u64)],
+                    Some(proved.dlog_plonk_index.as_slice()),
+                    &proved.challenge_polynomial_commitments,
+                    &proved.old_bulletproof_challenges,
+                    &proved.proof,
+                ),
+                Err(StandaloneVerifyError::AppStateMismatch)
+            ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
     use pickles::recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over};
     use pickles::verify::verify_side_loaded_with_step_vk;

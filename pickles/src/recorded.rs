@@ -843,6 +843,18 @@ pub struct RecordedStableN1Proof {
     pub stable_cycles: usize,
 }
 
+/// The result of proving a recorded width-2 recursive step (`N2`) over two
+/// recorded base proofs. The public `app_state` is supplied by the caller and
+/// bound by the recursive digest together with both verified previous proofs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedN2Proof {
+    pub app_state: Vec<Fp>,
+    pub proof: MinaWrapProof,
+    pub challenge_polynomial_commitments: [(Fp, Fp); 2],
+    pub old_bulletproof_challenges: [Vec<Fp>; 2],
+    pub dlog_plonk_index: Vec<(Fp, Fp)>,
+}
+
 /// The wrap circuit of the base (`N0`) program always compiles to a 2^13
 /// domain (`wrap_domains(0)`).
 const RECORDED_BASE_WRAP_ROUNDS: usize = 13;
@@ -855,6 +867,10 @@ const RECORDED_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
 const RECORDED_STABLE_N1_STEP_STMT_LEN: usize =
     crate::recursive_step::width1_step_statement_len(RECORDED_N1_STEP_ROUNDS);
 const RECORDED_STABLE_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
+const RECORDED_N2_STEP_ROUNDS: usize = crate::common::TICK_ROUNDS;
+const RECORDED_N2_STEP_STMT_LEN: usize =
+    crate::recursive_step::step_statement_len(2, RECORDED_BASE_WRAP_ROUNDS);
+const RECORDED_N2_WRAP_STMT_LEN: usize = 13 + RECORDED_N2_STEP_ROUNDS + 9;
 
 macro_rules! prove_n1_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $($rounds:literal),+) => {
@@ -997,6 +1013,100 @@ pub fn prove_recorded_stable_n1(
         witness,
         public,
         additional_stable_cycles;
+        9, 10, 11, 12, 13, 14, 15, 16
+    )
+}
+
+macro_rules! prove_n2_at_rounds {
+    ($app:ident, $first_witness:ident, $second_witness:ident, $first_state:ident, $second_state:ident, $public:ident; $($rounds:literal),+) => {
+        match measure_step_rounds($app.clone())
+            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        {
+            $(
+                $rounds => {
+                    let rule = crate::inductive_rule::InductiveRule::new(
+                        crate::inductive_rule::RuleId(2),
+                        "recorded_n2",
+                        crate::composition_types::ProofsVerified::N2,
+                        RECORDED_N2_STEP_ROUNDS as u8,
+                    );
+                    let mut backend = crate::recursive_step::DirectN2Backend::<
+                        RecordedApp,
+                        $rounds,
+                        RECORDED_BASE_WRAP_ROUNDS,
+                        { 13 + $rounds + 9 },
+                        RECORDED_N1_STEP_STMT_LEN,
+                        RECORDED_N2_STEP_STMT_LEN,
+                        RECORDED_N2_STEP_ROUNDS,
+                        RECORDED_N2_WRAP_STMT_LEN,
+                    >::compile(&rule)
+                    .map_err(RecordedProveError::RecursiveBackend)?;
+                    let first_base = crate::api::prove_base_case_two_pass::<
+                        RecordedApp,
+                        $rounds,
+                        { 13 + $rounds + 9 },
+                    >($app.clone(), $first_witness);
+                    let second_base = crate::api::prove_base_case_two_pass::<
+                        RecordedApp,
+                        $rounds,
+                        { 13 + $rounds + 9 },
+                    >($app, $second_witness);
+                    let (proof, encoded) = backend
+                        .prove_with_mina_encoding(
+                            &$public,
+                            crate::recursive_step::DirectN2Witness {
+                                bases: [first_base, second_base],
+                                previous_app_states: [$first_state, $second_state],
+                            },
+                        )
+                        .map_err(RecordedProveError::RecursiveBackend)?;
+                    Ok(RecordedN2Proof {
+                        app_state: $public.clone(),
+                        proof: encoded,
+                        challenge_polynomial_commitments: proof.accumulators,
+                        old_bulletproof_challenges: proof.challenges,
+                        dlog_plonk_index: proof.wrap_vk_pts,
+                    })
+                }
+            )+
+            rounds => Err(RecordedProveError::UnsupportedStepRounds(rounds)),
+        }
+    };
+}
+
+/// Proves a true width-2 recorded recursive step (`ProofsVerified::N2`) over
+/// two base proofs for the same recorded circuit. `app_state` is the public
+/// state of the new recursive proof; this low-level adapter only binds it to
+/// the recursive digest, it does not derive an aggregation relation from the
+/// two previous states.
+pub fn prove_recorded_n2(
+    circuit: RecordedCircuit,
+    first_witness: Vec<Fp>,
+    second_witness: Vec<Fp>,
+    app_state: Vec<Fp>,
+) -> Result<RecordedN2Proof, RecordedProveError> {
+    circuit.validate()?;
+    if first_witness.len() != circuit.aux_count as usize {
+        return Err(RecordedProveError::Circuit(
+            RecordedCircuitError::WrongWitnessLength(first_witness.len()),
+        ));
+    }
+    if second_witness.len() != circuit.aux_count as usize {
+        return Err(RecordedProveError::Circuit(
+            RecordedCircuitError::WrongWitnessLength(second_witness.len()),
+        ));
+    }
+    let first_state = circuit.state(&first_witness);
+    let second_state = circuit.state(&second_witness);
+    let app = RecordedApp { circuit };
+    let public = app_state;
+    prove_n2_at_rounds!(
+        app,
+        first_witness,
+        second_witness,
+        first_state,
+        second_state,
+        public;
         9, 10, 11, 12, 13, 14, 15, 16
     )
 }
