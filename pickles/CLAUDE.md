@@ -8,6 +8,28 @@ voir `o1js/RUST_MIGRATION.md`).
 Méthode éprouvée sur snarky : porter module par module, avec à chaque étape
 un test de parité contre l'implémentation kimchi/OCaml existante.
 
+## Handoff actuel — parité VK o1js
+
+Dernier jalon : commit `9aba71a8f5` (`Port o1js Pickles dummy constraints`).
+Le préambule `dummy_constraints()` injecté par le binding OCaml d'o1js est
+maintenant porté côté Rust dans `api.rs::o1js_dummy_constraints`.
+
+État vérifié avec `o1js/src/tests/rust-pickles-step-gates-diff.ts` :
+
+- circuit step minimal : 512 rows jsoo = 512 rows Rust ;
+- histogrammes identiques : Generic 89, Poseidon 319, Zero 98,
+  CompleteAdd 3, VarBaseMul 1, EndoMul 1, EndoMulScalar 1 ;
+- il reste 10 divergences de wiring/coefficients internes au dummy préambule
+  (`Scalar_challenge.to_field_checked'`, `Ops.scale_fast`,
+  `Scalar_challenge.endo`) ;
+- `rust-pickles-vk-parity.ts` passe en mode non strict, mais le mode strict
+  échoue encore : les commitments VK restent à 0/28 tant que ces 10 wirings
+  ne sont pas iso.
+
+Prochaine étape concrète : aligner l'ordre d'allocation/wiring des gadgets
+dummy Rust sur l'OCaml, en utilisant les dumps
+`/tmp/claude-1000/step-circuit-{jsoo,rust}.json`.
+
 ## Carte de portage
 
 | OCaml | Rust | Statut |
