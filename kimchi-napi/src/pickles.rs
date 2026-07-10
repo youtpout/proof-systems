@@ -264,3 +264,63 @@ pub fn rust_pickles_verify_side_loaded_with_step_vk(
         Err(_) => Ok(false),
     }
 }
+
+/// [`rust_pickles_prove_recorded_base`], but keeps the full base proof alive
+/// in an opaque native handle so a later `rust_pickles_prove_recorded_n1_over`
+/// call can recursively verify it (the ZkProgram `SelfProof` shape). Use
+/// `rust_pickles_recorded_base_envelope` to read its `{ appState, proof }`.
+#[napi(js_name = "rust_pickles_prove_recorded_base_keep")]
+pub fn rust_pickles_prove_recorded_base_keep(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<External<pickles::recorded::RecordedBaseHandle>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let handle = pickles::recorded::prove_recorded_base_case_keep(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles prove failed: {err:?}")))?;
+    Ok(External::new(handle))
+}
+
+/// The `{ appState, proof }` envelope of a kept base proof — the same shape
+/// `rust_pickles_prove_recorded_base` returns.
+#[napi(js_name = "rust_pickles_recorded_base_envelope")]
+pub fn rust_pickles_recorded_base_envelope(
+    handle: &External<pickles::recorded::RecordedBaseHandle>,
+) -> Result<String> {
+    let proved = handle.to_recorded_proof();
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
+/// Proves one recursive (N1) Pickles cycle whose step *runs a new recorded
+/// circuit* while verifying a previously kept base proof. Returns the same
+/// envelope as `rust_pickles_prove_recorded_n1`; the digest binds the new
+/// circuit's `appState`.
+#[napi(js_name = "rust_pickles_prove_recorded_n1_over")]
+pub fn rust_pickles_prove_recorded_n1_over(
+    handle: &External<pickles::recorded::RecordedBaseHandle>,
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let proved = pickles::recorded::prove_recorded_n1_over(handle, circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1-over prove failed: {err:?}")))?;
+    n1_envelope(proved)
+}

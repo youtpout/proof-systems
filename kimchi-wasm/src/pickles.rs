@@ -183,3 +183,83 @@ pub fn rust_pickles_verify_side_loaded_with_step_vk(
         Err(_) => Ok(false),
     }
 }
+
+/// A kept base-case proof: an opaque handle whose full native proof stays in
+/// WASM memory so `rust_pickles_prove_recorded_n1_over` can recursively
+/// verify it (the ZkProgram `SelfProof` shape).
+#[wasm_bindgen]
+pub struct WasmRecordedBaseHandle(pickles::recorded::RecordedBaseHandle);
+
+/// `rust_pickles_prove_recorded_base`, but keeps the full base proof alive
+/// for chaining. Read its `{ appState, proof }` envelope with
+/// `rust_pickles_recorded_base_envelope`.
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_base_keep(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let handle = pickles::recorded::prove_recorded_base_case_keep(circuit, witness)
+        .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+/// The `{ appState, proof }` envelope of a kept base proof.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_envelope(
+    handle: &WasmRecordedBaseHandle,
+) -> Result<String, JsError> {
+    let proved = handle.0.to_recorded_proof();
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+}
+
+/// Proves one recursive (N1) Pickles cycle whose step runs a new recorded
+/// circuit while verifying the kept base proof. Same envelope as
+/// `rust_pickles_prove_recorded_n1`; the digest binds the new `appState`.
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n1_over(
+    handle: &WasmRecordedBaseHandle,
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let proved = pickles::recorded::prove_recorded_n1_over(&handle.0, circuit, witness)
+        .map_err(|err| JsError::new(&format!("rust pickles N1-over prove failed: {err:?}")))?;
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+        "challengePolynomialCommitment": [
+            proved.challenge_polynomial_commitment.0.to_string(),
+            proved.challenge_polynomial_commitment.1.to_string(),
+        ],
+        "oldBulletproofChallenges": proved
+            .old_bulletproof_challenges
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "dlogPlonkIndex": proved
+            .dlog_plonk_index
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+}
