@@ -52,6 +52,38 @@ Le chantier = aligner wrap_main structurellement : layout du statement
 sponge (opt_sponge ?), puis itérer le diff comme pour le step.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
 
+**Session parité wrap — faits vérifiés & gotchas** :
+- Layout du statement wrap o1js = **40 slots** (décodé depuis le spec OCaml,
+  `composition_types.ml In_circuit.spec` + `Spec.pack`) : 5 fp (Type1, 1 slot
+  chacun) + 2 challenges + 3 scalar challenges + 3 digests + **16 bp
+  challenges** + 1 branch_data + **8 feature flags publics** (o1js compile en
+  `Maybe`) + **2 slots joint_combiner opt**. Builder :
+  `wrap_statement_to_field_elements_ocaml` (40 slots, non branché).
+- **Cause racine des 16 bp challenges** : Mina prouve sur des SRS pleins
+  (2^16 step / 2^15 wrap) — les rounds IPA ne dépendent PAS du domaine.
+  Notre pipeline dimensionne le SRS au domaine (rounds = log2(domaine)).
+  Opt-in ajouté : `compile_to_indexes_with_domain_and_srs(min_domain,
+  Some(srs_log2))`. Le branchement (ROUNDS fixes partout, plus de dispatch
+  9-16) est LE prérequis du wrap iso.
+- `rust_pickles_decode_mina_proof_base64` décode un proof side-loaded
+  jsoo/Mina (o1js `proof.toJSON().proof`). Sur le dummy proof o1js
+  (`dummyBase64Proof`) : échec `NonCanonicalField(0)` → **notre codec V3 lit
+  le statement en Fq mais Mina stocke les 5 valeurs différées en Fp (Tick),
+  qui peuvent dépasser le modulus Fq** — le codec doit typer les slots
+  champ par champ. À corriger avant tout round-trip réseau.
+- **GOTCHA rebuild wasm bundlé o1js** : le bc.cjs (jsoo OCaml) passe les
+  gate types par INDICE numérique ; la révision du proof-systems imbriqué
+  doit exposer les variants Cairo dans `GateType` (`6c3f61dd1e` "Expose
+  Cairo gate type ABI variants") sinon les indices décalent et le prove
+  jsoo échoue en "division by vanishing polynomial". Le wasm actuel est
+  buildé depuis `6c3f61dd1e` + fq_prover_to_json (`866c3ab277`). NB : le
+  prove jsoo échoue encore sur cette branche (peut-être cassé avant nous —
+  c'était le premier prove jsoo tenté) ; le compile jsoo (dumps de gates,
+  VK) fonctionne. Le rebuild complet des bindings (`build:bindings-node`)
+  échoue sur les crates vendorées (kimchi-stubs-vendors vs o1-utils 0.7.0).
+- Ground truth du statement sans prove : décoder `dummyBase64Proof` (une
+  fois le codex Fp/Fq corrigé), ou corriger le prove jsoo.
+
 ## Carte de portage
 
 | OCaml | Rust | Statut |
