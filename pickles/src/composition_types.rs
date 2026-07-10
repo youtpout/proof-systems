@@ -320,6 +320,83 @@ pub mod wrap {
         out
     }
 
+    /// The wrap statement in the exact o1js/Mina network layout: the 40-slot
+    /// public input of jsoo Pickles wrap circuits (`Wrap.Statement.In_circuit`
+    /// spec instantiated by o1js with `Maybe` feature flags):
+    ///
+    /// - 5 fp (Type1 shifted values, one slot each: an Fp element fits in Fq)
+    /// - 2 challenges (beta, gamma), 3 scalar challenges (alpha, zeta, xi)
+    /// - 3 digests (sponge, messages_for_next_wrap, messages_for_next_step)
+    /// - **16** bulletproof challenges — padded to `Tick.Rounds`, NOT to the
+    ///   step circuit's domain: Mina proves over full-size SRSes so step IPA
+    ///   proofs always have 16 rounds
+    /// - 1 packed branch_data
+    /// - 8 feature-flag booleans (public slots because o1js compiles with
+    ///   `Maybe` flags)
+    /// - 2 joint-combiner slots (opt flag boolean + scalar challenge), zero
+    ///   for programs without lookups
+    ///
+    /// Our internal pipeline still uses the compact
+    /// [`wrap_statement_to_field_elements`] (`22 + rounds` slots); switching
+    /// the wrap circuit's public input to this layout is the statement half
+    /// of the wrap parity work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_statement_to_field_elements_ocaml<F: PrimeField>(
+        plonk: &plonk::InCircuit<F, ScalarChallenge<F>, bool>,
+        combined_inner_product: F,
+        b: F,
+        xi: &ScalarChallenge<F>,
+        bulletproof_challenges: &[BulletproofChallenge<ScalarChallenge<F>>],
+        dummy_bulletproof_challenge: &ScalarChallenge<F>,
+        branch_data: &BranchData,
+        sponge_digest_before_evaluations: F,
+        messages_for_next_wrap_proof_digest: F,
+        messages_for_next_step_proof_digest: F,
+    ) -> Vec<F> {
+        const TICK_ROUNDS: usize = crate::common::TICK_ROUNDS;
+        assert!(bulletproof_challenges.len() <= TICK_ROUNDS);
+        let mut out = Vec::with_capacity(40);
+        // fp (5)
+        out.push(combined_inner_product);
+        out.push(b);
+        out.push(plonk.zeta_to_srs_length);
+        out.push(plonk.zeta_to_domain_size);
+        out.push(plonk.perm);
+        // challenge (2)
+        out.push(plonk.beta);
+        out.push(plonk.gamma);
+        // scalar_challenge (3): alpha, zeta, xi
+        out.push(plonk.alpha.0);
+        out.push(plonk.zeta.0);
+        out.push(xi.0);
+        // digest (3)
+        out.push(sponge_digest_before_evaluations);
+        out.push(messages_for_next_wrap_proof_digest);
+        out.push(messages_for_next_step_proof_digest);
+        // bulletproof_challenges (16), padded in FRONT like
+        // `Vector.extend_front` pads Mina's step challenges
+        for _ in bulletproof_challenges.len()..TICK_ROUNDS {
+            out.push(dummy_bulletproof_challenge.0);
+        }
+        for c in bulletproof_challenges {
+            out.push(c.prechallenge.0);
+        }
+        // index (1): branch_data
+        out.push(branch_data.pack::<F>());
+        // feature_flags (8) — public boolean slots in o1js (`Maybe` flags)
+        for flag in plonk.feature_flags.to_data() {
+            out.push(if flag { F::one() } else { F::zero() });
+        }
+        // joint_combiner opt (2): flag boolean + scalar challenge
+        out.push(F::zero());
+        out.push(match &plonk.joint_combiner {
+            Some(joint_combiner) => joint_combiner.0,
+            None => F::zero(),
+        });
+        debug_assert_eq!(out.len(), 40);
+        out
+    }
+
     /// The wrap proof state (`Wrap.Proof_state`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ProofState<Plonk, Fp, ScalarChallenge, BpChals, Digest, MessagesForNextWrap> {

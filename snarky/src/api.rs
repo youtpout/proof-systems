@@ -383,6 +383,23 @@ pub trait SnarkyCircuit: Sized {
     where
         <Self::Curve as AffineRepr>::BaseField: PrimeField,
     {
+        self.compile_to_indexes_with_domain_and_srs(minimum_domain_log2, None)
+    }
+
+    /// Compiles like [`Self::compile_to_indexes_with_minimum_domain_log2`],
+    /// but with an explicit SRS size. Mina uses full-size SRSes (2^16 on the
+    /// step/Vesta side, 2^15 on the wrap/Pallas side) regardless of the
+    /// circuit's domain, so its IPA proofs always have 16/15 rounds; the
+    /// default (`None`) sizes the SRS to the domain, which is smaller and
+    /// faster but network-incompatible.
+    fn compile_to_indexes_with_domain_and_srs(
+        self,
+        minimum_domain_log2: u32,
+        srs_log2: Option<u32>,
+    ) -> SnarkyResult<(ProverIndexWrapper<Self>, VerifierIndexWrapper<Self>)>
+    where
+        <Self::Curve as AffineRepr>::BaseField: PrimeField,
+    {
         let mut compiled_circuit = compile(self)?;
         if minimum_domain_log2 > 0 {
             let target_domain_size = 1usize << minimum_domain_log2;
@@ -414,8 +431,17 @@ pub trait SnarkyCircuit: Sized {
         }
 
         // create SRS (for vesta, as the circuit is in Fp)
-        // let mut srs = SRS::<Self::Curve>::create(cs.domain.d1.size as usize);
-        let srs = <SrsOf<Self> as SRS<Self::Curve>>::create(cs.domain.d1.size as usize);
+        let srs_size = match srs_log2 {
+            Some(log2) => {
+                assert!(
+                    (1usize << log2) >= cs.domain.d1.size as usize,
+                    "requested SRS smaller than the circuit domain"
+                );
+                1usize << log2
+            }
+            None => cs.domain.d1.size as usize,
+        };
+        let srs = <SrsOf<Self> as SRS<Self::Curve>>::create(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
         let srs = std::sync::Arc::new(srs);
 

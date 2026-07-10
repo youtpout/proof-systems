@@ -527,3 +527,51 @@ pub fn rust_pickles_recorded_wrap_circuit_json(
     pickles::recorded::dump_recorded_wrap_circuit(circuit, witness)
         .map_err(|err| Error::from_reason(format!("wrap circuit dump failed: {err:?}")))
 }
+
+/// Decodes a Mina side-loaded proof (base64 of the bin_prot bytes — what
+/// o1js `proof.toJSON().proof` holds) into its structural JSON: the
+/// flattened wrap statement (decimal Fq strings), the wrap proof's IPA round
+/// count and the recursion message shapes. Ground truth for statement-layout
+/// and codec parity against jsoo proofs.
+#[napi(js_name = "rust_pickles_decode_mina_proof_base64")]
+pub fn rust_pickles_decode_mina_proof_base64(proof_base64: String) -> Result<String> {
+    use base64::prelude::*;
+    let bytes = BASE64_STANDARD
+        .decode(proof_base64)
+        .map_err(|err| Error::from_reason(format!("invalid base64: {err}")))?;
+    let proof = pickles::mina_bin_prot::WrapProofBaseV3::from_normalized_bin_prot(&bytes)
+        .map_err(|err| Error::from_reason(format!("proof bin_prot decoding failed: {err:?}")))?;
+    let envelope = serde_json::json!({
+        "statement": proof
+            .statement
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "wrapIpaRounds": proof.proof.bulletproof_lr.len(),
+        "messagesForNextWrap": {
+            "oldBulletproofChallenges": proof
+                .stable_statement
+                .messages_for_next_wrap_proof
+                .old_bulletproof_challenges
+                .iter()
+                .map(|v| v.len())
+                .collect::<Vec<_>>(),
+        },
+        "messagesForNextStep": {
+            "challengePolynomialCommitments": proof
+                .stable_statement
+                .messages_for_next_step_proof
+                .challenge_polynomial_commitments
+                .len(),
+            "oldBulletproofChallenges": proof
+                .stable_statement
+                .messages_for_next_step_proof
+                .old_bulletproof_challenges
+                .iter()
+                .map(|v| v.len())
+                .collect::<Vec<_>>(),
+        },
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
