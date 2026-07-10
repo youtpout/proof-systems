@@ -356,3 +356,34 @@ pub fn rust_pickles_decode_side_loaded_vk(encoded: String, format: String) -> Re
     serde_json::to_string(&envelope)
         .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
 }
+
+/// Serializes the full Rust Pickles *step* circuit hosting a recorded o1js
+/// circuit, in the same `{ public_input_size, gates }` JSON schema as the
+/// jsoo wasm's `prover_to_json` — the tool behind the gate-level parity diff
+/// against OCaml Pickles step circuits.
+#[napi(js_name = "rust_pickles_recorded_step_circuit_json")]
+pub fn rust_pickles_recorded_step_circuit_json(circuit_json: String) -> Result<String> {
+    use snarky::api::SnarkyCircuit as _;
+
+    #[derive(serde::Serialize)]
+    struct Circuit {
+        public_input_size: usize,
+        gates: Vec<kimchi::circuits::gate::CircuitGate<Fp>>,
+    }
+
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    circuit
+        .validate()
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit: {err:?}")))?;
+    let app = pickles::recorded::RecordedApp { circuit };
+    let (prover, _verifier) = pickles::api::StepCircuit { app }
+        .compile_to_indexes()
+        .map_err(|err| Error::from_reason(format!("step compile failed: {err:?}")))?;
+    let circuit = Circuit {
+        public_input_size: prover.index.cs.public,
+        gates: prover.index.cs.gates.to_vec(),
+    };
+    serde_json::to_string(&circuit)
+        .map_err(|err| Error::from_reason(format!("circuit encoding failed: {err}")))
+}
