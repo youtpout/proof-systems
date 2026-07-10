@@ -332,7 +332,12 @@ fn stable_recursive_cycles_hash_each_previous_wrap_vk() {
         direct.final_cycle.step.messages_for_next_step_vk_pts,
         direct.base_wrap_vk_pts
     );
+    direct.verify(&[Fp::from(841u64)]).unwrap();
     direct.verify_final_digest(&[Fp::from(841u64)]).unwrap();
+    assert_eq!(
+        direct.verify(&[Fp::from(1u64)]),
+        Err(DirectRecursiveBackendError::PublicDigestMismatch)
+    );
 }
 
 #[test]

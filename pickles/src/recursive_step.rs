@@ -643,6 +643,54 @@ impl<
         const STABLE_WRAP_STMT_LEN: usize,
     > DirectN1StableProof<R, WR, SR, SS, WS, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>
 {
+    pub fn verify(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
+        self.verify_first_digest(public)?;
+        self.verify_final_digest(public)?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.first.step.verifier.verify::<VestaBase, VestaScalar>(
+                self.first.step.proof.clone(),
+                self.first.step.statement,
+                (),
+            );
+            self.first.wrap.verifier.verify::<PallasBase, PallasScalar>(
+                self.first.wrap.proof.clone(),
+                self.first.wrap.statement,
+                (),
+            );
+            self.final_cycle
+                .step
+                .verifier
+                .verify::<VestaBase, VestaScalar>(
+                    self.final_cycle.step.proof.clone(),
+                    self.final_cycle.step.statement,
+                    (),
+                );
+            self.final_cycle
+                .wrap
+                .verifier
+                .verify::<PallasBase, PallasScalar>(
+                    self.final_cycle.wrap.proof.clone(),
+                    self.final_cycle.wrap.statement,
+                    (),
+                );
+        }))
+        .map_err(|_| DirectRecursiveBackendError::InvalidProof)
+    }
+
+    pub fn verify_first_digest(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
+        let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &self.base_wrap_vk_pts,
+            public,
+            &[self.first.step.verified_wrap_accumulator],
+            &[self.first.step.finalized_step_challenges.clone()],
+        );
+        if self.first.step.statement[SS - 2] != digest {
+            return Err(DirectRecursiveBackendError::PublicDigestMismatch);
+        }
+        Ok(())
+    }
+
     pub fn verify_final_digest(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
         let final_vk = self
             .final_cycle
@@ -702,7 +750,7 @@ pub fn prove_direct_n1_stable_cycles_with_real_vk<
         final_cycle,
         base_wrap_vk_pts,
     };
-    proof.verify_final_digest(&public).unwrap();
+    proof.verify(&public).unwrap();
     proof
 }
 
