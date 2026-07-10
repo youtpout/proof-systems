@@ -32,12 +32,25 @@ maintenant porté côté Rust dans `api.rs::o1js_dummy_constraints`.
   - les cycles de permutation OCaml sont TRIÉS par (row, col) avant rotation
     (`equivalence_classes_to_hashtbl`) — le nôtre aussi, vérifié.
 
-Prochaine étape : parité du WRAP circuit (les commitments VK restent 0/28
-tant que wrap_main n'est pas iso). Il faut un dump du wrap jsoo : ajouter
-`fq_prover_to_json` au wasm bundlé d'o1js, ou décoder le wrap-pk du cache
-(`caml_pasta_fq_plonk_index_decode` + sérialiseur circuit Fq côté NAPI),
-puis diff comme pour le step. Méthode éprouvée : diff → identifier le
-gadget → répliquer l'ordre d'allocation OCaml.
+**WRAP : outillage en place, premier diff obtenu** (`b205238bd7`) :
+`fq_prover_to_json` (kimchi-wasm, aussi dans le submodule mina d'o1js —
+wasm bundlé rebuilé), `prove_base_case_with_wrap_dump` +
+`dump_recorded_wrap_circuit` (two-pass) + NAPI, et
+`o1js/src/tests/rust-pickles-wrap-gates-diff.ts` (intercept wrap-pk).
+
+Premier état (méthode minimale) : 8192 rows des deux côtés mais divergence
+STRUCTURELLE (pas un simple problème d'ordre) :
+- public input **40 vs 31** : le statement wrap jsoo porte 9 slots de plus
+  (hypothèse : les 8 feature flags + joint_combiner — vérifier
+  `composition_types` OCaml `Wrap.Statement.to_data`/spec) ;
+- Poseidon **1001 vs 671**, EndoMulScalar **184 vs 0** (jsoo convertit les
+  scalar challenges in-circuit via le gate, nous précalculons),
+  EndoMul 2464 vs 2016, Generic 569 vs **3764** (notre packing émet
+  beaucoup plus de generic).
+Le chantier = aligner wrap_main structurellement : layout du statement
+(feature flags), conversion des challenges via EndoMulScalar, couverture
+sponge (opt_sponge ?), puis itérer le diff comme pour le step.
+Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
 
 ## Carte de portage
 
