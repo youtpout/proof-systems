@@ -37,6 +37,63 @@ fn parse_fp_decimal(value: &str, name: &str) -> Result<Fp> {
         .map_err(|_| Error::from_reason(format!("{name}: expected decimal Pasta Fp field")))
 }
 
+/// Verifies a Pickles wrap proof (the o1js JSON envelope produced by
+/// `prove_with_mina_encoding` backends) against the side-loaded verification
+/// key it embeds — no prover backend, no compiled circuit.
+///
+/// `app_state_decimal` is the claimed application state as decimal Fp strings.
+/// `challenge_polynomial_commitments` / `old_bulletproof_challenges` are the
+/// recursion messages of the proofs this one verified — empty arrays for a
+/// base-case proof. Commitments are `[x, y]` decimal pairs; challenge vectors
+/// are arrays of decimal Fp strings, one vector per commitment.
+#[napi(js_name = "rust_pickles_verify_side_loaded")]
+pub fn rust_pickles_verify_side_loaded(
+    app_state_decimal: Vec<String>,
+    challenge_polynomial_commitments: Vec<Vec<String>>,
+    old_bulletproof_challenges: Vec<Vec<String>>,
+    proof_json: String,
+) -> Result<bool> {
+    let app_state = app_state_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "app_state"))
+        .collect::<Result<Vec<_>>>()?;
+    let commitments = challenge_polynomial_commitments
+        .iter()
+        .map(|pair| {
+            if pair.len() != 2 {
+                return Err(Error::from_reason(
+                    "challenge_polynomial_commitments: expected [x, y] decimal pairs".to_string(),
+                ));
+            }
+            Ok((
+                parse_fp_decimal(&pair[0], "commitment x")?,
+                parse_fp_decimal(&pair[1], "commitment y")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let challenges = old_bulletproof_challenges
+        .iter()
+        .map(|vector| {
+            vector
+                .iter()
+                .map(|value| parse_fp_decimal(value, "old_bulletproof_challenges"))
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let proof = pickles::api::MinaWrapProof::from_o1js_json_string(&proof_json)
+        .map_err(|err| Error::from_reason(format!("invalid proof JSON: {err:?}")))?;
+    match pickles::verify::verify_side_loaded(&app_state, &commitments, &challenges, &proof) {
+        Ok(_) => Ok(true),
+        Err(pickles::verify::StandaloneVerifyError::VerificationKey(err)) => Err(
+            Error::from_reason(format!("invalid side-loaded verification key: {err:?}")),
+        ),
+        Err(pickles::verify::StandaloneVerifyError::ProofDecoding) => {
+            Err(Error::from_reason("invalid wrap wire proof".to_string()))
+        }
+        Err(_) => Ok(false),
+    }
+}
+
 /// Direct Rust Pickles smoke API for o1js.
 ///
 /// This intentionally does not call Mina/OCaml Pickles. It compiles and proves
