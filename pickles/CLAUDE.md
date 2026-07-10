@@ -81,8 +81,18 @@ Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
   c'était le premier prove jsoo tenté) ; le compile jsoo (dumps de gates,
   VK) fonctionne. Le rebuild complet des bindings (`build:bindings-node`)
   échoue sur les crates vendorées (kimchi-stubs-vendors vs o1-utils 0.7.0).
-- Ground truth du statement sans prove : décoder `dummyBase64Proof` (une
-  fois le codex Fp/Fq corrigé), ou corriger le prove jsoo.
+- **Ground truth VALIDÉ sur le dummy proof o1js** (sexp parsé) : le
+  statement réseau est MINIMAL — deferred_values = {plonk(alpha, beta,
+  gamma, zeta, joint_combiner, feature_flags), **16 bp challenges**,
+  branch_data} SANS cip/b/xi (re-dérivés du prev_evals) ; wrap IPA =
+  **15 rounds** (SRS Tock 2^15 plein confirmé) ; messages_for_next_wrap
+  porte 2 vecteurs de challenges. Décodeur structuré :
+  `WrapProofBaseV3::from_mina_bin_prot` (miroir de to_mina_bin_prot,
+  round-trip testé) + fallback dans le NAPI.
+- **GOTCHA format o1js** : `proofToBase64` d'o1js = base64 d'un **SEXP
+  ASCII** (`((statement((proof_state...`), PAS du bin_prot. Le bin_prot
+  est le format réseau/GraphQL. Pour décoder des proofs o1js côté Rust il
+  faudra un parseur sexp (ou convertir en JS).
 
 ## Carte de portage
 

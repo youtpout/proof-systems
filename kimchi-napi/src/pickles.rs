@@ -539,7 +539,8 @@ pub fn rust_pickles_decode_mina_proof_base64(proof_base64: String) -> Result<Str
     let bytes = BASE64_STANDARD
         .decode(proof_base64)
         .map_err(|err| Error::from_reason(format!("invalid base64: {err}")))?;
-    let proof = pickles::mina_bin_prot::WrapProofBaseV3::from_normalized_bin_prot(&bytes)
+    let proof = pickles::mina_bin_prot::WrapProofBaseV3::from_mina_bin_prot(&bytes)
+        .or_else(|_| pickles::mina_bin_prot::WrapProofBaseV3::from_normalized_bin_prot(&bytes))
         .map_err(|err| Error::from_reason(format!("proof bin_prot decoding failed: {err:?}")))?;
     let envelope = serde_json::json!({
         "statement": proof

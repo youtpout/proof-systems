@@ -852,6 +852,163 @@ impl WrapStatementMinimalV1 {
     }
 }
 
+impl WrapStatementMinimalV1 {
+    /// Decodes the Mina structured minimal statement (mirror of
+    /// [`Self::encode_bin_prot`]). Only the wire-carried values are
+    /// reconstructed in `flattened` (challenges, branch data, sponge digest,
+    /// feature flags); the derivable slots (combined_inner_product, b, xi,
+    /// message digests) are zero — Mina verifiers re-derive them from
+    /// `prev_evals`.
+    fn decode_bin_prot(cursor: &mut DecodeCursor<'_>) -> Result<Self, BinProtError> {
+        // proof_state.deferred_values.plonk
+        let alpha = read_challenge_constant(cursor)?;
+        let beta = read_challenge_constant(cursor)?;
+        let gamma = read_challenge_constant(cursor)?;
+        let zeta = read_challenge_constant(cursor)?;
+        let joint_combiner = match cursor.read_u8()? {
+            0 => None,
+            1 => Some(read_challenge_constant::<Fq>(cursor)?),
+            value => return Err(BinProtError::InvalidProofsVerified(value)),
+        };
+        let mut features = [false; 8];
+        for flag in features.iter_mut() {
+            *flag = match cursor.read_u8()? {
+                0 => false,
+                1 => true,
+                value => return Err(BinProtError::InvalidProofsVerified(value)),
+            };
+        }
+        let _ = joint_combiner;
+
+        // proof_state.deferred_values.bulletproof_challenges (fixed 16)
+        let mut bulletproof_challenges = Vec::with_capacity(Self::MAX_BP_CHALLENGES);
+        for _ in 0..Self::MAX_BP_CHALLENGES {
+            bulletproof_challenges.push(read_challenge_constant(cursor)?);
+        }
+        expect_terminator(cursor)?;
+
+        // proof_state.deferred_values.branch_data
+        let proofs_verified = decode_proofs_verified(cursor.read_u8()?)?;
+        let domain_log2 = cursor.read_u8()?;
+
+        // proof_state.sponge_digest_before_evaluations
+        let sponge_digest = read_digest_constant(cursor)?;
+
+        // proof_state.messages_for_next_wrap_proof
+        let challenge_polynomial_commitment = (cursor.read_fq(0)?, cursor.read_fq(1)?);
+        validate_vesta_point(challenge_polynomial_commitment, 0)?;
+        let wrap_msgs_len = cursor.read_u8()? as usize;
+        if wrap_msgs_len > 2 {
+            return Err(BinProtError::TooManyReducedMessages {
+                max: 2,
+                actual: wrap_msgs_len,
+            });
+        }
+        let mut old_wrap_challenges = Vec::with_capacity(wrap_msgs_len);
+        for _ in 0..wrap_msgs_len {
+            old_wrap_challenges.push(read_challenge_vector::<Fq>(cursor, 15)?);
+        }
+
+        // statement.messages_for_next_step_proof
+        if cursor.read_u8()? != 0 {
+            return Err(BinProtError::Truncated); // app_state must be unit
+        }
+        let commitments_len = cursor.read_u8()? as usize;
+        if commitments_len > 2 {
+            return Err(BinProtError::TooManyReducedMessages {
+                max: 2,
+                actual: commitments_len,
+            });
+        }
+        let mut challenge_polynomial_commitments = Vec::with_capacity(commitments_len);
+        for index in 0..commitments_len {
+            let point = (cursor.read_fp(2 * index)?, cursor.read_fp(2 * index + 1)?);
+            validate_point(point, index)?;
+            challenge_polynomial_commitments.push(point);
+        }
+        let step_chals_len = cursor.read_u8()? as usize;
+        if step_chals_len > 2 {
+            return Err(BinProtError::TooManyReducedMessages {
+                max: 2,
+                actual: step_chals_len,
+            });
+        }
+        let mut old_step_challenges = Vec::with_capacity(step_chals_len);
+        for _ in 0..step_chals_len {
+            old_step_challenges.push(read_challenge_vector::<Fp>(cursor, 16)?);
+        }
+
+        // Rebuild the flattened compact layout (22 + 16 slots); derivable
+        // slots stay zero.
+        let mut flattened = vec![Fq::from(0u64); 22 + Self::MAX_BP_CHALLENGES];
+        flattened[5] = beta;
+        flattened[6] = gamma;
+        flattened[7] = alpha;
+        flattened[8] = zeta;
+        flattened[10] = sponge_digest;
+        flattened[13..13 + Self::MAX_BP_CHALLENGES]
+            .copy_from_slice(&bulletproof_challenges);
+        flattened[13 + Self::MAX_BP_CHALLENGES] = crate::composition_types::BranchData {
+            proofs_verified,
+            domain_log2,
+        }
+        .pack::<Fq>();
+        for (slot, flag) in features.iter().enumerate() {
+            flattened[14 + Self::MAX_BP_CHALLENGES + slot] =
+                if *flag { Fq::from(1u64) } else { Fq::from(0u64) };
+        }
+
+        Ok(Self {
+            flattened,
+            messages_for_next_wrap_proof: WrapMessagesForNextWrapProofV1 {
+                challenge_polynomial_commitment,
+                old_bulletproof_challenges: old_wrap_challenges,
+            },
+            messages_for_next_step_proof: StepMessagesForNextProofV1 {
+                challenge_polynomial_commitments,
+                old_bulletproof_challenges: old_step_challenges,
+            },
+        })
+    }
+}
+
+fn expect_terminator(cursor: &mut DecodeCursor<'_>) -> Result<(), BinProtError> {
+    match cursor.read_u8()? {
+        0 => Ok(()),
+        _ => Err(BinProtError::Truncated),
+    }
+}
+
+fn read_challenge_constant<F: PrimeField>(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<F, BinProtError> {
+    let low = u64::from_le_bytes(cursor.read_bytes(8)?.try_into().unwrap());
+    let high = u64::from_le_bytes(cursor.read_bytes(8)?.try_into().unwrap());
+    expect_terminator(cursor)?;
+    Ok(F::from(low) + F::from(high) * F::from(2u64).pow([64]))
+}
+
+fn read_digest_constant(cursor: &mut DecodeCursor<'_>) -> Result<Fq, BinProtError> {
+    let mut bytes = Vec::with_capacity(32);
+    for _ in 0..4 {
+        bytes.extend_from_slice(cursor.read_bytes(8)?);
+    }
+    expect_terminator(cursor)?;
+    decode_scalar(&bytes, 0)
+}
+
+fn read_challenge_vector<F: PrimeField>(
+    cursor: &mut DecodeCursor<'_>,
+    expected_len: usize,
+) -> Result<Vec<F>, BinProtError> {
+    let mut out = Vec::with_capacity(expected_len);
+    for _ in 0..expected_len {
+        out.push(read_challenge_constant(cursor)?);
+    }
+    expect_terminator(cursor)?;
+    Ok(out)
+}
+
 impl WrapMessagesForNextWrapProofV1 {
     fn validate(&self) -> Result<(), BinProtError> {
         validate_vesta_point(self.challenge_polynomial_commitment, 0)?;
@@ -971,6 +1128,24 @@ impl WrapProofBaseV3 {
         encode_u32_len(proof.len(), &mut out)?;
         out.extend(proof);
         Ok(out)
+    }
+
+    /// Decodes a proof in the Mina network layout (the inverse of
+    /// [`Self::to_mina_bin_prot`]): structured minimal statement, previous
+    /// step evaluations, then the wire proof (unprefixed, to the end of the
+    /// buffer). Derivable statement slots are zero — see
+    /// [`WrapStatementMinimalV1::decode_bin_prot`].
+    pub fn from_mina_bin_prot(bytes: &[u8]) -> Result<Self, BinProtError> {
+        let mut cursor = DecodeCursor::new(bytes);
+        let stable_statement = WrapStatementMinimalV1::decode_bin_prot(&mut cursor)?;
+        let prev_evals = WrapProofPrevEvalsV2::decode_bin_prot(&mut cursor)?;
+        let proof = WrapWireProofV1::from_bin_prot(&bytes[cursor.offset..])?;
+        Ok(Self {
+            statement: stable_statement.flattened.clone(),
+            stable_statement,
+            prev_evals,
+            proof,
+        })
     }
 
     pub fn from_normalized_bin_prot(bytes: &[u8]) -> Result<Self, BinProtError> {
@@ -1525,6 +1700,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mina_bin_prot_statement_round_trips() {
+        let proof = wrap_proof_base_v3();
+        let bytes = proof.to_mina_bin_prot().unwrap();
+        let decoded = WrapProofBaseV3::from_mina_bin_prot(&bytes).unwrap();
+        let s = &proof.stable_statement.flattened;
+        let d = &decoded.stable_statement.flattened;
+        // wire-carried slots survive: challenges, sponge digest, bp
+        // challenges, branch data, feature flags
+        for &slot in &[5usize, 6, 7, 8, 10] {
+            assert_eq!(s[slot], d[slot], "slot {slot}");
+        }
+        let rounds = s.len() - 22;
+        assert_eq!(&s[13..13 + rounds], &d[13..13 + rounds]);
+        assert_eq!(s[13 + rounds], d[13 + 16], "branch data");
+        // the encoder always writes `features_none` (no optional gates in
+        // our programs), so decoded flags are zero regardless of input
+        assert!(d[14 + 16..].iter().all(|flag| *flag == Fq::from(0u64)));
+        assert_eq!(
+            proof.stable_statement.messages_for_next_wrap_proof,
+            decoded.stable_statement.messages_for_next_wrap_proof
+        );
+        assert_eq!(
+            proof.stable_statement.messages_for_next_step_proof,
+            decoded.stable_statement.messages_for_next_step_proof
+        );
+        assert_eq!(proof.prev_evals, decoded.prev_evals);
+        assert_eq!(proof.proof, decoded.proof);
+    }
+
     fn wrap_proof_base_v3() -> WrapProofBaseV3 {
         let statement: Vec<Fq> = (1..=38).map(Fq::from).collect();
         WrapProofBaseV3 {
@@ -1707,3 +1912,4 @@ mod tests {
         );
     }
 }
+

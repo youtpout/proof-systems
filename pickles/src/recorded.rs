@@ -1292,7 +1292,7 @@ macro_rules! wrap_dump_at_rounds {
                     // Two passes, like `prove_base_case_two_pass`: the final
                     // wrap circuit embeds the real wrap VK commitments.
                     let bootstrap_points: Vec<(Fp, Fp)> = {
-                        use ark_ec::{AffineRepr, CurveGroup};
+                        use ark_ec::AffineRepr;
                         let g = mina_curves::pasta::Pallas::generator().into_group();
                         (1..=28u64)
                             .map(|i| {
