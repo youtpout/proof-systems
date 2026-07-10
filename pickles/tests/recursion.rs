@@ -320,16 +320,18 @@ fn stable_recursive_cycles_hash_each_previous_wrap_vk() {
         K3,
         WRAP3_STMT_LEN,
     >(&base, vec![Fp::from(841u64)], 1);
+    assert_eq!(direct.stable_cycles.len(), 2);
+    let final_cycle = direct.final_cycle();
     let digest = pickles::hash_messages::hash_messages_for_next_step_proof_ref(
         mina_curves::pasta::Vesta::sponge_params(),
-        &direct.final_cycle.step.messages_for_next_step_vk_pts,
+        &final_cycle.step.messages_for_next_step_vk_pts,
         &[Fp::from(841u64)],
-        &[direct.final_cycle.step.verified_wrap_accumulator],
-        &[direct.final_cycle.step.finalized_step_challenges.clone()],
+        &[final_cycle.step.verified_wrap_accumulator],
+        &[final_cycle.step.finalized_step_challenges.clone()],
     );
-    assert_eq!(direct.final_cycle.step.statement[K3 - 2], digest);
+    assert_eq!(final_cycle.step.statement[K3 - 2], digest);
     assert_ne!(
-        direct.final_cycle.step.messages_for_next_step_vk_pts,
+        final_cycle.step.messages_for_next_step_vk_pts,
         direct.base_wrap_vk_pts
     );
     direct.verify(&[Fp::from(841u64)]).unwrap();

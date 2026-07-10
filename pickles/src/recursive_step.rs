@@ -571,7 +571,8 @@ pub struct DirectN1StableProof<
     const STABLE_WRAP_STMT_LEN: usize,
 > {
     pub first: RecursiveCycleProof<R, WR, SR, SS, WS>,
-    pub final_cycle: RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>,
+    pub stable_cycles:
+        Vec<RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>>,
     pub base_wrap_vk_pts: Vec<(Fp, Fp)>,
 }
 
@@ -643,9 +644,19 @@ impl<
         const STABLE_WRAP_STMT_LEN: usize,
     > DirectN1StableProof<R, WR, SR, SS, WS, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>
 {
+    pub fn final_cycle(
+        &self,
+    ) -> &RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN> {
+        self.stable_cycles
+            .last()
+            .expect("DirectN1StableProof always contains at least one stable cycle")
+    }
+
     pub fn verify(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
         self.verify_first_digest(public)?;
-        self.verify_final_digest(public)?;
+        for cycle in &self.stable_cycles {
+            self.verify_stable_digest(public, cycle)?;
+        }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.first.step.verifier.verify::<VestaBase, VestaScalar>(
                 self.first.step.proof.clone(),
@@ -657,22 +668,18 @@ impl<
                 self.first.wrap.statement,
                 (),
             );
-            self.final_cycle
-                .step
-                .verifier
-                .verify::<VestaBase, VestaScalar>(
-                    self.final_cycle.step.proof.clone(),
-                    self.final_cycle.step.statement,
+            for cycle in &self.stable_cycles {
+                cycle.step.verifier.verify::<VestaBase, VestaScalar>(
+                    cycle.step.proof.clone(),
+                    cycle.step.statement,
                     (),
                 );
-            self.final_cycle
-                .wrap
-                .verifier
-                .verify::<PallasBase, PallasScalar>(
-                    self.final_cycle.wrap.proof.clone(),
-                    self.final_cycle.wrap.statement,
+                cycle.wrap.verifier.verify::<PallasBase, PallasScalar>(
+                    cycle.wrap.proof.clone(),
+                    cycle.wrap.statement,
                     (),
                 );
+            }
         }))
         .map_err(|_| DirectRecursiveBackendError::InvalidProof)
     }
@@ -692,19 +699,23 @@ impl<
     }
 
     pub fn verify_final_digest(&self, public: &[Fp]) -> Result<(), DirectRecursiveBackendError> {
-        let final_vk = self
-            .final_cycle
-            .step
-            .messages_for_next_step_vk_pts
-            .as_slice();
+        self.verify_stable_digest(public, self.final_cycle())
+    }
+
+    fn verify_stable_digest(
+        &self,
+        public: &[Fp],
+        cycle: &RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>,
+    ) -> Result<(), DirectRecursiveBackendError> {
+        let final_vk = cycle.step.messages_for_next_step_vk_pts.as_slice();
         let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
             Vesta::sponge_params(),
             final_vk,
             public,
-            &[self.final_cycle.step.verified_wrap_accumulator],
-            &[self.final_cycle.step.finalized_step_challenges.clone()],
+            &[cycle.step.verified_wrap_accumulator],
+            &[cycle.step.finalized_step_challenges.clone()],
         );
-        if self.final_cycle.step.statement[STABLE_STEP_STMT_LEN - 2] != digest {
+        if cycle.step.statement[STABLE_STEP_STMT_LEN - 2] != digest {
             return Err(DirectRecursiveBackendError::PublicDigestMismatch);
         }
         Ok(())
@@ -729,7 +740,7 @@ pub fn prove_direct_n1_stable_cycles_with_real_vk<
     let base_wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
     let first =
         prove_first_recursive_cycle_with_real_vk::<A, R, WR, SR, BS, SS, WS>(base, public.clone());
-    let mut final_cycle = prove_next_recursive_cycle_with_real_vk::<
+    let final_cycle = prove_next_recursive_cycle_with_real_vk::<
         R,
         WR,
         SR,
@@ -740,14 +751,27 @@ pub fn prove_direct_n1_stable_cycles_with_real_vk<
         SR,
         STABLE_WRAP_STMT_LEN,
     >(&first, public.clone());
-    final_cycle = prove_stable_recursive_cycles_with_real_vk::<
-        SR,
-        STABLE_STEP_STMT_LEN,
-        STABLE_WRAP_STMT_LEN,
-    >(final_cycle, additional_stable_cycles, public.clone());
+    let mut stable_cycles = vec![final_cycle];
+    for _ in 0..additional_stable_cycles {
+        let previous = stable_cycles
+            .last()
+            .expect("stable_cycles contains the initial stable transition");
+        let next = prove_next_recursive_cycle_with_real_vk::<
+            SR,
+            SR,
+            SR,
+            STABLE_STEP_STMT_LEN,
+            STABLE_WRAP_STMT_LEN,
+            SR,
+            STABLE_STEP_STMT_LEN,
+            SR,
+            STABLE_WRAP_STMT_LEN,
+        >(previous, public.clone());
+        stable_cycles.push(next);
+    }
     let proof = DirectN1StableProof {
         first,
-        final_cycle,
+        stable_cycles,
         base_wrap_vk_pts,
     };
     proof.verify(&public).unwrap();
