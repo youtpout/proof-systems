@@ -151,3 +151,116 @@ pub fn rust_pickles_square_base_proof_json(witness_decimal: String) -> Result<St
         .to_o1js_json_string()
         .map_err(|err| Error::from_reason(format!("rust pickles JSON encoding failed: {err:?}")))
 }
+
+fn n1_envelope(proved: pickles::recorded::RecordedN1Proof) -> Result<String> {
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+        "challengePolynomialCommitment": [
+            proved.challenge_polynomial_commitment.0.to_string(),
+            proved.challenge_polynomial_commitment.1.to_string(),
+        ],
+        "oldBulletproofChallenges": proved
+            .old_bulletproof_challenges
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "dlogPlonkIndex": proved
+            .dlog_plonk_index
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
+/// Proves a recorded circuit through the base-case pipeline, then one
+/// recursive (N1) Pickles cycle over the resulting wrap proof. Returns
+/// `{ appState, proof, challengePolynomialCommitment,
+/// oldBulletproofChallenges, dlogPlonkIndex }` — the last three are the
+/// recursion messages `rust_pickles_verify_side_loaded_with_step_vk` needs.
+#[napi(js_name = "rust_pickles_prove_recorded_n1")]
+pub fn rust_pickles_prove_recorded_n1(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let proved = pickles::recorded::prove_recorded_n1(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1 prove failed: {err:?}")))?;
+    n1_envelope(proved)
+}
+
+/// [`rust_pickles_verify_side_loaded`] with an explicit `dlog_plonk_index`
+/// (the wrap VK commitments bound by the statement digest — the
+/// `dlogPlonkIndex` of an N1 envelope), as `[["x","y"], ...]`.
+#[napi(js_name = "rust_pickles_verify_side_loaded_with_step_vk")]
+pub fn rust_pickles_verify_side_loaded_with_step_vk(
+    app_state_decimal: Vec<String>,
+    dlog_plonk_index: Vec<Vec<String>>,
+    challenge_polynomial_commitments: Vec<Vec<String>>,
+    old_bulletproof_challenges: Vec<Vec<String>>,
+    proof_json: String,
+) -> Result<bool> {
+    let app_state = app_state_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "app_state"))
+        .collect::<Result<Vec<_>>>()?;
+    let parse_points = |pairs: &[Vec<String>], name: &str| {
+        pairs
+            .iter()
+            .map(|pair| {
+                if pair.len() != 2 {
+                    return Err(Error::from_reason(format!(
+                        "{name}: expected [x, y] decimal pairs"
+                    )));
+                }
+                Ok((
+                    parse_fp_decimal(&pair[0], name)?,
+                    parse_fp_decimal(&pair[1], name)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()
+    };
+    let dlog_index = parse_points(&dlog_plonk_index, "dlog_plonk_index")?;
+    let commitments = parse_points(
+        &challenge_polynomial_commitments,
+        "challenge_polynomial_commitments",
+    )?;
+    let challenges = old_bulletproof_challenges
+        .iter()
+        .map(|vector| {
+            vector
+                .iter()
+                .map(|value| parse_fp_decimal(value, "old_bulletproof_challenges"))
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let proof = pickles::api::MinaWrapProof::from_o1js_json_string(&proof_json)
+        .map_err(|err| Error::from_reason(format!("invalid proof JSON: {err:?}")))?;
+    match pickles::verify::verify_side_loaded_with_step_vk(
+        &app_state,
+        Some(&dlog_index),
+        &commitments,
+        &challenges,
+        &proof,
+    ) {
+        Ok(_) => Ok(true),
+        Err(pickles::verify::StandaloneVerifyError::VerificationKey(err)) => Err(
+            Error::from_reason(format!("invalid side-loaded verification key: {err:?}")),
+        ),
+        Err(pickles::verify::StandaloneVerifyError::ProofDecoding) => {
+            Err(Error::from_reason("invalid wrap wire proof".to_string()))
+        }
+        Err(_) => Ok(false),
+    }
+}

@@ -153,3 +153,38 @@ fn recorded_ec_add_circuit_proves_and_verifies_standalone() {
     assert_eq!(proved.app_state, vec![p3.x]);
     verify_side_loaded_base_case(&proved.app_state, &proved.proof).unwrap();
 }
+
+#[test]
+fn recorded_n1_cycle_proves_and_verifies_standalone() {
+    use pickles::recorded::prove_recorded_n1;
+    use pickles::verify::verify_side_loaded_with_step_vk;
+
+    let witness = vec![Fp::from(8u64), Fp::from(64u64)];
+    let proved = prove_recorded_n1(square_circuit(), witness).unwrap();
+    assert_eq!(proved.app_state, vec![Fp::from(64u64)]);
+
+    // Standalone verification: the digest binds the base program's wrap VK
+    // (dlog_plonk_index) together with the recursion messages.
+    let vk = verify_side_loaded_with_step_vk(
+        &proved.app_state,
+        Some(proved.dlog_plonk_index.as_slice()),
+        &[proved.challenge_polynomial_commitment],
+        &[proved.old_bulletproof_challenges.clone()],
+        &proved.proof,
+    )
+    .unwrap();
+    assert_eq!(
+        vk.proofs_verified,
+        pickles::composition_types::ProofsVerified::N1
+    );
+
+    // Without the recursion messages the digest binding fails.
+    assert!(verify_side_loaded_with_step_vk(
+        &proved.app_state,
+        Some(proved.dlog_plonk_index.as_slice()),
+        &[],
+        &[],
+        &proved.proof,
+    )
+    .is_err());
+}
