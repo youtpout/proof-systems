@@ -11,6 +11,7 @@
 #![allow(static_mut_refs)]
 
 pub use arkworks::{WasmGPallas, WasmGVesta, WasmPastaFp, WasmPastaFq};
+pub mod pickles;
 pub mod wasm_vector;
 
 use wasm_bindgen::prelude::*;

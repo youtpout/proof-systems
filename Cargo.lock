@@ -1869,6 +1869,7 @@ dependencies = [
  "num-bigint",
  "o1-utils",
  "paste",
+ "pickles",
  "poly-commitment",
  "rand 0.8.5",
  "rayon",

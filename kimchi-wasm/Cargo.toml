@@ -44,6 +44,7 @@ kimchi = { workspace = true, features = ["wasm_types"] }
 mina-curves = { workspace = true, features = ["parallel"] }
 mina-poseidon = { workspace = true, features = ["default"] }
 o1-utils = { workspace = true }
+pickles.workspace = true
 poly-commitment = { workspace = true }
 wasm-types.workspace = true
 
