@@ -188,3 +188,58 @@ fn recorded_n1_cycle_proves_and_verifies_standalone() {
     )
     .is_err());
 }
+
+#[test]
+fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
+    use pickles::recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over};
+    use pickles::verify::verify_side_loaded_with_step_vk;
+
+    // Base proof: the square circuit, kept alive for chaining.
+    let handle =
+        prove_recorded_base_case_keep(square_circuit(), vec![Fp::from(5u64), Fp::from(25u64)])
+            .unwrap();
+    assert_eq!(handle.app_state, vec![Fp::from(25u64)]);
+    verify_side_loaded_base_case(&handle.app_state, &handle.proof).unwrap();
+
+    // Recursive step: a *different* circuit (x·y = z) runs in-step while
+    // verifying the kept base proof — the ZkProgram SelfProof shape.
+    let mul_circuit = RecordedCircuit {
+        aux_count: 3,
+        output: vec![LinComb::var(2)],
+        constraints: vec![RecordedConstraint::R1cs {
+            a: LinComb::var(0),
+            b: LinComb::var(1),
+            c: LinComb::var(2),
+        }],
+    };
+    let witness = vec![Fp::from(6u64), Fp::from(7u64), Fp::from(42u64)];
+    let proved = prove_recorded_n1_over(&handle, mul_circuit, witness).unwrap();
+    assert_eq!(proved.app_state, vec![Fp::from(42u64)]);
+
+    // The digest binds the *new* circuit's app state together with the
+    // verified base proof's accumulator and the base program's wrap VK.
+    let vk = verify_side_loaded_with_step_vk(
+        &proved.app_state,
+        Some(proved.dlog_plonk_index.as_slice()),
+        &[proved.challenge_polynomial_commitment],
+        &[proved.old_bulletproof_challenges.clone()],
+        &proved.proof,
+    )
+    .unwrap();
+    assert_eq!(
+        vk.proofs_verified,
+        pickles::composition_types::ProofsVerified::N1
+    );
+
+    // The base program's app state does not satisfy the new digest.
+    assert!(matches!(
+        verify_side_loaded_with_step_vk(
+            &handle.app_state,
+            Some(proved.dlog_plonk_index.as_slice()),
+            &[proved.challenge_polynomial_commitment],
+            &[proved.old_bulletproof_challenges.clone()],
+            &proved.proof,
+        ),
+        Err(StandaloneVerifyError::AppStateMismatch)
+    ));
+}
