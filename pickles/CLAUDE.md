@@ -16,19 +16,28 @@ maintenant porté côté Rust dans `api.rs::o1js_dummy_constraints`.
 
 État vérifié avec `o1js/src/tests/rust-pickles-step-gates-diff.ts` :
 
-- circuit step minimal : 512 rows jsoo = 512 rows Rust ;
-- histogrammes identiques : Generic 89, Poseidon 319, Zero 98,
-  CompleteAdd 3, VarBaseMul 1, EndoMul 1, EndoMulScalar 1 ;
-- il reste 10 divergences de wiring/coefficients internes au dummy préambule
-  (`Scalar_challenge.to_field_checked'`, `Ops.scale_fast`,
-  `Scalar_challenge.endo`) ;
-- `rust-pickles-vk-parity.ts` passe en mode non strict, mais le mode strict
-  échoue encore : les commitments VK restent à 0/28 tant que ces 10 wirings
-  ne sont pas iso.
+- **STEP CIRCUIT : FULL MATCH (0 divergence)** — 512 rows, gates, coefficients
+  et wiring de permutation identiques au step jsoo sur la méthode minimale.
+- Correctifs qui ont fermé les 10 dernières divergences :
+  - `snarky/gadgets/curve.rs::assert_on_curve` : Square(x,x²) + R1CS(x³) +
+    Square(y, x³+b) comme OCaml (au lieu de mul/R1CS partout) ;
+  - `curve.rs::add_complete` : ordre d'exists OCaml add_fast (same_x, inf_z,
+    x21_inv, s, x3, y3) et `inf = constante zéro` (check_finite) — la
+    constante rejoint la classe de permutation du zéro caché ;
+  - `scalar_challenge.rs::endo` : seal de `endo·xt` (émet `[E,-1]` en l/r
+    comme le Utils.seal OCaml) et ordre d'addition `t + phi_t` ;
+  - `constraint_system.rs::EcEndoscalar` : réduction des champs du round en
+    ordre inverse (x7→n0), l'ordre d'évaluation droite-à-gauche des records
+    OCaml ;
+  - les cycles de permutation OCaml sont TRIÉS par (row, col) avant rotation
+    (`equivalence_classes_to_hashtbl`) — le nôtre aussi, vérifié.
 
-Prochaine étape concrète : aligner l'ordre d'allocation/wiring des gadgets
-dummy Rust sur l'OCaml, en utilisant les dumps
-`/tmp/claude-1000/step-circuit-{jsoo,rust}.json`.
+Prochaine étape : parité du WRAP circuit (les commitments VK restent 0/28
+tant que wrap_main n'est pas iso). Il faut un dump du wrap jsoo : ajouter
+`fq_prover_to_json` au wasm bundlé d'o1js, ou décoder le wrap-pk du cache
+(`caml_pasta_fq_plonk_index_decode` + sérialiseur circuit Fq côté NAPI),
+puis diff comme pour le step. Méthode éprouvée : diff → identifier le
+gadget → répliquer l'ordre d'allocation OCaml.
 
 ## Carte de portage
 

@@ -109,8 +109,11 @@ pub fn endo<F: PrimeField>(
     };
 
     // initial accumulator: p = (endo * xt, yt) + t ; acc = p + p
-    let phi_t = Point::new(xt.scale(endo_base), yt.clone());
-    let p = add_complete(sys, loc.clone(), &phi_t, t)?;
+    // OCaml seals `Field.scale xt Endo.base` before using it as a point
+    // coordinate, emitting `endo·xt - v = 0` in the (l, r) slots.
+    let phi_x = xt.scale(endo_base).seal(sys, loc.clone())?;
+    let phi_t = Point::new(phi_x, yt.clone());
+    let p = add_complete(sys, loc.clone(), t, &phi_t)?;
     let mut acc = double(sys, loc.clone(), &p)?;
 
     let mut n_acc = FieldVar::zero();

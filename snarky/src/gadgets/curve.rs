@@ -62,15 +62,34 @@ impl<F: PrimeField> Point<F> {
         a: F,
         b: F,
     ) -> SnarkyResult<()> {
-        let x2 = self.x.mul(&self.x, None, loc.clone(), sys)?;
+        // Mirrors OCaml snarky_curve's `assert_on_curve` gate for gate:
+        // x² via a Square constraint (Field.square, not a mul's R1CS),
+        // x³ = x²·x via R1CS, then y² = x³ + a·x + b via a Square constraint.
+        let x2: FieldVar<F> = sys.compute(loc.clone(), {
+            let x = self.x.clone();
+            move |env| {
+                let v: F = env.read_var(&x);
+                v * v
+            }
+        })?;
+        sys.add_constraint(
+            Constraint::BasicSnarkyConstraint(
+                crate::constraint_system::BasicSnarkyConstraint::Square(
+                    self.x.clone(),
+                    x2.clone(),
+                ),
+            ),
+            Some("on-curve x^2".into()),
+            loc.clone(),
+        )?;
         let x3 = x2.mul(&self.x, None, loc.clone(), sys)?;
         let rhs = &(&x3 + &self.x.scale(a)) + &FieldVar::constant(b);
-        sys.assert_r1cs(
+        sys.add_constraint(
+            Constraint::BasicSnarkyConstraint(
+                crate::constraint_system::BasicSnarkyConstraint::Square(self.y.clone(), rhs),
+            ),
             Some("on-curve check".into()),
             loc,
-            self.y.clone(),
-            self.y.clone(),
-            rhs,
         )
     }
 
@@ -140,20 +159,31 @@ pub fn add_complete<F: PrimeField>(
     p1: &Point<F>,
     p2: &Point<F>,
 ) -> SnarkyResult<Point<F>> {
-    // witness the output and the gate's auxiliary values
-    let (x1, y1) = (p1.x.clone(), p1.y.clone());
-    let (x2, y2) = (p2.x.clone(), p2.y.clone());
-    type Vars3<F> = (FieldVar<F>, FieldVar<F>, FieldVar<F>);
-    let ((x3, y3, inf), (same_x, slope, inf_z), x21_inv): (Vars3<F>, Vars3<F>, FieldVar<F>) =
-        sys.compute(loc.clone(), move |env| {
-            let [x3, y3, inf, same_x, slope, inf_z, x21_inv] = complete_add_witness(
+    // Witness the gate's auxiliary values one by one, in OCaml add_fast's
+    // exists order (same_x, inf_z, x21_inv, s, x3, y3), with `inf` the
+    // constant zero (`check_finite = true`): points at infinity cannot occur
+    // in the pickles gadgets, and the constant wires the cell into the
+    // cached-zero permutation class exactly like OCaml.
+    let aux = |sys: &mut RunState<F>, loc: Cow<'static, str>, k: usize| -> SnarkyResult<FieldVar<F>> {
+        let (x1, y1) = (p1.x.clone(), p1.y.clone());
+        let (x2, y2) = (p2.x.clone(), p2.y.clone());
+        sys.compute(loc, move |env| {
+            complete_add_witness(
                 env.read_var(&x1),
                 env.read_var(&y1),
                 env.read_var(&x2),
                 env.read_var(&y2),
-            );
-            ((x3, y3, inf), (same_x, slope, inf_z), x21_inv)
-        })?;
+            )[k]
+        })
+    };
+    // complete_add_witness order: [x3, y3, inf, same_x, slope, inf_z, x21_inv]
+    let same_x = aux(sys, loc.clone(), 3)?;
+    let inf = FieldVar::zero();
+    let inf_z = aux(sys, loc.clone(), 5)?;
+    let x21_inv = aux(sys, loc.clone(), 6)?;
+    let slope = aux(sys, loc.clone(), 4)?;
+    let x3 = aux(sys, loc.clone(), 0)?;
+    let y3 = aux(sys, loc.clone(), 1)?;
 
     let constraint =
         Constraint::KimchiConstraint(KimchiConstraint::EcAddComplete(EcAddCompleteInput {

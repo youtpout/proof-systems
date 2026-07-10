@@ -1666,21 +1666,39 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             }
             KimchiConstraint::EcEndoscalar(state) => {
                 for round in state {
+                    // OCaml maps the round record with right-to-left field
+                    // evaluation, so internal/constant variables materialize
+                    // in reverse field order (x7 … n0) — match it so cached
+                    // constants land in the same rows.
+                    let x7 = self.reduce_to_var(labels, loc, round.x7);
+                    let x6 = self.reduce_to_var(labels, loc, round.x6);
+                    let x5 = self.reduce_to_var(labels, loc, round.x5);
+                    let x4 = self.reduce_to_var(labels, loc, round.x4);
+                    let x3 = self.reduce_to_var(labels, loc, round.x3);
+                    let x2 = self.reduce_to_var(labels, loc, round.x2);
+                    let x1 = self.reduce_to_var(labels, loc, round.x1);
+                    let x0 = self.reduce_to_var(labels, loc, round.x0);
+                    let b8 = self.reduce_to_var(labels, loc, round.b8);
+                    let a8 = self.reduce_to_var(labels, loc, round.a8);
+                    let b0 = self.reduce_to_var(labels, loc, round.b0);
+                    let a0 = self.reduce_to_var(labels, loc, round.a0);
+                    let n8 = self.reduce_to_var(labels, loc, round.n8);
+                    let n0 = self.reduce_to_var(labels, loc, round.n0);
                     let vars = vec![
-                        Some(self.reduce_to_var(labels, loc, round.n0)),
-                        Some(self.reduce_to_var(labels, loc, round.n8)),
-                        Some(self.reduce_to_var(labels, loc, round.a0)),
-                        Some(self.reduce_to_var(labels, loc, round.b0)),
-                        Some(self.reduce_to_var(labels, loc, round.a8)),
-                        Some(self.reduce_to_var(labels, loc, round.b8)),
-                        Some(self.reduce_to_var(labels, loc, round.x0)),
-                        Some(self.reduce_to_var(labels, loc, round.x1)),
-                        Some(self.reduce_to_var(labels, loc, round.x2)),
-                        Some(self.reduce_to_var(labels, loc, round.x3)),
-                        Some(self.reduce_to_var(labels, loc, round.x4)),
-                        Some(self.reduce_to_var(labels, loc, round.x5)),
-                        Some(self.reduce_to_var(labels, loc, round.x6)),
-                        Some(self.reduce_to_var(labels, loc, round.x7)),
+                        Some(n0),
+                        Some(n8),
+                        Some(a0),
+                        Some(b0),
+                        Some(a8),
+                        Some(b8),
+                        Some(x0),
+                        Some(x1),
+                        Some(x2),
+                        Some(x3),
+                        Some(x4),
+                        Some(x5),
+                        Some(x6),
+                        Some(x7),
                     ];
                     self.add_row(labels, loc, vars, GateType::EndoMulScalar, vec![]);
                 }
