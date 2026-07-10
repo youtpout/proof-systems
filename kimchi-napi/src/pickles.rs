@@ -37,6 +37,36 @@ fn parse_fp_decimal(value: &str, name: &str) -> Result<Fp> {
         .map_err(|_| Error::from_reason(format!("{name}: expected decimal Pasta Fp field")))
 }
 
+/// Proves a recorded circuit (the JSON envelope produced by o1js's
+/// constraint-system adapter — see `pickles::recorded::RecordedCircuit`)
+/// through the base-case Pickles pipeline, with the witness variable values
+/// as decimal Fp strings. Returns `{ appState, proof }` where `proof` is the
+/// o1js wrap proof JSON envelope.
+#[napi(js_name = "rust_pickles_prove_recorded_base")]
+pub fn rust_pickles_prove_recorded_base(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let proved = pickles::recorded::prove_recorded_base_case(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles prove failed: {err:?}")))?;
+    let envelope = serde_json::json!({
+        "appState": proved
+            .app_state
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "proof": proved.proof.to_o1js_json_value(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
 /// Verifies a Pickles wrap proof (the o1js JSON envelope produced by
 /// `prove_with_mina_encoding` backends) against the side-loaded verification
 /// key it embeds — no prover backend, no compiled circuit.
