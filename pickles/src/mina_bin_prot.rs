@@ -746,17 +746,25 @@ impl WrapProofPrevEvalsV2 {
 }
 
 impl WrapStatementMinimalV1 {
-    pub const MIN_FLATTENED_LEN: usize = 38;
+    pub const FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES: usize = 22;
+    pub const MAX_BP_CHALLENGES: usize = 16;
 
     pub fn from_flattened(
         flattened: Vec<Fq>,
         messages_for_next_wrap_proof: WrapMessagesForNextWrapProofV1,
         messages_for_next_step_proof: StepMessagesForNextProofV1,
     ) -> Result<Self, BinProtError> {
-        if flattened.len() < Self::MIN_FLATTENED_LEN {
+        if flattened.len() <= Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES {
             return Err(BinProtError::InvalidStatementShape {
-                expected_at_least: Self::MIN_FLATTENED_LEN,
+                expected_at_least: Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES + 1,
                 actual: flattened.len(),
+            });
+        }
+        let rounds = flattened.len() - Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES;
+        if rounds > Self::MAX_BP_CHALLENGES {
+            return Err(BinProtError::WrongVectorLength {
+                expected: Self::MAX_BP_CHALLENGES,
+                actual: rounds,
             });
         }
         messages_for_next_wrap_proof.validate()?;
@@ -769,9 +777,9 @@ impl WrapStatementMinimalV1 {
     }
 
     pub fn legacy_digest_only(flattened: Vec<Fq>) -> Result<Self, BinProtError> {
-        if flattened.len() < Self::MIN_FLATTENED_LEN {
+        if flattened.len() <= Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES {
             return Err(BinProtError::InvalidStatementShape {
-                expected_at_least: Self::MIN_FLATTENED_LEN,
+                expected_at_least: Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES + 1,
                 actual: flattened.len(),
             });
         }
@@ -789,12 +797,20 @@ impl WrapStatementMinimalV1 {
     }
 
     fn encode_bin_prot(&self, out: &mut Vec<u8>) -> Result<(), BinProtError> {
-        if self.flattened.len() < Self::MIN_FLATTENED_LEN {
+        if self.flattened.len() <= Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES {
             return Err(BinProtError::InvalidStatementShape {
-                expected_at_least: Self::MIN_FLATTENED_LEN,
+                expected_at_least: Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES + 1,
                 actual: self.flattened.len(),
             });
         }
+        let rounds = self.flattened.len() - Self::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES;
+        if rounds > Self::MAX_BP_CHALLENGES {
+            return Err(BinProtError::WrongVectorLength {
+                expected: Self::MAX_BP_CHALLENGES,
+                actual: rounds,
+            });
+        }
+        let branch_data_index = 13 + rounds;
 
         // proof_state.deferred_values.plonk
         encode_challenge_constant(self.flattened[7], out)?; // alpha.inner
@@ -805,20 +821,24 @@ impl WrapStatementMinimalV1 {
         encode_features_none(out); // feature_flags
 
         // proof_state.deferred_values.bulletproof_challenges
-        for &challenge in &self.flattened[13..29] {
+        for &challenge in &self.flattened[13..branch_data_index] {
             encode_challenge_constant(challenge, out)?;
+        }
+        for _ in rounds..Self::MAX_BP_CHALLENGES {
+            encode_challenge_constant(Fq::from(0u64), out)?;
         }
         out.push(0); // fixed Vector_16 terminator
 
         // proof_state.deferred_values.branch_data
-        let proofs_verified = match branch_data_proofs_verified(&self.flattened[29])? {
+        let proofs_verified = match branch_data_proofs_verified(&self.flattened[branch_data_index])?
+        {
             0 => ProofsVerified::N0,
             1 => ProofsVerified::N1,
             2 => ProofsVerified::N2,
             value => return Err(BinProtError::InvalidProofsVerified(value as u8)),
         };
         out.push(encode_proofs_verified(proofs_verified));
-        out.push(branch_data_domain_log2(&self.flattened[29])?);
+        out.push(branch_data_domain_log2(&self.flattened[branch_data_index])?);
 
         // proof_state.sponge_digest_before_evaluations
         encode_digest_constant(self.flattened[10], out)?;

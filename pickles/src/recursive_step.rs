@@ -497,6 +497,7 @@ pub struct RecursiveStepProof<
 pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub data: WrapWitnessData,
     pub statement: [Fq; WRAP_STMT_LEN],
+    pub stable_statement: crate::mina_bin_prot::WrapStatementMinimalV1,
     pub domain_log2: u32,
     pub next_wrap_old_challenges: Vec<Vec<Fq>>,
     pub next_wrap_dummy_challenges: Vec<Vec<Fq>>,
@@ -504,6 +505,7 @@ pub struct PreparedRecursiveWrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: 
 
 pub struct RecursiveWrapProof<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize> {
     pub statement: [Fq; WRAP_STMT_LEN],
+    pub stable_statement: crate::mina_bin_prot::WrapStatementMinimalV1,
     pub proof: kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
     pub verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<STEP_ROUNDS, WRAP_STMT_LEN>>,
     pub next_wrap_old_challenges: Vec<Vec<Fq>>,
@@ -558,8 +560,15 @@ pub enum DirectRecursiveBackendError {
     MinaEncodingMismatch,
 }
 
-impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usize, const SS: usize, const WS: usize>
-    DirectN1Backend<A, R, WR, SR, BS, SS, WS>
+impl<
+        A: StepApp,
+        const R: usize,
+        const WR: usize,
+        const SR: usize,
+        const BS: usize,
+        const SS: usize,
+        const WS: usize,
+    > DirectN1Backend<A, R, WR, SR, BS, SS, WS>
 {
     pub fn compile(rule: &InductiveRule) -> Result<Self, DirectRecursiveBackendError> {
         (rule.proofs_verified == ProofsVerified::N1)
@@ -571,7 +580,8 @@ impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usi
         &mut self,
         public: &Vec<Fp>,
         witness: DirectN1Witness<A, R, BS>,
-    ) -> Result<(DirectN1Proof<R, WR, SR, SS, WS>, MinaWrapProof), DirectRecursiveBackendError> {
+    ) -> Result<(DirectN1Proof<R, WR, SR, SS, WS>, MinaWrapProof), DirectRecursiveBackendError>
+    {
         let proof = <Self as CompiledRuleBackend>::prove(self, public, witness)?;
         let encoded = proof.to_mina_network_proof()?;
         Ok((proof, encoded))
@@ -619,8 +629,16 @@ pub struct DirectN2Backend<
     const WS: usize,
 >(std::marker::PhantomData<A>);
 
-impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
-    DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
+impl<
+        A: StepApp,
+        const R: usize,
+        const WR: usize,
+        const BS: usize,
+        const W1S: usize,
+        const SS: usize,
+        const SR: usize,
+        const WS: usize,
+    > DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
 {
     pub fn compile(rule: &InductiveRule) -> Result<Self, DirectRecursiveBackendError> {
         (rule.proofs_verified == ProofsVerified::N2)
@@ -632,7 +650,8 @@ impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: us
         &mut self,
         public: &Vec<Fp>,
         witness: DirectN2Witness<A, R, BS>,
-    ) -> Result<(DirectN2Proof<R, WR, W1S, SS, SR, WS>, MinaWrapProof), DirectRecursiveBackendError> {
+    ) -> Result<(DirectN2Proof<R, WR, W1S, SS, SR, WS>, MinaWrapProof), DirectRecursiveBackendError>
+    {
         let proof = <Self as CompiledRuleBackend>::prove(self, public, witness)?;
         let encoded = proof.to_mina_network_proof()?;
         Ok((proof, encoded))
@@ -656,10 +675,9 @@ impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
         &self,
         step_domain_log2: u8,
     ) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
-        let wrap_wire_proof =
-            crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
-                .and_then(|proof| proof.to_bin_prot())
-                .map_err(|_| DirectRecursiveBackendError::MinaProofEncoding)?;
+        let wrap_wire_proof = crate::mina_bin_prot::WrapWireProofV1::from_prover_proof(&self.proof)
+            .and_then(|proof| proof.to_bin_prot())
+            .map_err(|_| DirectRecursiveBackendError::MinaProofEncoding)?;
         let side_loaded_verification_key =
             SideLoadedVerificationKey::from_wrap_verifier(step_domain_log2, &self.verifier)
                 .map_err(|_| DirectRecursiveBackendError::MinaVerificationKeyEncoding)?
@@ -712,8 +730,8 @@ impl<const R: usize, const WR: usize, const SR: usize, const SS: usize, const WS
     pub fn to_mina_stable_v3(
         &self,
     ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, DirectRecursiveBackendError> {
-        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
-            self.cycle.wrap.statement.to_vec(),
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs_with_statement(
+            self.cycle.wrap.stable_statement.clone(),
             &self.cycle.step.proof,
             &self.cycle.wrap.proof,
         )
@@ -721,8 +739,14 @@ impl<const R: usize, const WR: usize, const SR: usize, const SS: usize, const WS
     }
 }
 
-impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
-    DirectN2Proof<R, WR, W1S, SS, SR, WS>
+impl<
+        const R: usize,
+        const WR: usize,
+        const W1S: usize,
+        const SS: usize,
+        const SR: usize,
+        const WS: usize,
+    > DirectN2Proof<R, WR, W1S, SS, SR, WS>
 {
     pub fn to_mina_network_proof(&self) -> Result<MinaWrapProof, DirectRecursiveBackendError> {
         let step_domain_log2 = self.step.verifier.index.domain.log_size_of_group as u8;
@@ -741,8 +765,8 @@ impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const S
     pub fn to_mina_stable_v3(
         &self,
     ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, DirectRecursiveBackendError> {
-        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
-            self.wrap.statement.to_vec(),
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs_with_statement(
+            self.wrap.stable_statement.clone(),
             &self.step.proof,
             &self.wrap.proof,
         )
@@ -750,15 +774,27 @@ impl<const R: usize, const WR: usize, const W1S: usize, const SS: usize, const S
     }
 }
 
-impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: usize, const SS: usize, const SR: usize, const WS: usize>
-    CompiledRuleBackend for DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
+impl<
+        A: StepApp,
+        const R: usize,
+        const WR: usize,
+        const BS: usize,
+        const W1S: usize,
+        const SS: usize,
+        const SR: usize,
+        const WS: usize,
+    > CompiledRuleBackend for DirectN2Backend<A, R, WR, BS, W1S, SS, SR, WS>
 {
     type PublicInput = Vec<Fp>;
     type Witness = DirectN2Witness<A, R, BS>;
     type Proof = DirectN2Proof<R, WR, W1S, SS, SR, WS>;
     type Error = DirectRecursiveBackendError;
 
-    fn prove(&mut self, public: &Vec<Fp>, witness: Self::Witness) -> Result<Self::Proof, Self::Error> {
+    fn prove(
+        &mut self,
+        public: &Vec<Fp>,
+        witness: Self::Witness,
+    ) -> Result<Self::Proof, Self::Error> {
         let vk0 = crate::api::wrap_verification_key_points(&witness.bases[0].wrap_verifier);
         let vk1 = crate::api::wrap_verification_key_points(&witness.bases[1].wrap_verifier);
         if vk0 != vk1 {
@@ -774,7 +810,10 @@ impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: us
             vk0.clone(),
             witness.previous_app_states[1].clone(),
         );
-        let accumulators = [first.verified_wrap_accumulator, second.verified_wrap_accumulator];
+        let accumulators = [
+            first.verified_wrap_accumulator,
+            second.verified_wrap_accumulator,
+        ];
         let challenges = [
             first.finalized_step_challenges.clone(),
             second.finalized_step_challenges.clone(),
@@ -822,15 +861,26 @@ impl<A: StepApp, const R: usize, const WR: usize, const BS: usize, const W1S: us
     }
 }
 
-impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usize, const SS: usize, const WS: usize>
-    CompiledRuleBackend for DirectN1Backend<A, R, WR, SR, BS, SS, WS>
+impl<
+        A: StepApp,
+        const R: usize,
+        const WR: usize,
+        const SR: usize,
+        const BS: usize,
+        const SS: usize,
+        const WS: usize,
+    > CompiledRuleBackend for DirectN1Backend<A, R, WR, SR, BS, SS, WS>
 {
     type PublicInput = Vec<Fp>;
     type Witness = DirectN1Witness<A, R, BS>;
     type Proof = DirectN1Proof<R, WR, SR, SS, WS>;
     type Error = DirectRecursiveBackendError;
 
-    fn prove(&mut self, public: &Vec<Fp>, witness: Self::Witness) -> Result<Self::Proof, Self::Error> {
+    fn prove(
+        &mut self,
+        public: &Vec<Fp>,
+        witness: Self::Witness,
+    ) -> Result<Self::Proof, Self::Error> {
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&witness.base.wrap_verifier);
         let cycle = prove_first_recursive_cycle_with_real_vk::<A, R, WR, SR, BS, SS, WS>(
             &witness.base,
@@ -856,11 +906,15 @@ impl<A: StepApp, const R: usize, const WR: usize, const SR: usize, const BS: usi
                 proof.cycle.step.statement,
                 (),
             );
-            proof.cycle.wrap.verifier.verify::<PallasBase, PallasScalar>(
-                proof.cycle.wrap.proof.clone(),
-                proof.cycle.wrap.statement,
-                (),
-            );
+            proof
+                .cycle
+                .wrap
+                .verifier
+                .verify::<PallasBase, PallasScalar>(
+                    proof.cycle.wrap.proof.clone(),
+                    proof.cycle.wrap.statement,
+                    (),
+                );
         }))
         .map_err(|_| DirectRecursiveBackendError::InvalidProof)
     }
@@ -1485,6 +1539,20 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         embed_fp_to_fq(step_statement_values[step_statement_values.len() - 2]),
     );
     assert_eq!(statement.len(), WRAP_STMT_LEN);
+    let mut stable_next_wrap_challenges = next_wrap_dummy_challenges.clone();
+    stable_next_wrap_challenges.extend(prepared_wrap_messages.old_bulletproof_challenges.clone());
+    let stable_statement = crate::mina_bin_prot::WrapStatementMinimalV1::from_flattened(
+        statement.clone(),
+        crate::mina_bin_prot::WrapMessagesForNextWrapProofV1 {
+            challenge_polynomial_commitment: prepared_wrap_messages.challenge_polynomial_commitment,
+            old_bulletproof_challenges: stable_next_wrap_challenges,
+        },
+        crate::mina_bin_prot::StepMessagesForNextProofV1 {
+            challenge_polynomial_commitments: Vec::new(),
+            old_bulletproof_challenges: Vec::new(),
+        },
+    )
+    .unwrap();
 
     let co = |p: &Vesta| (p.x, p.y);
     let step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))> = step_statement
@@ -1561,6 +1629,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     PreparedRecursiveWrap {
         data,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
+        stable_statement,
         domain_log2,
         next_wrap_old_challenges: new_chals,
         next_wrap_dummy_challenges,
@@ -1640,6 +1709,7 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
 ) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
     let domain_log2 = prepared.domain_log2;
     let statement = prepared.statement;
+    let stable_statement = prepared.stable_statement;
     let next_wrap_old_challenges = prepared.next_wrap_old_challenges;
     let next_wrap_dummy_challenges = prepared.next_wrap_dummy_challenges;
     let circuit = WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> { w: prepared.data };
@@ -1653,6 +1723,7 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
 
     RecursiveWrapProof {
         statement,
+        stable_statement,
         proof,
         verifier,
         next_wrap_old_challenges,

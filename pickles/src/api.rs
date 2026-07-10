@@ -530,6 +530,7 @@ fn fp_to_fq(x: Fp) -> Fq {
 /// re-checks).
 pub struct BaseCaseProof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     pub statement: Vec<Fq>,
+    pub stable_statement: crate::mina_bin_prot::WrapStatementMinimalV1,
     pub proof: kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS>,
     pub step_proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
     pub step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
@@ -584,9 +585,7 @@ impl MinaWrapProof {
         }
     }
 
-    pub fn from_o1js_json_value(
-        value: O1jsWrapProofJson,
-    ) -> Result<Self, BaseCaseBackendError> {
+    pub fn from_o1js_json_value(value: O1jsWrapProofJson) -> Result<Self, BaseCaseBackendError> {
         if value.version != Self::O1JS_JSON_VERSION {
             return Err(BaseCaseBackendError::O1jsJsonVersion(value.version));
         }
@@ -615,8 +614,8 @@ impl MinaWrapProof {
     }
 
     pub fn from_o1js_json_string(value: &str) -> Result<Self, BaseCaseBackendError> {
-        let value = serde_json::from_str(value)
-            .map_err(|_| BaseCaseBackendError::O1jsJsonSerialization)?;
+        let value =
+            serde_json::from_str(value).map_err(|_| BaseCaseBackendError::O1jsJsonSerialization)?;
         Self::from_o1js_json_value(value)
     }
 }
@@ -659,8 +658,8 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, RO
     pub fn to_mina_stable_v3(
         &self,
     ) -> Result<crate::mina_bin_prot::WrapProofBaseV3, BaseCaseBackendError> {
-        crate::mina_bin_prot::WrapProofBaseV3::from_proofs(
-            self.statement.clone(),
+        crate::mina_bin_prot::WrapProofBaseV3::from_proofs_with_statement(
+            self.stable_statement.clone(),
             &self.step_proof,
             &self.proof,
         )
@@ -1009,6 +1008,18 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         fp_to_fq(digest),
     );
     assert_eq!(statement.len(), STMT_LEN, "statement length");
+    let stable_statement = crate::mina_bin_prot::WrapStatementMinimalV1::from_flattened(
+        statement.clone(),
+        crate::mina_bin_prot::WrapMessagesForNextWrapProofV1 {
+            challenge_polynomial_commitment: (sg_pt.x, sg_pt.y),
+            old_bulletproof_challenges: dummy_wrap_chals.clone(),
+        },
+        crate::mina_bin_prot::StepMessagesForNextProofV1 {
+            challenge_polynomial_commitments: Vec::new(),
+            old_bulletproof_challenges: Vec::new(),
+        },
+    )
+    .unwrap();
 
     // ---- wrap proof ----
     let co = |p: &Vesta| (p.x, p.y);
@@ -1083,6 +1094,7 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
 
     BaseCaseProof {
         statement,
+        stable_statement,
         proof: wrap_proof,
         step_proof,
         step_verifier: step_ver,
