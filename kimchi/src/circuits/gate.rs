@@ -86,6 +86,12 @@ pub enum GateType {
     EndoMulScalar,
     // Lookup
     Lookup,
+    // Cairo VM gates. These variants are exposed for OCaml ABI parity; their
+    // constraints are not implemented in this backend yet.
+    CairoClaim,
+    CairoInstruction,
+    CairoFlags,
+    CairoTransition,
     /// Range check
     RangeCheck0,
     RangeCheck1,
@@ -177,6 +183,9 @@ impl<F: PrimeField> CircuitGate<F> {
             // TODO: implement the verification for the lookup gate
             // See https://github.com/MinaProtocol/mina/issues/14011
             Lookup => Ok(()),
+            CairoClaim | CairoInstruction | CairoFlags | CairoTransition => {
+                Err(format!("unsupported gate type: {:?}", self.typ))
+            }
             RangeCheck0 | RangeCheck1 => self
                 .verify_witness::<FULL_ROUNDS, G>(row, witness, cs, public)
                 .map_err(|e| e.to_string()),
@@ -275,6 +284,10 @@ impl<F: PrimeField> CircuitGate<F> {
                 // See https://github.com/MinaProtocol/mina/issues/14011
                 vec![]
             }
+            GateType::CairoClaim
+            | GateType::CairoInstruction
+            | GateType::CairoFlags
+            | GateType::CairoTransition => return Err(CircuitGateError::InvalidConstraint(self.typ)),
             GateType::RangeCheck0 => {
                 range_check::circuitgates::RangeCheck0::constraint_checks(&env, &mut cache)
             }
