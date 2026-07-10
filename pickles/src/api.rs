@@ -75,6 +75,27 @@ pub struct StepCircuit<A: StepApp> {
     pub app: A,
 }
 
+/// o1js' OCaml Pickles binding prepends a small set of dummy constraints to
+/// every rule so that the optional EC selector columns are always present in
+/// the proving key. VK parity requires the Rust step circuit to emit the same
+/// selector shape before the user circuit.
+fn o1js_dummy_constraints(sys: &mut RunState<Fp>) -> SnarkyResult<()> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    use snarky::gadgets::curve::Point;
+
+    let x: FieldVar<Fp> = sys.compute(loc!(), |_| Fp::from(3u64))?;
+    let g = Pallas::generator().into_group().into_affine();
+    let gx: FieldVar<Fp> = sys.compute(loc!(), move |_| g.x)?;
+    let gy: FieldVar<Fp> = sys.compute(loc!(), move |_| g.y)?;
+    let g = Point::new(gx, gy);
+    g.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+
+    let _ = crate::scalar_challenge::scalar_to_field_raw_with_bits(sys, loc!(), &x, 16)?;
+    let _ = crate::plonk_curve_ops::scale_fast(sys, loc!(), &g, &x, 5)?;
+    let _ = crate::scalar_challenge::endo(sys, loc!(), &g, &x, 4, crate::endo::tick::base())?;
+    Ok(())
+}
+
 impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
     type Curve = Vesta;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
@@ -93,6 +114,7 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
         use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
         use snarky::gadgets::curve::Point;
 
+        o1js_dummy_constraints(sys)?;
         let app_state = self.app.main(sys, private.map(|p| &p.0))?;
 
         let mut pts = vec![];
@@ -178,6 +200,7 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
         use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
         use snarky::gadgets::curve::Point;
 
+        o1js_dummy_constraints(sys)?;
         let app_state = self.app.main(sys, private.map(|input| &input.0))?;
 
         let step_domain: FieldVar<Fp> = sys.compute(loc!(), move |_| {

@@ -263,16 +263,45 @@ pub fn scalar_to_field<F: PrimeField>(
     scalar: &FieldVar<F>,
     endo: F,
 ) -> SnarkyResult<FieldVar<F>> {
+    scalar_to_field_with_bits(sys, loc, scalar, endo, NUM_BITS)
+}
+
+/// Same as [`scalar_to_field`], but for the smaller dummy-challenge widths
+/// used by o1js' Pickles bindings to force selector columns into every
+/// compiled key.
+pub fn scalar_to_field_with_bits<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    scalar: &FieldVar<F>,
+    endo: F,
+    num_bits: usize,
+) -> SnarkyResult<FieldVar<F>> {
+    let (a, b, n) = scalar_to_field_raw_with_bits(sys, loc.clone(), scalar, num_bits)?;
+    n.assert_equals(sys, loc, scalar)?;
+
+    Ok(&a.scale(endo) + &b)
+}
+
+/// Raw port of OCaml `Scalar_challenge.to_field_checked'`: emit the
+/// `EndoMulScalar` rows and return `(a, b, n)`, without constraining
+/// `n == scalar` and without combining `a * endo + b`.
+pub fn scalar_to_field_raw_with_bits<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    scalar: &FieldVar<F>,
+    num_bits: usize,
+) -> SnarkyResult<(FieldVar<F>, FieldVar<F>, FieldVar<F>)> {
     const NYBBLES_PER_ROW: usize = 8;
     const BITS_PER_ROW: usize = 2 * NYBBLES_PER_ROW;
-    assert_eq!(NUM_BITS % BITS_PER_ROW, 0);
-    let rows = NUM_BITS / BITS_PER_ROW;
+    assert_eq!(num_bits % BITS_PER_ROW, 0);
+    let rows = num_bits / BITS_PER_ROW;
 
     // MSB-first bit `k` of the challenge witness (`bits_msb.(k)`).
     let scalar_msb = scalar.clone();
+    assert!(num_bits <= F::MODULUS_BIT_SIZE as usize);
     let msb = move |env: &dyn WitnessGeneration<F>, k: usize| -> bool {
         let le = env.read_var(&scalar_msb).into_bigint().to_bits_le();
-        le.get(NUM_BITS - 1 - k).copied().unwrap_or(false)
+        le.get(num_bits - 1 - k).copied().unwrap_or(false)
     };
 
     let two = F::from(2u64);
@@ -364,11 +393,9 @@ pub fn scalar_to_field<F: PrimeField>(
     sys.add_constraint(
         Constraint::KimchiConstraint(KimchiConstraint::EcEndoscalar(state)),
         Some("scalar_to_field".into()),
-        loc.clone(),
+        loc,
     )?;
-    n.assert_equals(sys, loc.clone(), scalar)?;
-
-    Ok(&a.scale(endo) + &b)
+    Ok((a, b, n))
 }
 
 #[cfg(test)]
@@ -426,7 +453,10 @@ mod scalar_to_field_tests {
             };
             let (mut pi, ver) = circ.compile_to_indexes().unwrap();
             let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
-            assert_eq!(*out, expected, "in-circuit scalar_to_field matches to_field");
+            assert_eq!(
+                *out, expected,
+                "in-circuit scalar_to_field matches to_field"
+            );
             ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
         }
     }
