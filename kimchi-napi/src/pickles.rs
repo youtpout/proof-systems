@@ -324,3 +324,35 @@ pub fn rust_pickles_prove_recorded_n1_over(
         .map_err(|err| Error::from_reason(format!("rust pickles N1-over prove failed: {err:?}")))?;
     n1_envelope(proved)
 }
+
+/// Decodes a side-loaded verification key into its structured JSON form:
+/// `{ maxProofsVerified, actualWrapDomainSize, commitments: [["x","y"], ...] }`.
+/// `format` is `"base58"` (Mina network Base58Check) or `"base64"` (the raw
+/// bin_prot bytes base64-encoded — what o1js `verificationKey.data` holds).
+#[napi(js_name = "rust_pickles_decode_side_loaded_vk")]
+pub fn rust_pickles_decode_side_loaded_vk(encoded: String, format: String) -> Result<String> {
+    use base64::prelude::*;
+    let key = match format.as_str() {
+        "base58" => pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(&encoded)
+            .map_err(|err| Error::from_reason(format!("invalid base58 VK: {err:?}")))?,
+        "base64" => {
+            let bytes = BASE64_STANDARD
+                .decode(encoded)
+                .map_err(|err| Error::from_reason(format!("invalid base64: {err}")))?;
+            pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_bin_prot(&bytes)
+                .map_err(|err| Error::from_reason(format!("invalid VK bin_prot: {err:?}")))?
+        }
+        other => return Err(Error::from_reason(format!("unknown VK format '{other}'"))),
+    };
+    let envelope = serde_json::json!({
+        "maxProofsVerified": key.max_proofs_verified.to_usize(),
+        "actualWrapDomainSize": key.actual_wrap_domain_size.to_usize(),
+        "commitments": key
+            .commitments
+            .iter()
+            .map(|(x, y)| vec![x.to_string(), y.to_string()])
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&envelope)
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
