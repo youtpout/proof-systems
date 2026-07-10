@@ -16,7 +16,9 @@ use mina_poseidon::{
     sponge::{DefaultFqSponge, DefaultFrSponge},
 };
 use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
-use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
+use snarky::{
+    api::SnarkyCircuit, gadgets::curve::Point, loc, Boolean, FieldVar, RunState, SnarkyResult,
+};
 
 use crate::{
     api::{
@@ -24,7 +26,10 @@ use crate::{
         WrapUnfinalizedWitnessData, WrapWitnessData,
     },
     common::FULL_ROUNDS,
-    composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified},
+    composition_types::{
+        plonk, BranchData, BulletproofChallenge, Features, PlonkVerificationKeyEvals,
+        ProofsVerified,
+    },
     finalize::{FinalizeParams, ShiftKind},
     incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm},
     inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId},
@@ -400,7 +405,11 @@ pub struct RecursiveStepData {
     pub public_evals: [Vec<Fp>; 2],
     pub evals_flat: Vec<(Fp, Fp)>,
     pub stmt: Vec<Fp>,
+    /// Dlog VK commitments used to recompute the `messages_for_next_step`
+    /// digest already present in `stmt`.
     pub wrap_vk_pts: Vec<(Fp, Fp)>,
+    /// Dlog VK commitments to hash into the next recursive step statement.
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub prev_app_state: Vec<Fp>,
     pub messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
     pub prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
@@ -443,6 +452,7 @@ pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
     pub recursion: kimchi::proof::RecursionChallenge<Vesta>,
     pub verified_wrap_accumulator: (Fp, Fp),
     pub finalized_step_challenges: Vec<Fp>,
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
 }
 
@@ -453,6 +463,7 @@ pub struct PreparedRecursiveStepWidth2<const WIDTH1_INPUT_LEN: usize, const PUBL
     pub app_state: Vec<Fp>,
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub recursions: [kimchi::proof::RecursionChallenge<Vesta>; 2],
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
 }
 
@@ -465,6 +476,7 @@ pub struct RecursiveStepWidth2Circuit<
     pub proofs: [RecursiveStepData; 2],
     pub dummy_slots: [bool; 2],
     pub app_state: Vec<Fp>,
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
 }
 
 pub struct RecursiveStepWidth2Proof<
@@ -478,6 +490,7 @@ pub struct RecursiveStepWidth2Proof<
     pub verifier: snarky::api::VerifierIndexWrapper<
         RecursiveStepWidth2Circuit<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
     >,
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
 }
 
@@ -495,6 +508,7 @@ pub struct RecursiveStepProof<
     >,
     pub verified_wrap_accumulator: (Fp, Fp),
     pub finalized_step_challenges: Vec<Fp>,
+    pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
 }
 
@@ -949,6 +963,7 @@ pub fn prepare_recursive_step<
         vec![],
         vec![],
         vec![],
+        wrap_vk_pts.clone(),
         wrap_vk_pts,
         prev_app_state,
     )
@@ -969,7 +984,8 @@ fn prepare_recursive_step_from_parts<
     messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
     prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
     prev_challenges: Vec<Vec<Fp>>,
-    wrap_vk_pts: Vec<(Fp, Fp)>,
+    previous_messages_vk_pts: Vec<(Fp, Fp)>,
+    next_messages_vk_pts: Vec<(Fp, Fp)>,
     prev_app_state: Vec<Fp>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
     assert_eq!(PUBLIC_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
@@ -1068,7 +1084,8 @@ fn prepare_recursive_step_from_parts<
         public_evals: so.public_evals.clone(),
         evals_flat,
         stmt: wrap_statement.iter().map(|&v| embed_fq_to_fp(v)).collect(),
-        wrap_vk_pts,
+        wrap_vk_pts: previous_messages_vk_pts,
+        messages_for_next_step_vk_pts: next_messages_vk_pts.clone(),
         prev_app_state: prev_app_state.clone(),
         messages_for_next_step_accumulators,
         prev_challenge_polynomial_commitments,
@@ -1136,7 +1153,9 @@ fn prepare_recursive_step_from_parts<
         old_bulletproof_challenges: vec![raw_step_challenges],
     }
     .prepare(
-        crate::reduced_messages::plonk_verification_key_from_list(&data.wrap_vk_pts),
+        crate::reduced_messages::plonk_verification_key_from_list(
+            &data.messages_for_next_step_vk_pts,
+        ),
         <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
     );
     let chals_step1 = prepared_messages.old_bulletproof_challenges[0].clone();
@@ -1164,6 +1183,7 @@ fn prepare_recursive_step_from_parts<
 
     let recursion = recursion_challenge(svi.srs(), step_proof, chals_step1);
     let verified_wrap_accumulator = data.sg;
+    let messages_for_next_step_vk_pts = data.messages_for_next_step_vk_pts.clone();
 
     PreparedRecursiveStep {
         data,
@@ -1171,6 +1191,7 @@ fn prepare_recursive_step_from_parts<
         recursion,
         verified_wrap_accumulator,
         finalized_step_challenges: statement_challenges_to_field::<PREV_ROUNDS>(wrap_statement),
+        messages_for_next_step_vk_pts,
         messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1 {
             challenge_polynomial_commitments: vec![verified_wrap_accumulator],
             old_bulletproof_challenges: vec![raw_step_prechallenges],
@@ -1204,6 +1225,7 @@ pub fn prove_recursive_step<
 
     let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
+    let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
     let messages_for_next_step_proof = prepared.messages_for_next_step_proof.clone();
     let (mut prover, verifier) =
         RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> { d: [prepared.data] }
@@ -1225,6 +1247,7 @@ pub fn prove_recursive_step<
         verifier,
         verified_wrap_accumulator,
         finalized_step_challenges,
+        messages_for_next_step_vk_pts,
         messages_for_next_step_proof,
     }
 }
@@ -1241,6 +1264,10 @@ pub fn prepare_recursive_step_width2<
     assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
     assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
     assert_eq!(first.data.wrap_vk_pts, second.data.wrap_vk_pts);
+    assert_eq!(
+        first.messages_for_next_step_vk_pts,
+        second.messages_for_next_step_vk_pts
+    );
     assert_eq!(
         first.statement[WIDTH1_INPUT_LEN - 1],
         second.statement[WIDTH1_INPUT_LEN - 1]
@@ -1272,7 +1299,7 @@ pub fn prepare_recursive_step_width2<
     };
     let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
-        &first.data.wrap_vk_pts,
+        &first.messages_for_next_step_vk_pts,
         &app_state,
         &cpcs,
         &challenges,
@@ -1290,6 +1317,7 @@ pub fn prepare_recursive_step_width2<
         app_state,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
         recursions: [first.recursion, second.recursion],
+        messages_for_next_step_vk_pts: first.messages_for_next_step_vk_pts,
         messages_for_next_step_proof,
     }
 }
@@ -1320,7 +1348,7 @@ pub fn prepare_recursive_step_n1<
 
     let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
-        &real.data.wrap_vk_pts,
+        &real.messages_for_next_step_vk_pts,
         &app_state,
         &[dummy_accumulator, real.verified_wrap_accumulator],
         &[
@@ -1354,12 +1382,14 @@ pub fn prepare_recursive_step_n1<
         ],
     };
 
+    let messages_for_next_step_vk_pts = real.messages_for_next_step_vk_pts.clone();
     PreparedRecursiveStepWidth2 {
         proofs: [real.data.clone(), real.data],
         dummy_slots: [true, false],
         app_state,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
         recursions: [dummy_recursion, real.recursion],
+        messages_for_next_step_vk_pts,
         messages_for_next_step_proof,
     }
 }
@@ -1373,6 +1403,7 @@ pub fn prove_recursive_step_width2<
     prepared: PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
 ) -> RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
     let statement = prepared.statement;
+    let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
     let circuit = RecursiveStepWidth2Circuit::<
         PREV_ROUNDS,
         WRAP_ROUNDS,
@@ -1382,6 +1413,7 @@ pub fn prove_recursive_step_width2<
         proofs: prepared.proofs,
         dummy_slots: prepared.dummy_slots,
         app_state: prepared.app_state,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts,
     };
     let (mut prover, verifier) = circuit
         .compile_to_indexes_with_minimum_domain_log2(crate::common::TICK_ROUNDS as u32)
@@ -1399,6 +1431,7 @@ pub fn prove_recursive_step_width2<
         statement,
         proof,
         verifier,
+        messages_for_next_step_vk_pts,
         messages_for_next_step_proof: prepared.messages_for_next_step_proof,
     }
 }
@@ -1908,6 +1941,7 @@ pub fn prepare_next_recursive_step<
         vec![previous.step.verified_wrap_accumulator],
         vec![],
         vec![previous.step.finalized_step_challenges.clone()],
+        previous.step.messages_for_next_step_vk_pts.clone(),
         wrap_vk_pts,
         prev_app_state,
     )
@@ -2011,6 +2045,7 @@ pub fn prove_next_recursive_step<
     >(previous, wrap_vk_pts, prev_app_state);
     let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
+    let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
     let messages_for_next_step_proof = prepared.messages_for_next_step_proof.clone();
     let (mut prover, verifier) =
         RecursiveStepCircuit::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
@@ -2033,6 +2068,7 @@ pub fn prove_next_recursive_step<
         verifier,
         verified_wrap_accumulator,
         finalized_step_challenges,
+        messages_for_next_step_vk_pts,
         messages_for_next_step_proof,
     }
 }
@@ -2159,6 +2195,38 @@ pub fn prove_stable_recursive_cycles<
             ROUNDS,
             WRAP_STMT_LEN,
         >(&cycle, wrap_vk_pts.clone(), app_state.clone());
+    }
+    cycle
+}
+
+/// Repeats recursive step→wrap cycles using each previous cycle's actual wrap
+/// verification key in the same-field reduced message.
+///
+/// This is the shape the direct recursive API needs after the first growth
+/// transition: the proof being verified changes at every iteration, so the
+/// dlog Plonk index hashed into `messages_for_next_step_proof` must be derived
+/// from the previous wrap verifier, not supplied as an external placeholder.
+pub fn prove_stable_recursive_cycles_with_real_vk<
+    const ROUNDS: usize,
+    const STEP_STMT_LEN: usize,
+    const WRAP_STMT_LEN: usize,
+>(
+    mut cycle: RecursiveCycleProof<ROUNDS, ROUNDS, ROUNDS, STEP_STMT_LEN, WRAP_STMT_LEN>,
+    count: usize,
+    app_state: Vec<Fp>,
+) -> RecursiveCycleProof<ROUNDS, ROUNDS, ROUNDS, STEP_STMT_LEN, WRAP_STMT_LEN> {
+    for _ in 0..count {
+        cycle = prove_next_recursive_cycle_with_real_vk::<
+            ROUNDS,
+            ROUNDS,
+            ROUNDS,
+            STEP_STMT_LEN,
+            WRAP_STMT_LEN,
+            ROUNDS,
+            STEP_STMT_LEN,
+            ROUNDS,
+            WRAP_STMT_LEN,
+        >(&cycle, app_state.clone());
     }
     cycle
 }
@@ -2600,10 +2668,9 @@ impl<
             .map(|row| row.to_vec())
             .collect();
         let mut proofs = Vec::with_capacity(2);
-        let mut shared_index = None;
         for i in 0..2 {
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
-            let (proof, index, _previous_app_state) =
+            let (proof, _index, _previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
                     &self.proofs[i],
@@ -2611,11 +2678,30 @@ impl<
                     &mds,
                     self.dummy_slots[i],
                 )?;
-            if i == 0 {
-                shared_index = Some(index);
-            }
             proofs.push(proof);
         }
+        let mk_next_point = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+            Ok(Point::new(
+                sys.compute(loc!(), move |_| p.0)?,
+                sys.compute(loc!(), move |_| p.1)?,
+            ))
+        };
+        let next_vk_pts = self
+            .messages_for_next_step_vk_pts
+            .iter()
+            .map(|&p| mk_next_point(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?;
+        let mut next_it = next_vk_pts.into_iter();
+        let next_dlog_index = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
+            coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
+            generic_comm: next_it.next().unwrap(),
+            psm_comm: next_it.next().unwrap(),
+            complete_add_comm: next_it.next().unwrap(),
+            mul_comm: next_it.next().unwrap(),
+            emul_comm: next_it.next().unwrap(),
+            endomul_scalar_comm: next_it.next().unwrap(),
+        };
         let app_state = self
             .app_state
             .iter()
@@ -2626,7 +2712,7 @@ impl<
             sys,
             loc!(),
             &app_state,
-            &shared_index.unwrap(),
+            &next_dlog_index,
             &proofs,
             &params,
             crate::endo::tick::base(),
@@ -2794,6 +2880,22 @@ impl<
             endomul_scalar_comm: it.next().unwrap(),
         };
         let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
+        let next_vk_pts = d
+            .messages_for_next_step_vk_pts
+            .iter()
+            .map(|&p| mkpt(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?;
+        let mut next_it = next_vk_pts.into_iter();
+        let next_dlog_index = PlonkVerificationKeyEvals {
+            sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
+            coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
+            generic_comm: next_it.next().unwrap(),
+            psm_comm: next_it.next().unwrap(),
+            complete_add_comm: next_it.next().unwrap(),
+            mul_comm: next_it.next().unwrap(),
+            emul_comm: next_it.next().unwrap(),
+            endomul_scalar_comm: next_it.next().unwrap(),
+        };
         let prev_app_state = wvec(sys, &d.prev_app_state)?;
 
         let wrap_vk_digest = w1(sys, d.wrap_vk_digest)?;
@@ -2917,7 +3019,7 @@ impl<
             sys,
             loc!(),
             &app_state,
-            &dlog_index,
+            &next_dlog_index,
             std::slice::from_ref(&per_proof),
             &params,
             crate::endo::tick::base(),
