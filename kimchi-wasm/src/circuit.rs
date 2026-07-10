@@ -5,6 +5,8 @@ use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::pasta_fp_plonk_index::WasmPastaFpPlonkIndex;
+use crate::pasta_fq_plonk_index::WasmPastaFqPlonkIndex;
+use mina_curves::pasta::Fq;
 
 #[derive(Serialize)]
 struct Circuit<F>
@@ -31,5 +33,12 @@ where
 #[wasm_bindgen]
 pub fn prover_to_json(prover_index: &WasmPastaFpPlonkIndex) -> String {
     let circuit: Circuit<Fp> = (&*prover_index.0.cs).into();
+    serde_json::to_string(&circuit).expect("couldn't serialize constraints")
+}
+
+/// Same as [`prover_to_json`], for the Fq (wrap/Pallas) side.
+#[wasm_bindgen]
+pub fn fq_prover_to_json(prover_index: &WasmPastaFqPlonkIndex) -> String {
+    let circuit: Circuit<Fq> = (&*prover_index.0.cs).into();
     serde_json::to_string(&circuit).expect("couldn't serialize constraints")
 }

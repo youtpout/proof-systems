@@ -1281,3 +1281,60 @@ pub fn prove_recorded_n1_over(
     prove_n1_over_at_rounds!(handle, main, new_state;
         (9, R9), (10, R10), (11, R11), (12, R12), (13, R13), (14, R14), (15, R15), (16, R16))
 }
+
+macro_rules! wrap_dump_at_rounds {
+    ($app:ident, $witness:ident; $($rounds:literal),+) => {
+        match measure_step_rounds($app.clone())
+            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        {
+            $(
+                $rounds => {
+                    // Two passes, like `prove_base_case_two_pass`: the final
+                    // wrap circuit embeds the real wrap VK commitments.
+                    let bootstrap_points: Vec<(Fp, Fp)> = {
+                        use ark_ec::{AffineRepr, CurveGroup};
+                        let g = mina_curves::pasta::Pallas::generator().into_group();
+                        (1..=28u64)
+                            .map(|i| {
+                                let p: mina_curves::pasta::Pallas =
+                                    (g * mina_curves::pasta::Fq::from(i)).into();
+                                (p.x, p.y)
+                            })
+                            .collect()
+                    };
+                    let bootstrap = crate::api::prove_base_case::<RecordedApp, $rounds, { 13 + $rounds + 9 }>(
+                        $app.clone(),
+                        $witness.clone(),
+                        bootstrap_points,
+                    );
+                    let actual = crate::api::wrap_verification_key_points(&bootstrap.wrap_verifier);
+                    let (_, dump) = crate::api::prove_base_case_with_wrap_dump::<
+                        RecordedApp,
+                        $rounds,
+                        { 13 + $rounds + 9 },
+                    >($app, $witness, actual);
+                    serde_json::to_string(&dump)
+                        .map_err(|_| RecordedProveError::UnsupportedStepRounds($rounds))
+                }
+            )+
+            rounds => Err(RecordedProveError::UnsupportedStepRounds(rounds)),
+        }
+    };
+}
+
+/// Serializes the full wrap circuit of a recorded base-case program as
+/// `{ public_input_size, gates }` JSON (Fq gates) — the Rust half of the
+/// wrap-circuit parity diff against jsoo's `fq_prover_to_json`.
+pub fn dump_recorded_wrap_circuit(
+    circuit: RecordedCircuit,
+    witness: Vec<Fp>,
+) -> Result<String, RecordedProveError> {
+    circuit.validate()?;
+    if witness.len() != circuit.aux_count as usize {
+        return Err(RecordedProveError::Circuit(
+            RecordedCircuitError::WrongWitnessLength(witness.len()),
+        ));
+    }
+    let app = RecordedApp { circuit };
+    wrap_dump_at_rounds!(app, witness; 9, 10, 11, 12, 13, 14, 15, 16)
+}

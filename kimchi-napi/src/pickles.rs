@@ -508,3 +508,22 @@ pub fn rust_pickles_recorded_step_circuit_json(circuit_json: String) -> Result<S
     serde_json::to_string(&circuit)
         .map_err(|err| Error::from_reason(format!("circuit encoding failed: {err}")))
 }
+
+/// Serializes the wrap circuit of a recorded base-case program in the same
+/// `{ public_input_size, gates }` JSON schema as the jsoo wasm's
+/// `fq_prover_to_json` — the Rust half of the wrap-circuit parity diff.
+/// Runs the full two-pass compile (a real base proof), so this takes seconds.
+#[napi(js_name = "rust_pickles_recorded_wrap_circuit_json")]
+pub fn rust_pickles_recorded_wrap_circuit_json(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    pickles::recorded::dump_recorded_wrap_circuit(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("wrap circuit dump failed: {err:?}")))
+}

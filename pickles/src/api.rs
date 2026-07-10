@@ -938,6 +938,25 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> BaseCaseProof<A, ROUNDS, STMT_LEN> {
+    prove_base_case_with_wrap_dump(app, witness, wrap_vk_pts).0
+}
+
+/// The wrap circuit of a base-case proof, in the `{ public_input_size,
+/// gates }` shape shared with the jsoo `prover_to_json` dumps — the Fq half
+/// of the gate-level parity diff against OCaml Pickles.
+#[derive(serde::Serialize)]
+pub struct WrapCircuitDump {
+    pub public_input_size: usize,
+    pub gates: Vec<kimchi::circuits::gate::CircuitGate<Fq>>,
+}
+
+/// [`prove_base_case`], additionally returning the compiled wrap circuit's
+/// gates for parity tooling.
+pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
+    app: A,
+    witness: A::Witness,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
     assert_eq!(STMT_LEN, 13 + ROUNDS + 9, "STMT_LEN mismatch");
     // ---- step proof ----
     let app_state = app.state(&witness);
@@ -1157,18 +1176,25 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     let (mut wrap_pi, wrap_ver) = WrapCircuit::<ROUNDS, STMT_LEN> { w: wdata }
         .compile_to_indexes()
         .unwrap();
+    let wrap_dump = WrapCircuitDump {
+        public_input_size: wrap_pi.index.cs.public,
+        gates: wrap_pi.index.cs.gates.to_vec(),
+    };
     let (wrap_proof, _) = wrap_pi
         .prove::<PallasBase, PallasScalar>(stmt_arr, (), true)
         .unwrap();
     wrap_ver.verify::<PallasBase, PallasScalar>(wrap_proof.clone(), stmt_arr, ());
 
-    BaseCaseProof {
-        statement,
-        stable_statement,
-        proof: wrap_proof,
-        step_proof,
-        step_verifier: step_ver,
-        wrap_verifier: wrap_ver,
-        wrap_vk_pts,
-    }
+    (
+        BaseCaseProof {
+            statement,
+            stable_statement,
+            proof: wrap_proof,
+            step_proof,
+            step_verifier: step_ver,
+            wrap_verifier: wrap_ver,
+            wrap_vk_pts,
+        },
+        wrap_dump,
+    )
 }
