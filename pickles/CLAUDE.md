@@ -188,3 +188,25 @@ Ne PAS conclure « 9/9 » en ne lançant que N0/N1 : plusieurs régressions
   OptSponge flags constants → no-op ; materialize x_hat → no-op.
 
 Dumps : `/tmp/claude-1000/{wrap-circuit-*.json, jsoo-constraints.log}`.
+
+## Correction du handoff — 2026-07-12
+
+La piste « `prev_proof_state` dummy manquant » ci-dessus est **réfutée pour
+le programme o1js minimal de référence**. Une vérification directe avec
+`o1js/src/tests/rust-pickles-step-gates-diff.ts` donne :
+
+- `public_input_size: jsoo=1 rust=1` ;
+- 512 rows et histogrammes identiques ;
+- `STEP GATES: FULL MATCH`.
+
+Le step de base n’expose donc pas un statement public étendu contenant deux
+unfinalized proofs. Ajouter des `split_field` synthétiques dans le wrap est
+incorrect : 13 splits ferment artificiellement le compteur Generic
+(`569=569`), mais font monter les divergences structurelles à 3778 rows.
+Cette tentative a été revertée et ne doit pas être reprise.
+
+L’état source vérifié avant cette tentative est : wrap à 8192 rows des deux
+côtés, tous les types de gate non-Generic exacts, `Generic 556 vs 569`.
+Le travail restant concerne l’ordre et la réduction des contraintes privées
+du wrap — en premier `Other_field.check`, puis les chemins qui réutilisent
+les challenges `beta`/`gamma` — et non le layout public du step.
