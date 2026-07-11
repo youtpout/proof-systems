@@ -398,13 +398,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
         let branch_data = stmt[13 + ROUNDS].clone();
-        let proofs_verified = Fq::from(w.unfinalized.len() as u64);
-        let expected_branch_data =
-            Fq::from(u64::from(w.step_domain_log2)) * Fq::from(4u64) + proofs_verified;
+        // OCaml always witnesses `which_branch`, builds a one-hot vector, and
+        // selects the branch width/domain through `Pseudo.choose`, even for a
+        // single-branch o1js program.  Mirror that shape instead of folding the
+        // branch data to a pure constant.
+        let which_branch: FieldVar<Fq> = sys.compute(loc!(), |_| Fq::from(0u64))?;
+        let branch0 = which_branch.equal(sys, loc!(), &FieldVar::constant(Fq::from(0u64)))?;
+        branch0
+            .to_field_var()
+            .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
+        let proofs_verified = branch0.to_field_var().mul(
+            &FieldVar::constant(Fq::from(w.unfinalized.len() as u64)),
+            Some("choose proofs_verified".into()),
+            loc!(),
+            sys,
+        )?;
+        let domain_log2 = branch0.to_field_var().mul(
+            &FieldVar::constant(Fq::from(u64::from(w.step_domain_log2))),
+            Some("choose domain_log2".into()),
+            loc!(),
+            sys,
+        )?;
+        let expected_branch_data = &domain_log2.scale(Fq::from(4u64)) + &proofs_verified;
         branch_data.assert_equals(
             sys,
             loc!(),
-            &FieldVar::constant(expected_branch_data),
+            &expected_branch_data,
         )?;
         // OCaml `Wrap.Other_field.check`: each deferred Tick-field slot of
         // the statement (cip, b, zeta_to_srs_length, zeta_to_domain_size,
