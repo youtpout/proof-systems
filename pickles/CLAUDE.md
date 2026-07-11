@@ -114,14 +114,23 @@ OptSponge à flags constants (no-op — se replie), reduce EcScale (no-op),
 combine_commitments sg_old optionnel (casse EC), flush par label
 (overshoot).
 
-**Fix** : matérialiser en variable interne les coordonnées de point
-**constantes** avant de les passer à un gate EC, à l'identique du chemin
-`reduce_to_v` OCaml (cached_constants : réutiliser la même var pour une
-constante répétée). Le faire de façon SCOPÉE au wrap (le step est à 0
-diff et ne doit pas bouger) — soit un helper `materialize(point)` appelé
-sur les Lagrange/H/corrections avant `add_fast`/scale dans
-`public_input.rs` et `bulletproof.rs`, soit au niveau du gate avec un
-flag. Vérifier après chaque ajout que le step reste à 0 diff.
+**Fix tenté (materialize en x_hat) = NO-OP** : x_hat n'a qu'UN terme (le
+digest du step, public input step = 1 slot), donc matérialiser ses
+constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
+étaient déjà des vars. Reverté, step toujours FULL MATCH. Les 139 rows
+`o=x1−x2` sont donc dans les opérations EC MULTI-POINTS de la boucle IVP :
+`bulletproof.rs::{combine_commitments, check_bulletproof_equation,
+bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
+points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
+
+**Vraie piste** : instrumenter un compteur nommé de contraintes
+(`add_constraint`/`reduce_lincom` avec un label loc) et diffuser jsoo vs
+rust PAR label pour isoler quel gadget de `bulletproof.rs` sous-émet les
+139 reductions `o=x1−x2` en région 500-1500. Ne PAS re-deviner : 8
+hypothèses ciblées ont échoué (VK/h constantes → pire ; seal add_fast →
+no-op ; OptSponge flags constants → no-op ; EcScale reduce → no-op ;
+combine sg_old opt → casse EC ; flush par label → overshoot ; materialize
+x_hat → no-op). Le comptage par gadget est le seul chemin fiable restant.
 
 État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
