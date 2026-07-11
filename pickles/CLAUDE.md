@@ -86,29 +86,29 @@ Correctifs additionnels de cette session (au-delà du handoff précédent) :
   ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
   filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
 
-**Dernier écart Generic (−119) — mécanisme identifié (expérience faite).**
-Test réfuté : passer la VK step + `h_generator` en constantes fait
-EMPIRER (Generic 450→421, on s'éloigne de 569) — jsoo witnesse bien la
-VK (on-curve). Reverté proprement, suite 9/9.
+**Dernier écart Generic (−119) — CAUSE RACINE TROUVÉE : l'opt-sponge.**
+Deux expériences réfutées et revertées proprement (suite restée 9/9) :
+VK/`h` en constantes (450→421, pire) ; seal des entrées d'`add_fast`
+(no-op, `add_complete` réduisait déjà). Localisation finale : le motif
+`o = s1·x1 + s2·x2` scellé (`-1,1,-1,0,0`) fait **146 rows en région
+600-1200**, entrelacé avec les blocs Poseidon de la boucle d'absorption
+de l'IVP.
 
-Le vrai déficit est dans les **réductions de combinaisons linéaires**
-(`reduce_lincom`/`reduce_to_v`/`Util.Wrap.seal` OCaml), pas les on-curve.
-Motifs jsoo absents chez nous (dumps, hors `c=5`) :
-- `*,*,*,0,0,-1,1,-1,0,0` (×~193 demi-lignes) = `o = s1·x1 + s2·x2`, la
-  création d'une variable interne quand une lincomb multi-termes est
-  scellée avant usage ;
-- `E,-1,0,0,0` (48 vs 25) = `sx = s·x`, scaling d'une variable par une
-  constante (endo/shift 2^k) scellé en variable fraîche.
-OCaml scelle agressivement (`seal`) les lincombs et vars scalées avant de
-les passer à un gate ; nous les gardons non réduites (repliées dans les
-coeffs du gate suivant), d'où moins de rows generic.
+C'est l'overhead de l'**absorption conditionnelle** : OCaml
+`incrementally_verify_proof` crée son sponge via `Wrap_verifier.Opt.create`
+(à cause des feature flags `Maybe`) et absorbe via `Opt.absorb` +
+`simulate_optional_sponge_with_alignment` — chaque absorb émet des
+generics (`add_in`, masque, `cond_permute`). Nous utilisons le
+`PoseidonSponge` (DuplexState) simple dans `incrementally_verify.rs`, sans
+cette machinerie → 146 rows en moins.
 
-**Fix** : insérer des `.seal()` aux points où OCaml scelle — notamment
-dans `combine_commitments` (puissances de xi), `ft_comm`, le packing du
-statement, et les sorties de `scale_fast`/`endo` réutilisées. Repérage :
-diff des motifs `-1,1,-1,0,0` et `E,-1,0,0,0` par région dans les dumps.
-C'est la passe fine (comme la fin du step) — chaque seal manquant = 1 row.
+**Fix (net, machinerie déjà présente)** : brancher `OptSponge`
+(`opt_sponge.rs`, déjà porté avec `add_in`/`consume`/`cond_permute`) dans
+`incrementally_verify_proof` à la place de `PoseidonSponge`, flags tous à
+`true` (cas base, pas de lookups). Adapter les `absorb_commitment` →
+`Opt.absorb (true, coord)`, le fork `sponge_before_evaluations`, et les
+squeezes beta/gamma/alpha/zeta. Risque : le threading du sponge (fork +
+squeeze) doit rester bit-exact ; tester chaque squeeze contre le mirror.
 
 État committé : Generic 450 vs 569, 5/7 gate types exacts, 9/9 recorded.
-
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
