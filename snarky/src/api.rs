@@ -190,7 +190,9 @@ where
         // verify the witness
         // TODO: return error instead of panicking
         if debug {
-            witness.debug();
+            if std::env::var("SNARKY_DEBUG_WITNESS").is_ok() {
+                witness.debug();
+            }
             self.index
                 .verify(&witness.0, &public_input_and_output)
                 .unwrap();
