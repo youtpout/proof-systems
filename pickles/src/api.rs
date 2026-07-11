@@ -347,11 +347,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         use snarky::gadgets::curve::Point;
 
         let w = &self.w;
+        // Every witnessed point goes through OCaml's `exists Inner_curve.typ`,
+        // whose check is `assert_on_curve` (Vesta: y² = x³ + 5).
         let mkpt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
-            Ok(Point::new(
+            let point = Point::new(
                 sys.compute(loc!(), move |_| p.0)?,
                 sys.compute(loc!(), move |_| p.1)?,
-            ))
+            );
+            point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
+            Ok(point)
         };
         let mkpts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
             let mut out = vec![];

@@ -176,11 +176,11 @@ where
 
     // == IVC Steps 9-10: absorb z_comm, sample alpha (raw scalar challenge) ==
     absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.z_comm));
-    let alpha = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    let alpha = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge)?;
 
     // == IVC Steps 11-12: absorb t_comm, sample zeta (raw scalar challenge) ==
     absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.t_comm));
-    let zeta = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    let zeta = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge)?;
 
     // == IVC Step 13: fork the sponge, then squeeze the digest ==
     // `sponge_before_evaluations` continues into the IPA transcript; the digest
