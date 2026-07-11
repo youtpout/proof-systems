@@ -140,21 +140,25 @@ de `public_input_commitment`/`scale_fast2`/`split_field` vs le fold
 OCaml `x_hat` (`Add_with_correction`, corrections Lagrange, Cond_add).
 Aligner cet ordre ferme le reste + effondre la cascade type=1989.
 
-**RÉGRESSION N2 (codex, pré-existante — suite 8/9)** : `recorded_n2`
-casse. Deux couches :
-1. `api.rs:425` assertion branch_data : `expected = w.step_domain_log2·4
-   + proofs_verified` mais le statement N2 (recursive_step.rs:1916)
-   encode `wrap_domain_log2(2)=15` alors que `w.step_domain_log2 =
-   svi.domain = 16` (le circuit step width-2 est plus grand). Coïncident
-   pour N0/N1 (13/14), pas N2. Sémantique ambiguë : le branch_data
-   réseau-correct est `wrap_domains` (15), mais base/N1 utilisent
-   `svi.domain` partout → l'implémentation est incohérente. À trancher :
-   soit tout en `wrap_domains` (corriger base+assertion), soit tout en
-   `svi.domain` (corriger statement 1916) — vérifier verify.rs.
-2. Sous-jacent : `snarky/api.rs:473` "requested SRS smaller than circuit
-   domain" — le circuit step N2 (width-2) dépasse le SRS Tick 2^16.
-   Problème de dimensionnement propre à N2.
-Fixer N2 est un chantier séparé (2 bugs), non lié à la parité wrap.
+**N2 corrigé (`6c2a153c95`) — suite 9/9.** La récursion wrap confondait
+DEUX domaines qui coïncident pour N0/N1 mais pas N2 : le branch-data
+(slot du statement = domaine du circuit step vérifié, `svi.domain` = 16
+pour le step width-2) et le domaine de compilation/SRS du circuit wrap
+(`wrap_domains(proofs)` = 15, ce pour quoi le SRS Tock 2^15 est
+dimensionné). Séparés : branch data → `svi.domain`, compile → wrap_domains.
+
+⚠️ **TOUJOURS tester les 3 tailles de preuve à chaque changement du
+pipeline pickles** (`cargo test -p pickles --release --test recorded`) :
+- **N0** (`recorded_square`, `recorded_ec_add`) : cas de base, 0
+  accumulateur ;
+- **N1** (`recorded_n1_cycle`, `recorded_chained_n1`,
+  `recorded_stable_n1_chain`) : 1 preuve récursive, step 2^14 ;
+- **N2** (`recorded_n2_cycle`) : 2 preuves vérifiées, step width-2 2^16,
+  wrap 2^15 — c'est le cas qui expose les hypothèses de domaine/SRS/
+  branch-data cachées (N0/N1 les masquent car leurs domaines coïncident).
+Ne PAS conclure « 9/9 » en ne lançant que N0/N1 : plusieurs régressions
+(codex + moi) ne se voyaient que sur N2. Idem `--test recursion` et
+`--lib` pour la couverture complète.
 
 
 **Fausses pistes testées aujourd'hui (ne PAS refaire)** :
