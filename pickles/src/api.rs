@@ -521,6 +521,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sigma_init: mkpts(sys, &w.sigma_init)?,
             sigma_last: mkpts(sys, &w.sigma_last)?,
         };
+        let assert_vk_point = |sys: &mut RunState<Fq>,
+                               point: &Point<Fq>,
+                               expected: (Fq, Fq)|
+         -> SnarkyResult<()> {
+            point
+                .x
+                .assert_equals(sys, loc!(), &FieldVar::constant(expected.0))?;
+            point
+                .y
+                .assert_equals(sys, loc!(), &FieldVar::constant(expected.1))
+        };
+        assert_vk_point(sys, &vk.generic, w.generic)?;
+        assert_vk_point(sys, &vk.psm, w.psm)?;
+        assert_vk_point(sys, &vk.complete_add, w.complete_add)?;
+        assert_vk_point(sys, &vk.mul, w.mul)?;
+        assert_vk_point(sys, &vk.emul, w.emul)?;
+        assert_vk_point(sys, &vk.endomul_scalar, w.endomul_scalar)?;
+        for (point, &expected) in vk.coefficients.iter().zip(&w.coefficients) {
+            assert_vk_point(sys, point, expected)?;
+        }
+        for (point, &expected) in vk.sigma_init.iter().zip(&w.sigma_init) {
+            assert_vk_point(sys, point, expected)?;
+        }
+        for (point, &expected) in vk.sigma_last.iter().zip(&w.sigma_last) {
+            assert_vk_point(sys, point, expected)?;
+        }
         // OCaml's wrap rule receives the proof through Snarky `Typ`s`; keep
         // proof payload points witnessed (and checked on curve), unlike the
         // constant verifier-index commitments above.
