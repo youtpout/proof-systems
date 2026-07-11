@@ -27,7 +27,7 @@ use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use serde::{Deserialize, Serialize};
-use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
@@ -410,6 +410,67 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             stmt[22 + ROUNDS].clone(),
             stmt[22 + ROUNDS].clone(),
         )?;
+
+        // OCaml also checks that the statement feature flags are consistent
+        // with the optional verifier-index commitments. Our current native
+        // verifier index only carries the always-present commitments, so all
+        // optional commitment flags are false; still, the derived feature
+        // expansion and equality assertions must be present for wrap-circuit
+        // parity.
+        {
+            let feature_flags: Vec<Boolean<Fq>> = stmt[14 + ROUNDS..22 + ROUNDS]
+                .iter()
+                .cloned()
+                .map(Boolean::create_unsafe)
+                .collect();
+            let range_check0 = feature_flags[0].clone();
+            let range_check1 = feature_flags[1].clone();
+            let foreign_field_add = feature_flags[2].clone();
+            let foreign_field_mul = feature_flags[3].clone();
+            let xor = feature_flags[4].clone();
+            let rot = feature_flags[5].clone();
+            let lookup = feature_flags[6].clone();
+            let runtime_tables = feature_flags[7].clone();
+
+            let lookup_pattern_range_check = Boolean::any(
+                &[&range_check0, &range_check1, &rot],
+                sys,
+                loc!(),
+            )?;
+            let lookup_pattern_xor = xor.clone();
+            let table_width_3 = lookup_pattern_xor.clone();
+            let table_width_at_least_2 = table_width_3.or(&lookup, loc!(), sys);
+            let table_width_at_least_1 = Boolean::any(
+                &[
+                    &table_width_at_least_2,
+                    &lookup_pattern_range_check,
+                    &foreign_field_mul,
+                ],
+                sys,
+                loc!(),
+            )?;
+
+            let false_ = Boolean::<Fq>::false_().to_field_var();
+            for flag in [
+                xor,
+                range_check0,
+                range_check1,
+                foreign_field_add,
+                foreign_field_mul.clone(),
+                rot,
+                table_width_at_least_1,
+                table_width_at_least_2,
+                table_width_3,
+                runtime_tables,
+                lookup,
+                lookup_pattern_xor,
+                lookup_pattern_range_check,
+                foreign_field_mul,
+            ] {
+                flag.to_field_var()
+                    .assert_equals(sys, loc!(), &false_)?;
+            }
+        }
 
         let vk = VerificationKeyComm {
             generic: mkpt(sys, w.generic)?,
