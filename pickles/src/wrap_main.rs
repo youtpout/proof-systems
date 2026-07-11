@@ -157,6 +157,17 @@ where
 
     // == commit to the step statement and fully verify the step proof ==
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
+    let actual_proofs_verified: FieldVar<F> =
+        sys.compute(loc.clone(), |_| F::from(unfinalized.len() as u64))?;
+    let mut _actual_proofs_verified_mask = Vec::with_capacity(sg_olds.len());
+    let mut keep = Boolean::true_();
+    for i in 0..sg_olds.len() {
+        let is_first_zero =
+            actual_proofs_verified.equal(sys, loc.clone(), &FieldVar::constant(F::from(i as u64)))?;
+        keep = keep.and(&is_first_zero.not(), sys, loc.clone());
+        _actual_proofs_verified_mask.push(keep.clone());
+    }
+    _actual_proofs_verified_mask.reverse();
     let inactive_sg_olds = sg_olds
         .len()
         .checked_sub(unfinalized.len())
