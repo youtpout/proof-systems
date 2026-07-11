@@ -135,35 +135,32 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**Wrap parity — Generic 556/569, 13 net.** Tous les autres gate types
-EXACTS, step FULL MATCH, recorded 9/9 (N0/N1/N2). Divergences row-level
-3207 (type 1989, coeffs 757, wiring 461).
+**Wrap parity — Generic 556/569, 13 net.** Autres gate types EXACTS,
+step FULL MATCH, recorded 9/9 (N0/N1/N2).
 
-Gains committés cette passe :
-- `bd6f1b8d2a` : lookups_per_row_3/4 manquants dans l'expansion des
-  feature flags (Features.to_full) → +5 Generic ;
-- `6c2a153c95` : **fix régression N2** (séparer branch-data domain =
-  svi.domain de compile domain = wrap_domains — coïncident N0/N1, pas N2) ;
-- `969e09edea` : `Other_field.check` (forbidden values) remonté avant
-  which_branch/branch_data (OCaml le fait au `exists` du statement, donc
-  1ère contrainte circuit) → les secondes moitiés double-generic matchent.
+Confirmations de FIDÉLITÉ OCaml (vérifiées, aucun changement requis) :
+- `snarky::cvar::equal_constraints` = OCaml `Utils.equal_constraints`
+  (`z_inv·z = 1-r` puis `r·z = 0`, ordre identique) ✓.
 
-**Reste : parité de PAIRING double-generic dès la 1ère contrainte circuit
-(dump row 40 = 1ère contrainte, les rows 0-39 = public input matchent).**
-À row 40 les secondes moitiés matchent (`1,0,-1,0,E`) mais les premières
-diffèrent (jsoo `0,0,0,1,0` produit AND, rust `-1,0,-1,0,1` réduction not)
-— un offset de pairing par UNE contrainte cascade en type=1989.
+Gains committés : lookups_per_row_3/4 (`bd6f1b8d2a`, +5 Generic), fix N2
+(`6c2a153c95`, 9/9), forbidden-check remonté avant which_branch
+(`969e09edea`, marginal +6 rows).
 
-Pistes pour l'offset (non tranchées) :
-- `Boolean::any` (snarky) : ≥3 = `not(sum==0)`, OCaml = `not(all(not))`
-  (produits AND). Diffère structurellement MAIS le step à 0 diff prouve
-  qu'il matche pour le step → probablement pas la cause seule.
-- count `forbidden_shifted_values_fq` = **2** ; vérifier vs OCaml (si
-  OCaml en a plus, c'est un manque de checks ET un décalage de parité).
-- ordre exact equal-gadget (z, z_inv, r) vs OCaml `Field.equal`.
-Outils : `SNARKY_LOG_CONSTRAINTS` (gate), `SNARKY_LOG_HL_CONSTRAINTS`
-(constraint-level), instrumentation OCaml (checked_runner.ml). Aligner la
-séquence de contraintes depuis row 40 ferme le reste.
+**Reste — offset de pairing à l'ouverture du circuit wrap.** Séquence de
+contraintes HL du wrap jsoo (via instrumentation OCaml) : **2 R1CS puis
+~28 Equal** (kind `Equal` = `assert_equals`/seals directs, PAS notre
+gadget equal qui émet du R1CS). Notre ouverture diffère → offset qui
+cascade (type=1989). À investiguer :
+- QUELS sont les 2 R1CS + 28 Equal d'ouverture d'OCaml `wrap_main` (avant
+  le corps) — probablement le one-hot `which_branch` (booleanité R1CS) +
+  des seals de valeurs différées du statement (split/pack). Notre ordre
+  (forbidden R1CS puis which_branch) ne correspond pas.
+- count `forbidden_shifted_values_fq` = **2** : suspect (les 28 Equal jsoo
+  suggèrent plus de valeurs/asserts au début). Vérifier vs OCaml.
+Méthode : capturer les 2 logs HL (jsoo : `rust-pickles-vk-parity.ts` avec
+jsoo instrumenté à `89edaa3204` ; rust : `SNARKY_LOG_HL_CONSTRAINTS`),
+extraire la sous-séquence wrap ordonnée de chaque, aligner → 1ère
+divergence = la contrainte exacte à corriger.
 
 
 ⚠️ **TOUJOURS tester les 3 tailles de preuve à chaque changement du
