@@ -2466,6 +2466,8 @@ dependencies = [
  "mina-base58",
  "mina-curves",
  "mina-poseidon",
+ "num-bigint",
+ "num-traits",
  "o1-utils",
  "poly-commitment",
  "rand 0.8.5",

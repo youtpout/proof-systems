@@ -164,3 +164,37 @@ mod tests {
         }
     }
 }
+
+/// `Impls.Wrap.Other_field.forbidden_shifted_values`: the 255-bit patterns
+/// whose Type1 shifted decoding is ambiguous modulo the Tick (Fp) modulus,
+/// as Fq elements (patterns ≥ the Fq modulus are unrepresentable and
+/// dropped, like the OCaml filter).
+pub fn forbidden_shifted_values_fq() -> Vec<mina_curves::pasta::Fq> {
+    use ark_ff::PrimeField;
+    use num_bigint::BigInt;
+    use num_traits::One;
+    let modulus_p = BigInt::from_bytes_le(
+        num_bigint::Sign::Plus,
+        &ark_ff::BigInteger::to_bytes_le(&<mina_curves::pasta::Fp as PrimeField>::MODULUS),
+    );
+    let modulus_q = BigInt::from_bytes_le(
+        num_bigint::Sign::Plus,
+        &ark_ff::BigInteger::to_bytes_le(&<mina_curves::pasta::Fq as PrimeField>::MODULUS),
+    );
+    let two_to_n = BigInt::one() << 255;
+    let mut out = Vec::new();
+    for base in [-&two_to_n, -&two_to_n - BigInt::one()] {
+        // all values equivalent to `base` mod p that fit in 255 bits
+        let mut x: BigInt = ((&base % &modulus_p) + &modulus_p) % &modulus_p;
+        while x < two_to_n {
+            if x < modulus_q {
+                let (_, bytes) = x.to_bytes_le();
+                out.push(mina_curves::pasta::Fq::from_le_bytes_mod_order(&bytes));
+            }
+            x += &modulus_p;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}

@@ -10,6 +10,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+num-bigint.workspace = true
+num-traits = "0.2"
 ark-ec.workspace = true
 ark-ff.workspace = true
 ark-poly.workspace = true

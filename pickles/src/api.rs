@@ -392,6 +392,24 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let sponge_digest = stmt[10].clone();
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
+        // OCaml `Wrap.Other_field.check`: each deferred Tick-field slot of
+        // the statement (cip, b, zeta_to_srs_length, zeta_to_domain_size,
+        // perm) must not be one of the forbidden shifted values — the 255-bit
+        // patterns whose Type1 decoding is ambiguous modulo the Tick modulus.
+        {
+            let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
+            for slot in &stmt[0..5] {
+                let mut eqs = Vec::with_capacity(forbidden.len());
+                for &value in &forbidden {
+                    eqs.push(slot.equal(sys, loc!(), &FieldVar::constant(value))?);
+                }
+                let eq_refs: Vec<&snarky::Boolean<Fq>> = eqs.iter().collect();
+                let any = snarky::Boolean::any(&eq_refs, sys, loc!())?;
+                any.not()
+                    .to_field_var()
+                    .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
+            }
+        }
         // OCaml 40-slot tail: 8 feature-flag booleans + the optional joint
         // combiner (flag boolean + scalar). o1js compiles with Maybe flags,
         // so they are public boolean slots; our programs use none of them.
