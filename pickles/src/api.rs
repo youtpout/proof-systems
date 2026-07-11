@@ -484,6 +484,39 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sigma_init: mkpts(sys, &w.sigma_init)?,
             sigma_last: mkpts(sys, &w.sigma_last)?,
         };
+        // OCaml's wrap rule receives the whole proof through Snarky `Typ`s, so
+        // all `Inner_curve.typ` witnesses are materialized (and checked on
+        // curve) before the verifier starts recomputing the index digest.  Keep
+        // the same ordering here; otherwise the circuit has the right
+        // constraints but a different gate schedule around the first sponge.
+        let messages = Messages {
+            w_comm: w
+                .w_comm
+                .iter()
+                .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            z_comm: vec![mkpt(sys, w.z_comm)?],
+            t_comm: w
+                .t_comm
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        let mut lr = vec![];
+        for &(l, r) in &w.lr {
+            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+        }
+        let h = mkpt(sys, w.h)?;
+        let sg_olds = mkpts(sys, &w.sg_olds)?;
+        let t1 = ShiftedScalar::Type1;
+        let openings = OpeningProof {
+            lr,
+            delta: mkpt(sys, w.delta)?,
+            z1: t1(w1(sys, w.z1_repr)?),
+            z2: t1(w1(sys, w.z2_repr)?),
+            challenge_polynomial_commitment: mkpt(sys, w.sg)?,
+            h_generator: h.clone(),
+        };
         // IVC step 1 (OCaml `absorb verifier index`): recompute the step
         // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
         // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
@@ -509,33 +542,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
             index_sponge.absorb(sys, loc!(), &coords);
             index_sponge.squeeze(sys, loc!())
-        };
-        let messages = Messages {
-            w_comm: w
-                .w_comm
-                .iter()
-                .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-            z_comm: vec![mkpt(sys, w.z_comm)?],
-            t_comm: w
-                .t_comm
-                .iter()
-                .map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-        };
-        let mut lr = vec![];
-        for &(l, r) in &w.lr {
-            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-        }
-        let h = cpt(w.h);
-        let t1 = ShiftedScalar::Type1;
-        let openings = OpeningProof {
-            lr,
-            delta: mkpt(sys, w.delta)?,
-            z1: t1(w1(sys, w.z1_repr)?),
-            z2: t1(w1(sys, w.z2_repr)?),
-            challenge_polynomial_commitment: mkpt(sys, w.sg)?,
-            h_generator: h.clone(),
         };
         let advice = Advice {
             combined_inner_product: t1(cip),
@@ -674,7 +680,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
-        let sg_olds = mkpts(sys, &w.sg_olds)?;
         let _out = wrap_main::<Fq, VestaParameters>(
             sys,
             loc!(),
