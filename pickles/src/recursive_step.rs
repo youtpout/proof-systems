@@ -1913,10 +1913,20 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
             prechallenge: ScalarChallenge(c),
         })
         .collect();
+    // Two distinct domains, which coincide for N0/N1 but not N2:
+    // - the branch data (statement slot) records the verified step proof's
+    //   own circuit domain (`svi.domain`), matching the base case and the
+    //   wrap circuit's `choose domain_log2` assertion;
+    // - the wrap circuit compiles to `wrap_domains(proofs_verified)` (13/14/
+    //   15), which is what its SRS (2^15) is sized for — the width-2 step
+    //   circuit is 2^16, larger than the wrap SRS.
+    // `verify.rs` reconstructs the wrap verifier index from the side-loaded
+    // key's own `wrap_domain_log2`, not from this branch-data slot.
+    let branch_domain_log2 = svi.domain.log_size_of_group;
     let domain_log2 = crate::common::wrap_domain_log2(proofs_verified.to_usize());
     let branch = BranchData {
         proofs_verified,
-        domain_log2: domain_log2 as u8,
+        domain_log2: branch_domain_log2 as u8,
     };
     let statement = crate::composition_types::wrap::wrap_statement_to_field_elements_ocaml(
         &plonk_vals,
