@@ -406,7 +406,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // which_branch / branch_data logic of the circuit body.
         {
             let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
-            for slot in &stmt[0..5] {
+            // OCaml applies `Other_field.check` to the fq slots in REVERSE
+            // order (perm, zds, zsl, b, cip) — the spec/typ processes the
+            // `[cip; b; zsl; zds; perm]` vector back-to-front. Match that so
+            // the per-slot forbidden blocks land on the same rows/wiring.
+            for slot in stmt[0..5].iter().rev() {
                 let mut eqs = Vec::with_capacity(forbidden.len());
                 for &value in &forbidden {
                     eqs.push(slot.equal(sys, loc!(), &FieldVar::constant(value))?);
