@@ -123,117 +123,37 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**INSTRUMENTATION OCAML FAITE — diff par gadget obtenu.**
+**Wrap parity — état actuel : Generic 551/569, 18 net à fermer.**
+Tous les autres gate types EXACTS (Poseidon 1001, CompleteAdd 258,
+VarBaseMul 663, EndoMulScalar 184, EndoMul 2464, public input 40=40,
+8192 rows). Codex a monté Generic de 508 → 551 (branch data assertion,
+selected VK constraint, boolean statement terms, opening shifted scalars,
+mask constraints).
 
-Côté Rust : `SNARKY_LOG_CONSTRAINTS=1 cargo test -p pickles --release
---test recorded recorded_square -- --nocapture` → `row: loc - labels`.
+**Nature du reste : PAIRING double-generic, PAS des contraintes
+manquantes.** Les compteurs de contraintes HL matchent quasi ; le diff de
+MOTIFS Generic diverge de ±88 mais le NET n'est que 18 — les mêmes
+contraintes (on-curve `c=5`, reductions `E,-1,0,0,0`) sont appariées
+différemment dans les rows double-generic :
+- jsoo `1,0,-1,0,5,0,0,1,-1,0` ×73 (on-curve en slot 0-4)
+- rust `0,0,-1,1,0,1,0,-1,0,5` ×88 (on-curve en slot 5-9)
+La PARITÉ du pairing est décalée d'une contrainte : il y a ~1 generic
+structurel de décalage tôt dans le circuit qui déphase tous les
+appariements suivants → d'où type=2741 rows au mauvais type (cascade).
 
-Côté OCaml (nouveau) : logger ajouté dans
-`o1js/src/mina/src/lib/snarky/src/base/checked_runner.ml::add_constraint`
-(gaté par `SNARKY_LOG_CONSTRAINTS`, imprime `CONSTRAINT <kind> @ <label
-stack>` via la pile `with_label`). Capture :
-`SNARKY_LOG_CONSTRAINTS=1 ./run src/tests/rust-pickles-vk-parity.ts
-2>/dev/null | grep '^CONSTRAINT '`.
-GOTCHA build : le proof-systems IMBRIQUÉ (`src/mina/.../proof-systems`)
-avait divergé (commits "Mina reduced messages" → bindings incompatibles
-avec pickles.ml, erreurs `Fp.t array`). Ramené à la base mina-compatible
-`89edaa3204` pour builder jsoo (garder checked_runner.ml). Vendor cargo
-régénéré (`cargo vendor` + vider les maps `files` des `.cargo-checksum.json`
-+ retirer `.github`/symlinks cassés). Note : la base 89edaa n'a pas
-`fq_prover_to_json` → pour re-differ le wrap, remettre le nested à
-`866c3ab277` (bundled wasm) OU cherry-pick fq_prover sur 89edaa.
+**MÉTHODE pour fermer** : trouver la contrainte generic tôt qui déphase
+le pairing (aligner l'ordre d'émission, comme la fin du step), puis les
+18 net se ferment et la cascade type=2741 s'effondre. Outils :
+`SNARKY_LOG_CONSTRAINTS` (Rust gate-level) + `SNARKY_LOG_HL_CONSTRAINTS`
+(Rust HL) + instrumentation OCaml `SNARKY_LOG_CONSTRAINTS` dans
+checked_runner.ml.
 
-**DIFF DÉFINITIF (kinds de contraintes, wrap+step) :**
-| kind | jsoo | rust (approx) |
-|------|------|------|
-| Equal | **584** | ~124 (`assert equals`+`equals_1/2`) |
-| R1CS | 349 | ~123 (`checked_mul`) |
-| Square | 265 | ~264 (on-curve+…) ✓ |
-| EC_add_complete | 264 | 265 ✓ |
-| EC_endoscale | 79 | ✓ | EC_scale 15, EC_endoscalar 25 |
+**Fausses pistes testées aujourd'hui (ne PAS refaire)** :
+- witness des slots zeta Type2 seul → aucun effet gate ;
+- assertion séparée de messages_for_next_step_proof → aucun effet gate ;
+- remplacer le masque physique sg_old par le masque calculé → casse le
+  witness ;
+- (antérieures) VK/h constantes → pire ; seal add_fast → no-op ;
+  OptSponge flags constants → no-op ; materialize x_hat → no-op.
 
-**CAUSE : jsoo émet 584 `Equal` vs ~124** — 460 de plus. Répartition des
-Equal jsoo par gadget : `endo` 158, `wrap_verifier:580` (check_bulletproof)
-133, `hash_messages_for_next_step_proof` 110, `wrap_main:204` 56,
-`absorb verifier index` 54. Ce sont des **seals/asserts d'intermédiaires**
-(`Util.Wrap.seal`, `Field.Assert.equal`) qu'OCaml fait systématiquement
-avant de réutiliser une valeur, et que nous omettons (on garde les
-`compute` non scellés). Une fraction (~61 net, ~139 en région 500-1500)
-devient des rows generic `o=x1−x2` (`-1,1,-1,0,0`) qu'on n'a pas.
-
-**FIX** : ajouter les seals qu'OCaml fait dans les gadgets à fort écart
-d'Equal — en priorité `scalar_challenge.rs::endo` (jsoo 158 Equal : sceller
-les intermédiaires xq/yq/s/xr/yr par round ? à vérifier vs EndoMul déjà
-exact), `bulletproof.rs` (check_bulletproof 133), `hash_messages.rs` (110).
-Attention : ne pas bouger EC_add_complete/EndoMul (déjà exacts) ; vérifier
-le step reste FULL MATCH après chaque ajout. Le diff par gadget (ci-dessus)
-dit exactement où chercher — plus de devinette.
-
-État committé avant reprise Codex : Generic 508 vs 569, 6/7 gate types
-exacts, 9/9 recorded, step FULL MATCH. Instrumentation OCaml sur disque
-(mina/snarky, sous-module).
-
-**Reprise Codex — deux contraintes wrap top-level portées** :
-- `af073a69ea` (`Port wrap branch data assertion`) : assertion
-  `branch_data = domain_log2 * 4 + proofs_verified` dans `WrapCircuit`,
-  portée aussi dans la préparation récursive. Effet mesuré : Generic
-  **508 → 509**, step toujours FULL MATCH.
-- `a3e38bcfca` (`Constrain selected wrap verification key`) : port du bloc
-  `wrap_main.ml:204` / `choose_key` en contraignant les 28 engagements de la
-  VK step witnessée à la clé sélectionnée. Effet mesuré : Generic
-  **509 → 537**, step toujours FULL MATCH.
-
-État actuel mesuré avec `rust-pickles-wrap-gates-diff.ts` :
-- public input **40 = 40**, rows **8192 = 8192** ;
-- Poseidon **1001 = 1001**, CompleteAdd **258 = 258**,
-  VarBaseMul **663 = 663**, EndoMulScalar **184 = 184**,
-  EndoMul **2464 = 2464** ;
-- reste uniquement le compteur **Generic 537 vs 569** (écart net **−32**)
-  et donc **Zero 3085 vs 3053**.
-
-Note importante : un essai de seal global de `DuplexState::absorb`
-(`state[i] <- seal(state[i] + x)`, comme `sponge_inputs.ml`) augmente bien
-les `Equal` HL, mais **ne change pas le histogramme Kimchi wrap**. Même chose
-pour une matérialisation explicite des constantes `CompleteAdd` via
-`assert_equals`. Le reliquat de 32 rows doit donc être fermé par les vraies
-contraintes `R1CS`/`Field.Checked.mul` encore absentes, principalement autour
-de `check_bulletproof` / `Other_field.Packed`, pas par des seals aveugles.
-
-**Instrumentation Rust HL AUSSI faite** (`SNARKY_LOG_HL_CONSTRAINTS=1`,
-`snarky/src/runner.rs::add_constraint`) : log constraint-level (avant
-expansion en gates), même granularité que le log OCaml → **séquences
-comparables 1:1**. Capture :
-`SNARKY_LOG_HL_CONSTRAINTS=1 cargo test -p pickles --release --test
-recorded recorded_square -- --nocapture 2>/dev/null | grep '^HLCONSTRAINT'`.
-
-**Diff kind-level DÉFINITIF** (rust recorded_square = two-pass, ÷2 ; jsoo
-vk-parity = 1 pass ; step à 0 diff donc tout l'écart est wrap) :
-| kind | jsoo | rust÷2 | écart |
-|------|------|--------|-------|
-| Equal | 584 | 302 | **jsoo +282** |
-| R1CS | 349 | 243 | **jsoo +106** |
-| Square | 265 | 323 | rust +58 (on-curve 88 vs 73) |
-| EC_add_complete | 264 | 265 | ✓ |
-| EC_endoscale/scalar/scale | 79/25/15 | ✓ | |
-
-OCaml émet **+282 Equal (seals `Util.Wrap.seal`/`Field.Assert.equal`) et
-+106 R1CS (checked-muls)** d'intermédiaires que nous calculons sans
-sceller. Répartition Equal jsoo : endo 158, check_bulletproof 133,
-hash_messages 110, wrap_main:204 56, absorb 54.
-
-**MÉTHODE pour fermer (traçable, plus de devinette)** :
-1. Capturer les deux logs HL (OCaml : `rust-pickles-vk-parity.ts` ;
-   Rust : `recorded_square`).
-2. Extraire la sous-séquence WRAP de chaque (labels wrap_main/
-   wrap_verifier/bulletproof/combine côté jsoo ; circuit final côté rust),
-   en ORDRE.
-3. Aligner les séquences de kinds → première divergence = première
-   contrainte OCaml qu'on n'émet pas → identifie le gadget + la ligne
-   exacte à corriger (ajouter le seal/mul).
-4. Ajouter le seal, re-tester (cargo test recorded), re-diff, itérer.
-   Vérifier à CHAQUE fois : step reste FULL MATCH, EC/EndoMul inchangés.
-
-Fichiers : logs `/tmp/claude-1000/{jsoo-constraints.log, rust-hl.log}`.
-Nested proof-systems : jsoo needs `89edaa3204`, bundled wasm needs
-`866c3ab277` (fq_prover) — actuellement à 866c3ab277.
 Dumps : `/tmp/claude-1000/{wrap-circuit-*.json, jsoo-constraints.log}`.
