@@ -473,22 +473,55 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
         }
 
+        // OCaml's wrap rule selects the step verification key from the compiled
+        // key vector with `Inner_curve.constant`; only the proof payload itself
+        // is witnessed through `Inner_curve.typ`.  Keep these commitments as
+        // constants here as well, otherwise the circuit gets extra
+        // assert-on-curve rows before the index digest.
         let vk = VerificationKeyComm {
-            generic: mkpt(sys, w.generic)?,
-            psm: mkpt(sys, w.psm)?,
-            complete_add: mkpt(sys, w.complete_add)?,
-            mul: mkpt(sys, w.mul)?,
-            emul: mkpt(sys, w.emul)?,
-            endomul_scalar: mkpt(sys, w.endomul_scalar)?,
-            coefficients: mkpts(sys, &w.coefficients)?,
-            sigma_init: mkpts(sys, &w.sigma_init)?,
-            sigma_last: mkpts(sys, &w.sigma_last)?,
+            generic: cpt(w.generic),
+            psm: cpt(w.psm),
+            complete_add: cpt(w.complete_add),
+            mul: cpt(w.mul),
+            emul: cpt(w.emul),
+            endomul_scalar: cpt(w.endomul_scalar),
+            coefficients: w.coefficients.iter().copied().map(cpt).collect(),
+            sigma_init: w.sigma_init.iter().copied().map(cpt).collect(),
+            sigma_last: w.sigma_last.iter().copied().map(cpt).collect(),
         };
-        // OCaml's wrap rule receives the whole proof through Snarky `Typ`s, so
-        // all `Inner_curve.typ` witnesses are materialized (and checked on
-        // curve) before the verifier starts recomputing the index digest.  Keep
-        // the same ordering here; otherwise the circuit has the right
-        // constraints but a different gate schedule around the first sponge.
+        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
+        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
+        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
+        //
+        // The verifier index commitments are constants, so emitting this
+        // before the proof payload witnesses matches OCaml's first custom-gate
+        // schedule: the index digest is the first Poseidon train.
+        let vk_digest: FieldVar<Fq> = {
+            let mut index_sponge = crate::sponge::PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk
+                .sigma_init
+                .iter()
+                .chain(vk.sigma_last.iter())
+                .chain(vk.coefficients.iter())
+                .chain([
+                    &vk.generic,
+                    &vk.psm,
+                    &vk.complete_add,
+                    &vk.mul,
+                    &vk.emul,
+                    &vk.endomul_scalar,
+                ])
+            {
+                coords.push(pt.x.clone());
+                coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc!(), &coords);
+            index_sponge.squeeze(sys, loc!())
+        };
+        // OCaml's wrap rule receives the proof through Snarky `Typ`s`; keep
+        // proof payload points witnessed (and checked on curve), unlike the
+        // constant verifier-index commitments above.
         let messages = Messages {
             w_comm: w
                 .w_comm
@@ -516,32 +549,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             z2: t1(w1(sys, w.z2_repr)?),
             challenge_polynomial_commitment: mkpt(sys, w.sg)?,
             h_generator: h.clone(),
-        };
-        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
-        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
-        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
-        let vk_digest: FieldVar<Fq> = {
-            let mut index_sponge = crate::sponge::PoseidonSponge::new();
-            let mut coords = Vec::with_capacity(56);
-            for pt in vk
-                .sigma_init
-                .iter()
-                .chain(vk.sigma_last.iter())
-                .chain(vk.coefficients.iter())
-                .chain([
-                    &vk.generic,
-                    &vk.psm,
-                    &vk.complete_add,
-                    &vk.mul,
-                    &vk.emul,
-                    &vk.endomul_scalar,
-                ])
-            {
-                coords.push(pt.x.clone());
-                coords.push(pt.y.clone());
-            }
-            index_sponge.absorb(sys, loc!(), &coords);
-            index_sponge.squeeze(sys, loc!())
         };
         let advice = Advice {
             combined_inner_product: t1(cip),
@@ -1124,7 +1131,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
             digest,
             (witness, wrap_vk_pts.clone()),
             true,
-            vec![dummy_recursion.clone(), dummy_recursion],
+            vec![dummy_recursion.clone(), dummy_recursion.clone()],
             Some(&[false, false]),
         )
         .unwrap();
@@ -1290,6 +1297,18 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     let correction = crate::public_input::lagrange_correction(&l0, 255);
     drop(lgr); // release the SRS cache guard so step_ver can move below
     let srs_h = svi.srs().h;
+    let physical_sg_olds: Vec<(Fq, Fq)> = {
+        let mut sg_olds: Vec<_> = step_proof
+            .prev_challenges
+            .iter()
+            .map(|rc| co(&rc.comm.chunks[0]))
+            .collect();
+        if sg_olds.is_empty() {
+            let dummy = co(&dummy_recursion.comm.chunks[0]);
+            sg_olds.resize(crate::common::MAX_PROOFS_VERIFIED, dummy);
+        }
+        sg_olds
+    };
     let wdata = WrapWitnessData {
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
@@ -1332,11 +1351,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         sg: co(&sg_pt),
         z1_repr: fp_to_fq(ww.z1_repr),
         z2_repr: fp_to_fq(ww.z2_repr),
-        sg_olds: step_proof
-            .prev_challenges
-            .iter()
-            .map(|rc| co(&rc.comm.chunks[0]))
-            .collect(),
+        sg_olds: physical_sg_olds,
         unfinalized: vec![],
         step_statement: vec![WrapStepStatementSlot::Packed {
             value: fp_to_fq(digest),

@@ -26,81 +26,10 @@ use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::finalize::{finalize_deferred, FinalizeParams, FinalizeWitness};
 use crate::hash_messages::hash_messages_for_next_wrap_proof;
-use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
-use crate::public_input::{split_field, Term};
+use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm, XHatInput};
+pub use crate::public_input::StatementElement as StepStatementElement;
 use crate::scalar_challenge::scalar_to_field;
 use crate::step_verifier::{verify, Claimed};
-
-/// One element of the step statement, as consumed by
-/// [`step_statement_terms`]: either a packed value of `num_bits ≤ 128` (or a
-/// 255-bit digest — see below), or a full-field element that must be split
-/// ([`split_field`]) because it lives in the bigger Tick field.
-pub enum StepStatementElement<F: PrimeField> {
-    /// `Packed_bits (x, n)` — scaled directly (`n`-bit `scale_fast2'`).
-    /// Digests pack as 255 bits: the scalar action is modulo the inner-curve
-    /// order on both sides, so the mod-q representative commits identically.
-    Packed { value: FieldVar<F>, num_bits: usize },
-    /// `Field x` — split into `(x_div_2, x_odd)`, consuming *two* Lagrange
-    /// slots (a 255-bit term and a 1-bit conditional term).
-    Split(FieldVar<F>),
-    /// A 1-bit element (`should_finalize`), a conditional add.
-    Bool(Boolean<F>),
-}
-
-/// Builds the x_hat [`Term`]s for the step statement on the wrap side: each
-/// element expands per `Spec.pack` + `wrap_main.ml`'s `split_field` mapping —
-/// `Split` becomes `[Packed(y, 255), Cond(odd)]`, `Packed`/`Bool` stay single.
-/// `lagranges` pairs each *expanded* slot with its `(L_i, correction_i)`
-/// constants (`correction` unused for the 1-bit conditional slots — pass the
-/// lagrange point itself).
-pub fn step_statement_terms<F: PrimeField>(
-    sys: &mut RunState<F>,
-    loc: Cow<'static, str>,
-    elements: &[StepStatementElement<F>],
-    lagranges: &[(Point<F>, Point<F>)],
-) -> SnarkyResult<Vec<Term<F>>> {
-    let mut terms = Vec::new();
-    let mut slot = 0usize;
-    let next = |slot: &mut usize| -> (Point<F>, Point<F>) {
-        let l = lagranges[*slot].clone();
-        *slot += 1;
-        l
-    };
-    for e in elements {
-        match e {
-            StepStatementElement::Packed { value, num_bits } => {
-                let (lagrange, correction) = next(&mut slot);
-                terms.push(Term::Packed {
-                    value: value.clone(),
-                    num_bits: *num_bits,
-                    lagrange,
-                    correction,
-                });
-            }
-            StepStatementElement::Split(x) => {
-                let (y, odd) = split_field(sys, loc.clone(), x)?;
-                let (lagrange, correction) = next(&mut slot);
-                terms.push(Term::Packed {
-                    value: y,
-                    num_bits: 255,
-                    lagrange,
-                    correction,
-                });
-                let (lagrange, _) = next(&mut slot);
-                terms.push(Term::Cond { bit: odd, lagrange });
-            }
-            StepStatementElement::Bool(b) => {
-                let (lagrange, _) = next(&mut slot);
-                terms.push(Term::Cond {
-                    bit: b.clone(),
-                    lagrange,
-                });
-            }
-        }
-    }
-    assert_eq!(slot, lagranges.len(), "step_statement_terms: slot count");
-    Ok(terms)
-}
 
 /// One unfinalized proof of the step statement, as handled by [`wrap_main`].
 pub struct PerUnfinalized<'a, F: PrimeField> {
@@ -227,7 +156,6 @@ where
     }
 
     // == commit to the step statement and fully verify the step proof ==
-    let terms = step_statement_terms(sys, loc.clone(), step_statement_elements, lagranges)?;
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
     let inactive_sg_olds = sg_olds
         .len()
@@ -250,8 +178,11 @@ where
         vk,
         sg_olds,
         &sg_old_mask,
-        &terms,
-        h_generator,
+        XHatInput::Statement {
+            elements: step_statement_elements,
+            lagranges,
+            h_generator,
+        },
         messages,
         openings,
         advice,

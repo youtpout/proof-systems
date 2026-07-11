@@ -2,8 +2,7 @@
 //! full verification of one wrap proof inside a step circuit.
 //!
 //! ```text
-//! x_hat   = public_input_commitment(packed wrap statement)   // IVC steps 3-4
-//! result  = incrementally_verify_proof(...)                  // oracles + IPA
+//! result  = incrementally_verify_proof(...)                  // x_hat + oracles + IPA
 //! assert  result.sponge_digest == unfinalized.sponge_digest  // step 4a
 //! assert  result.bulletproof_challenges == claimed           // step 4b
 //!         (base case: bypassed — claimed compared to itself)
@@ -24,9 +23,9 @@ use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 use crate::{
     incrementally_verify::{
         incrementally_verify_proof, Advice, IncrementalResult, Messages, OpeningProof,
-        VerificationKeyComm,
+        VerificationKeyComm, XHatInput,
     },
-    public_input::{public_input_commitment, Term},
+    public_input::Term,
 };
 
 /// The claimed values `verify` checks the re-derived transcript against: the
@@ -55,8 +54,7 @@ pub fn verify<F, C>(
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
     sg_old_mask: &[Boolean<F>],
-    public_input_terms: &[Term<F>],
-    h_generator: &Point<F>,
+    x_hat_input: XHatInput<'_, F>,
     messages: &Messages<F>,
     openings: &OpeningProof<F>,
     advice: &Advice<F>,
@@ -72,9 +70,6 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    // == IVC steps 3-4: commit to the packed statement ==
-    let x_hat = public_input_commitment(sys, loc.clone(), public_input_terms, h_generator)?;
-
     // == oracles + IPA ==
     let IncrementalResult {
         success,
@@ -88,7 +83,7 @@ where
         vk,
         sg_old,
         sg_old_mask,
-        std::slice::from_ref(&x_hat),
+        x_hat_input,
         messages,
         openings,
         advice,
@@ -362,8 +357,10 @@ where
         vk,
         prev_challenge_polynomial_commitments,
         &sg_old_mask,
-        &terms,
-        h_generator,
+        XHatInput::PublicInput {
+            terms: &terms,
+            h_generator,
+        },
         messages,
         openings,
         advice,
@@ -575,8 +572,10 @@ mod tests {
                 &vk,
                 &sg_old,
                 &vec![Boolean::true_(); sg_old.len()],
-                &terms,
-                &h,
+                XHatInput::PublicInput {
+                    terms: &terms,
+                    h_generator: &h,
+                },
                 &messages,
                 &openings,
                 &advice,

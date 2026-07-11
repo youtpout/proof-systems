@@ -37,6 +37,7 @@ use crate::challenge::squeeze_challenge;
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
 use crate::plonk_curve_ops::ShiftedScalar;
+use crate::public_input::{public_input_commitment, statement_terms, StatementElement, Term};
 use crate::sponge::PoseidonSponge;
 
 /// The verification-key commitments the base step/wrap verifier absorbs and
@@ -81,6 +82,19 @@ pub struct OpeningProof<F: PrimeField> {
     pub challenge_polynomial_commitment: Point<F>,
     /// The SRS blinding generator `H`.
     pub h_generator: Point<F>,
+}
+
+pub enum XHatInput<'a, F: PrimeField> {
+    Precomputed(&'a [Point<F>]),
+    PublicInput {
+        terms: &'a [Term<F>],
+        h_generator: &'a Point<F>,
+    },
+    Statement {
+        elements: &'a [StatementElement<F>],
+        lagranges: &'a [(Point<F>, Point<F>)],
+        h_generator: &'a Point<F>,
+    },
 }
 
 /// The deferred scalar advice consumed by the Fq-side verifier
@@ -143,7 +157,7 @@ pub fn incrementally_verify_proof<F, C>(
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
     sg_old_mask: &[Boolean<F>],
-    x_hat: &[Point<F>],
+    x_hat_input: XHatInput<'_, F>,
     messages: &Messages<F>,
     openings: &OpeningProof<F>,
     advice: &Advice<F>,
@@ -174,7 +188,29 @@ where
         );
     }
 
-    // == IVC Steps 3-5: absorb x_hat, then the witness commitments ==
+    // == IVC Steps 3-5: compute and absorb x_hat, then the witness commitments ==
+    //
+    // OCaml computes the public-input commitment after absorbing the verifier
+    // index digest and masked sg_old accumulators.  This ordering matters for
+    // gate-schedule parity: `public_input_commitment` emits the statement
+    // packing/linear-combination rows before x_hat is absorbed.
+    let x_hat;
+    let x_hat = match x_hat_input {
+        XHatInput::Precomputed(points) => points,
+        XHatInput::PublicInput { terms, h_generator } => {
+            x_hat = public_input_commitment(sys, loc.clone(), terms, h_generator)?;
+            std::slice::from_ref(&x_hat)
+        }
+        XHatInput::Statement {
+            elements,
+            lagranges,
+            h_generator,
+        } => {
+            let terms = statement_terms(sys, loc.clone(), elements, lagranges)?;
+            x_hat = public_input_commitment(sys, loc.clone(), &terms, h_generator)?;
+            std::slice::from_ref(&x_hat)
+        }
+    };
     absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(x_hat));
     for w in &messages.w_comm {
         absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(w));
@@ -469,7 +505,7 @@ mod tests {
                 &vk,
                 &sg_old,
                 &vec![Boolean::true_(); sg_old.len()],
-                &x_hat,
+                XHatInput::Precomputed(&x_hat),
                 &messages,
                 &openings,
                 &advice,
@@ -735,7 +771,7 @@ mod tests {
                 &vk,
                 &[],
                 &[],
-                &x_hat,
+                XHatInput::Precomputed(&x_hat),
                 &messages,
                 &openings,
                 &advice,

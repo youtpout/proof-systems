@@ -40,6 +40,67 @@ pub enum Term<F: PrimeField> {
     },
 }
 
+/// One element of a Pickles statement before commitment packing: either a
+/// packed value, a full-field element that must be split into `(x / 2, odd)`,
+/// or a single boolean.
+pub enum StatementElement<F: PrimeField> {
+    Packed { value: FieldVar<F>, num_bits: usize },
+    Split(FieldVar<F>),
+    Bool(Boolean<F>),
+}
+
+/// Builds x_hat [`Term`]s from Pickles statement elements. Full-field elements
+/// expand per OCaml `Spec.pack`/`wrap_main.split_field`: `Split(x)` becomes
+/// `[Packed(x_div_2, 255), Cond(x_odd)]`.
+pub fn statement_terms<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    elements: &[StatementElement<F>],
+    lagranges: &[(Point<F>, Point<F>)],
+) -> SnarkyResult<Vec<Term<F>>> {
+    let mut terms = Vec::new();
+    let mut slot = 0usize;
+    let next = |slot: &mut usize| -> (Point<F>, Point<F>) {
+        let l = lagranges[*slot].clone();
+        *slot += 1;
+        l
+    };
+    for e in elements {
+        match e {
+            StatementElement::Packed { value, num_bits } => {
+                let (lagrange, correction) = next(&mut slot);
+                terms.push(Term::Packed {
+                    value: value.clone(),
+                    num_bits: *num_bits,
+                    lagrange,
+                    correction,
+                });
+            }
+            StatementElement::Split(x) => {
+                let (y, odd) = split_field(sys, loc.clone(), x)?;
+                let (lagrange, correction) = next(&mut slot);
+                terms.push(Term::Packed {
+                    value: y,
+                    num_bits: 255,
+                    lagrange,
+                    correction,
+                });
+                let (lagrange, _) = next(&mut slot);
+                terms.push(Term::Cond { bit: odd, lagrange });
+            }
+            StatementElement::Bool(b) => {
+                let (lagrange, _) = next(&mut slot);
+                terms.push(Term::Cond {
+                    bit: b.clone(),
+                    lagrange,
+                });
+            }
+        }
+    }
+    assert_eq!(slot, lagranges.len(), "statement_terms: slot count");
+    Ok(terms)
+}
+
 /// Computes the correction point `-(2^scale_fast2_shift_bits(num_bits)) · L`
 /// for a `num_bits`-bit input whose Lagrange commitment is `lagrange`
 /// (out-of-circuit; the result is embedded as a circuit constant).
