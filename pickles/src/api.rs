@@ -479,45 +479,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // constants here as well, otherwise the circuit gets extra
         // assert-on-curve rows before the index digest.
         let vk = VerificationKeyComm {
-            generic: cpt(w.generic),
-            psm: cpt(w.psm),
-            complete_add: cpt(w.complete_add),
-            mul: cpt(w.mul),
-            emul: cpt(w.emul),
-            endomul_scalar: cpt(w.endomul_scalar),
-            coefficients: w.coefficients.iter().copied().map(cpt).collect(),
-            sigma_init: w.sigma_init.iter().copied().map(cpt).collect(),
-            sigma_last: w.sigma_last.iter().copied().map(cpt).collect(),
-        };
-        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
-        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
-        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
-        //
-        // The verifier index commitments are constants, so emitting this
-        // before the proof payload witnesses matches OCaml's first custom-gate
-        // schedule: the index digest is the first Poseidon train.
-        let vk_digest: FieldVar<Fq> = {
-            let mut index_sponge = crate::sponge::PoseidonSponge::new();
-            let mut coords = Vec::with_capacity(56);
-            for pt in vk
-                .sigma_init
-                .iter()
-                .chain(vk.sigma_last.iter())
-                .chain(vk.coefficients.iter())
-                .chain([
-                    &vk.generic,
-                    &vk.psm,
-                    &vk.complete_add,
-                    &vk.mul,
-                    &vk.emul,
-                    &vk.endomul_scalar,
-                ])
-            {
-                coords.push(pt.x.clone());
-                coords.push(pt.y.clone());
-            }
-            index_sponge.absorb(sys, loc!(), &coords);
-            index_sponge.squeeze(sys, loc!())
+            generic: mkpt(sys, w.generic)?,
+            psm: mkpt(sys, w.psm)?,
+            complete_add: mkpt(sys, w.complete_add)?,
+            mul: mkpt(sys, w.mul)?,
+            emul: mkpt(sys, w.emul)?,
+            endomul_scalar: mkpt(sys, w.endomul_scalar)?,
+            coefficients: mkpts(sys, &w.coefficients)?,
+            sigma_init: mkpts(sys, &w.sigma_init)?,
+            sigma_last: mkpts(sys, &w.sigma_last)?,
         };
         // OCaml's wrap rule receives the proof through Snarky `Typ`s`; keep
         // proof payload points witnessed (and checked on curve), unlike the
@@ -549,6 +519,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             z2: t1(w1(sys, w.z2_repr)?),
             challenge_polynomial_commitment: mkpt(sys, w.sg)?,
             h_generator: h.clone(),
+        };
+        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
+        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
+        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
+        let vk_digest: FieldVar<Fq> = {
+            let mut index_sponge = crate::sponge::PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk
+                .sigma_init
+                .iter()
+                .chain(vk.sigma_last.iter())
+                .chain(vk.coefficients.iter())
+                .chain([
+                    &vk.generic,
+                    &vk.psm,
+                    &vk.complete_add,
+                    &vk.mul,
+                    &vk.emul,
+                    &vk.endomul_scalar,
+                ])
+            {
+                coords.push(pt.x.clone());
+                coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc!(), &coords);
+            index_sponge.squeeze(sys, loc!())
         };
         let advice = Advice {
             combined_inner_product: t1(cip),
