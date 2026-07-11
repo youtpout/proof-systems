@@ -325,6 +325,13 @@ where
     /// It can be useful to disable this feature for debugging.
     generic_gate_optimization: bool,
 
+    /// Flushes a pending generic gate before emitting a non-generic row.
+    ///
+    /// OCaml Pickles' wrap circuit does not combine generic constraints across
+    /// custom-gate boundaries; keeping this disabled preserves the existing
+    /// step-circuit scheduling.
+    flush_generic_before_custom: bool,
+
     /** Queue (of size 1) of generic gate. */
     pending_generic_gate: Option<PendingGate<Field, V>>,
 
@@ -505,10 +512,15 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             next_row: 0,
             equivalence_classes: HashMap::new(),
             generic_gate_optimization: true,
+            flush_generic_before_custom: false,
             pending_generic_gate: None,
             cached_constants: HashMap::new(),
             union_finds: DisjointSet::new(),
         }
+    }
+
+    pub fn set_flush_generic_before_custom(&mut self, value: bool) {
+        self.flush_generic_before_custom = value;
     }
 
     /// Returns the number of public inputs.
@@ -555,6 +567,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         kind: GateType,
         coeffs: Vec<Field>,
     ) {
+        if self.flush_generic_before_custom && kind != GateType::Generic {
+            self.flush_pending_generic_gate();
+        }
         // TODO: for now we can print the debug info at runtime, but in the future we should allow serialization of these things as well
         // TODO: this ignores the public gates!!
         if std::env::var("SNARKY_LOG_CONSTRAINTS").is_ok() {
@@ -586,6 +601,24 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         self.rows.push(vars);
     }
 
+    fn flush_pending_generic_gate(&mut self) {
+        if let Some(PendingGate {
+            labels,
+            loc,
+            vars: (l, r, o),
+            coeffs,
+        }) = self.pending_generic_gate.take()
+        {
+            self.add_row(
+                &labels,
+                &loc,
+                vec![l, r, o],
+                GateType::Generic,
+                coeffs.clone(),
+            );
+        }
+    }
+
     /// Returns the number of rows in the constraint system.
     /// Note: This is not necessarily the number of rows of the compiled circuit.
     /// If the circuit has not finished compiling, you will only get the current number of rows.
@@ -606,22 +639,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         }
 
         // if we still have some pending gates, deal with it first
-        if let Some(PendingGate {
-            labels,
-            loc,
-            vars: (l, r, o),
-            coeffs,
-        }) = self.pending_generic_gate.take()
-        {
-            self.pending_generic_gate = None;
-            self.add_row(
-                &labels,
-                &loc,
-                vec![l, r, o],
-                GateType::Generic,
-                coeffs.clone(),
-            );
-        }
+        self.flush_pending_generic_gate();
 
         // get gates without holding on an immutable reference
         let gates = match core::mem::replace(&mut self.gates, Circuit::Unfinalized(vec![])) {

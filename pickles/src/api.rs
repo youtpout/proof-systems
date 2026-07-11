@@ -350,6 +350,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         use groupmap::GroupMap;
         use snarky::gadgets::curve::Point;
 
+        if let Some(system) = &mut sys.system {
+            system.set_flush_generic_before_custom(true);
+        }
+
         let w = &self.w;
         // Every witnessed point goes through OCaml's `exists Inner_curve.typ`,
         // whose check is `assert_on_curve` (Vesta: y² = x³ + 5).
