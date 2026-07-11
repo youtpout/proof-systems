@@ -123,32 +123,52 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**Outil de comptage par gadget FAIT** (`SNARKY_LOG_CONSTRAINTS=1`, déjà
-présent dans `snarky/src/constraint_system.rs::add_row`) :
-`SNARKY_LOG_CONSTRAINTS=1 cargo test -p pickles --release --test recorded
-recorded_square -- --nocapture 2>/dev/null | grep -aE "^[0-9]+: "` →
-`row: loc - labels` par contrainte. Découper par circuit (reset de row) :
-7 circuits, le wrap final = index 4 (~5868 contraintes).
+**INSTRUMENTATION OCAML FAITE — diff par gadget obtenu.**
 
-Breakdown wrap (labels) : endo 2541, scale_fast 1326, Poseidon 1266,
-`EC complete add` 265, scalar_to_field 185, `on-curve check` 176 +
-`on-curve x^2` 88 (= **88 points on-curve**), checked_mul 123,
-`assert equals` 113, `if_` **15**.
+Côté Rust : `SNARKY_LOG_CONSTRAINTS=1 cargo test -p pickles --release
+--test recorded recorded_square -- --nocapture` → `row: loc - labels`.
 
-Findings actionnables :
-- **on-curve 88 vs jsoo 73** (over de 15) : on applique `assert_on_curve`
-  à 15 points de trop. `h_generator` est constant chez OCaml (−1) ; les
-  14 autres restent à identifier (candidats : sg_old masqués, certains lr).
-  Réduire à 73 corrige une partie du +31 en région 0-500.
-- `if_` = 15 seulement : notre scale_fast2/x_hat utilise peu de selects.
+Côté OCaml (nouveau) : logger ajouté dans
+`o1js/src/mina/src/lib/snarky/src/base/checked_runner.ml::add_constraint`
+(gaté par `SNARKY_LOG_CONSTRAINTS`, imprime `CONSTRAINT <kind> @ <label
+stack>` via la pile `with_label`). Capture :
+`SNARKY_LOG_CONSTRAINTS=1 ./run src/tests/rust-pickles-vk-parity.ts
+2>/dev/null | grep '^CONSTRAINT '`.
+GOTCHA build : le proof-systems IMBRIQUÉ (`src/mina/.../proof-systems`)
+avait divergé (commits "Mina reduced messages" → bindings incompatibles
+avec pickles.ml, erreurs `Fp.t array`). Ramené à la base mina-compatible
+`89edaa3204` pour builder jsoo (garder checked_runner.ml). Vendor cargo
+régénéré (`cargo vendor` + vider les maps `files` des `.cargo-checksum.json`
++ retirer `.github`/symlinks cassés). Note : la base 89edaa n'a pas
+`fq_prover_to_json` → pour re-differ le wrap, remettre le nested à
+`866c3ab277` (bundled wasm) OU cherry-pick fq_prover sur 89edaa.
 
-BLOCAGE : le comptage symétrique côté jsoo manque. Prochaine étape nette :
-**instrumenter l'OCaml** (rebuild le wasm bundlé avec un log de contraintes
-équivalent dans `plonk_constraint_system.ml::add_row`/`with_label`) pour
-diff PAR gadget jsoo vs rust. Sans ça, on devine — et 9 hypothèses ont
-déjà échoué (VK/h constantes → pire ; seal add_fast → no-op ; OptSponge
-flags constants → no-op ; EcScale reduce → no-op ; combine sg_old opt →
-casse EC ; flush par label → overshoot ; materialize x_hat → no-op).
+**DIFF DÉFINITIF (kinds de contraintes, wrap+step) :**
+| kind | jsoo | rust (approx) |
+|------|------|------|
+| Equal | **584** | ~124 (`assert equals`+`equals_1/2`) |
+| R1CS | 349 | ~123 (`checked_mul`) |
+| Square | 265 | ~264 (on-curve+…) ✓ |
+| EC_add_complete | 264 | 265 ✓ |
+| EC_endoscale | 79 | ✓ | EC_scale 15, EC_endoscalar 25 |
 
-État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded.
-Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
+**CAUSE : jsoo émet 584 `Equal` vs ~124** — 460 de plus. Répartition des
+Equal jsoo par gadget : `endo` 158, `wrap_verifier:580` (check_bulletproof)
+133, `hash_messages_for_next_step_proof` 110, `wrap_main:204` 56,
+`absorb verifier index` 54. Ce sont des **seals/asserts d'intermédiaires**
+(`Util.Wrap.seal`, `Field.Assert.equal`) qu'OCaml fait systématiquement
+avant de réutiliser une valeur, et que nous omettons (on garde les
+`compute` non scellés). Une fraction (~61 net, ~139 en région 500-1500)
+devient des rows generic `o=x1−x2` (`-1,1,-1,0,0`) qu'on n'a pas.
+
+**FIX** : ajouter les seals qu'OCaml fait dans les gadgets à fort écart
+d'Equal — en priorité `scalar_challenge.rs::endo` (jsoo 158 Equal : sceller
+les intermédiaires xq/yq/s/xr/yr par round ? à vérifier vs EndoMul déjà
+exact), `bulletproof.rs` (check_bulletproof 133), `hash_messages.rs` (110).
+Attention : ne pas bouger EC_add_complete/EndoMul (déjà exacts) ; vérifier
+le step reste FULL MATCH après chaque ajout. Le diff par gadget (ci-dessus)
+dit exactement où chercher — plus de devinette.
+
+État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded,
+step FULL MATCH. Instrumentation OCaml sur disque (mina/snarky, sous-module).
+Dumps : `/tmp/claude-1000/{wrap-circuit-*.json, jsoo-constraints.log}`.
