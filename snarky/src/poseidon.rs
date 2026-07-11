@@ -140,6 +140,22 @@ where
         Default::default()
     }
 
+    /// Resumes a sponge from a state computed *out of circuit* over a
+    /// constant prefix (OCaml's `Wrap_hack` caches the sponge state after
+    /// absorbing constant dummy challenge vectors, so only the variable
+    /// suffix costs Poseidon rows). `absorbed` is the pending absorb count
+    /// of the resumed mode, exactly as `ArithmeticSponge.sponge_state`.
+    pub fn from_constant_state(state: [F; 3], absorbed: usize) -> DuplexState<F> {
+        DuplexState {
+            state: [
+                FieldVar::constant(state[0]),
+                FieldVar::constant(state[1]),
+                FieldVar::constant(state[2]),
+            ],
+            mode: SpongeMode::Absorbed(absorbed),
+        }
+    }
+
     /// The in-circuit permutation, as the [`SpongeMachine`] permute closure.
     fn permute_closure<'a>(
         sys: &'a mut RunState<F>,

@@ -30,3 +30,23 @@ pub fn make_sponge<F: PrimeField>(
 /// thread the capacity across permutations — it matches
 /// [`mina_poseidon::poseidon::ArithmeticSponge`]).
 pub use snarky::gadgets::sponge::DuplexState as PoseidonSponge;
+
+/// The kimchi sponge parameters for the circuit field `F` (Fp → Vesta's,
+/// Fq → Pallas'), for generic code that needs an out-of-circuit sponge.
+pub fn params_for_field<F: PrimeField + 'static>(
+) -> &'static ArithmeticSpongeParams<F, FULL_ROUNDS> {
+    use core::any::TypeId;
+    use kimchi::curve::KimchiCurve;
+    use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
+    if TypeId::of::<F>() == TypeId::of::<Fp>() {
+        let params: &'static ArithmeticSpongeParams<Fp, FULL_ROUNDS> = Vesta::sponge_params();
+        // SAFETY: F == Fp (checked by TypeId), so this is the identity.
+        unsafe { core::mem::transmute(params) }
+    } else if TypeId::of::<F>() == TypeId::of::<Fq>() {
+        let params: &'static ArithmeticSpongeParams<Fq, FULL_ROUNDS> = Pallas::sponge_params();
+        // SAFETY: F == Fq (checked by TypeId), so this is the identity.
+        unsafe { core::mem::transmute(params) }
+    } else {
+        panic!("params_for_field: unsupported field");
+    }
+}
