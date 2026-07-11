@@ -47,9 +47,28 @@ STRUCTURELLE (pas un simple problème d'ordre) :
   scalar challenges in-circuit via le gate, nous précalculons),
   EndoMul 2464 vs 2016, Generic 569 vs **3764** (notre packing émet
   beaucoup plus de generic).
-Le chantier = aligner wrap_main structurellement : layout du statement
-(feature flags), conversion des challenges via EndoMulScalar, couverture
-sponge (opt_sponge ?), puis itérer le diff comme pour le step.
+**Phases A+B FAITES** (`ec2d4dab93`, `f952e167be`) : SRS pleins partout
+(step 2^16 / wrap 2^15 — 16/15 rounds IPA fixes, dispatch 9-16 supprimé,
+chaîne stable re-threadée step≠wrap rounds, verify.rs en SRS Tock) et
+statement wrap = layout OCaml 40 slots (13+ROUNDS+11, flags booléens
+contraints, joint combiner à zéro, mina_bin_prot en 24+16). Suites : 9/9
+recorded, 101/101 lib.
+
+État du diff wrap après A+B (méthode minimale) :
+- public input **40 = 40** ✓ ; CompleteAdd **258 = 258** ✓ ;
+  VarBaseMul **663 = 663** ✓ ; EndoMul **2464 = 2464** ✓ — toute la
+  partie EC du wrap est exacte en comptage.
+- Restent : **Generic 5594 vs 569** (≈10× — notre arithmétique déférée
+  finalize/ft_eval/b émet du generic brut là où OCaml est plus compact),
+  **EndoMulScalar 0 vs 184** (= 23 conversions to_field_checked de 8 rows :
+  OCaml convertit les scalar challenges in-circuit via le gate — porter
+  `scalar_to_field` de scalar_challenge.rs dans le chemin wrap),
+  **Poseidon 825 vs 1001** (176 rows = 16 blocs : absorb/opt-sponge),
+  et le domaine : notre wrap déborde à 2^14 (16384 rows) vs 2^13 jsoo —
+  il repassera sous 2^13 en résorbant l'excès de Generic.
+Prochaine étape : remplacer les conversions de challenges du chemin wrap
+(xi, alpha, zeta, 16 bp) par le gadget EndoMulScalar in-circuit, puis
+chasser les émissions Generic excédentaires bloc par bloc (dumps + diff).
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
 
 **Session parité wrap — faits vérifiés & gotchas** :
