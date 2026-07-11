@@ -404,7 +404,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             stmt[22 + ROUNDS].clone(),
         )?;
 
-        let vk_digest: FieldVar<Fq> = w1(sys, w.step_vk_digest)?;
         let vk = VerificationKeyComm {
             generic: mkpt(sys, w.generic)?,
             psm: mkpt(sys, w.psm)?,
@@ -415,6 +414,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             coefficients: mkpts(sys, &w.coefficients)?,
             sigma_init: mkpts(sys, &w.sigma_init)?,
             sigma_last: mkpts(sys, &w.sigma_last)?,
+        };
+        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
+        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
+        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
+        let vk_digest: FieldVar<Fq> = {
+            let mut index_sponge = crate::sponge::PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk
+                .sigma_init
+                .iter()
+                .chain(vk.sigma_last.iter())
+                .chain(vk.coefficients.iter())
+                .chain([
+                    &vk.generic,
+                    &vk.psm,
+                    &vk.complete_add,
+                    &vk.mul,
+                    &vk.emul,
+                    &vk.endomul_scalar,
+                ])
+            {
+                coords.push(pt.x.clone());
+                coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc!(), &coords);
+            index_sponge.squeeze(sys, loc!())
         };
         let messages = Messages {
             w_comm: w
