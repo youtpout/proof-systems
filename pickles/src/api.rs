@@ -515,6 +515,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sys,
                 loc!(),
             )?;
+            // OCaml `Features.to_full` also derives lookups_per_row_4 and
+            // lookups_per_row_3 (forced by the sponge's `uses_lookups`), in
+            // this order — omitting them shifted the subsequent gate pairing.
+            let lookups_per_row_4 = Boolean::any(
+                &[&lookup_pattern_xor, &lookup_pattern_range_check, &foreign_field_mul],
+                sys,
+                loc!(),
+            )?;
+            let _lookups_per_row_3 = lookups_per_row_4.or(&lookup, loc!(), sys);
 
             let false_ = Boolean::<Fq>::false_().to_field_var();
             for flag in [
