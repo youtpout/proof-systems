@@ -16,7 +16,7 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
+use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult, SnarkyType};
 
 use crate::plonk_curve_ops::{add_fast, scale_fast2_prime};
 
@@ -89,6 +89,7 @@ pub fn statement_terms<F: PrimeField>(
                 terms.push(Term::Cond { bit: odd, lagrange });
             }
             StatementElement::Bool(b) => {
+                b.check(sys, loc.clone())?;
                 let (lagrange, _) = next(&mut slot);
                 terms.push(Term::Cond {
                     bit: b.clone(),
