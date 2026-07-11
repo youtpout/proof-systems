@@ -98,6 +98,9 @@ fn o1js_dummy_constraints(sys: &mut RunState<Fp>) -> SnarkyResult<()> {
 
 impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
     type Curve = Vesta;
+    /// Mina step proofs always carry `MAX_PROOFS_VERIFIED` accumulators
+    /// (dummies at the base case — `Wrap_hack.pad_accumulator`).
+    const PREV_CHALLENGES: usize = crate::common::MAX_PROOFS_VERIFIED;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     /// (app witness, the wrap VK's 28 commitment coordinates)
     type PrivateInput = (A::Witness, Vec<(Fp, Fp)>);
@@ -1024,9 +1027,30 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         &[],
         &[],
     );
+    // Base-case step proofs carry two dummy accumulators
+    // (`Wrap_hack.pad_accumulator`): dummy step-side IPA challenges and
+    // their challenge-polynomial commitment over the full Tick SRS.
+    let dummy_recursion = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let (_, step_dummy) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
+        let sg = crate::dummy::compute_sg(svi.srs().as_ref(), &step_dummy.challenges_computed);
+        kimchi::proof::RecursionChallenge::new(
+            step_dummy.challenges_computed,
+            PolyComm { chunks: vec![sg] },
+        )
+    };
     let (step_proof, _) = step_pi
-        .prove::<VestaBase, VestaScalar>(digest, (witness, wrap_vk_pts.clone()), true)
+        .prove_with_recursion::<VestaBase, VestaScalar>(
+            digest,
+            (witness, wrap_vk_pts.clone()),
+            true,
+            vec![dummy_recursion.clone(), dummy_recursion],
+        )
         .unwrap();
+
+    // sanity: the padded step proof must verify at the kimchi level
+    step_ver.verify::<VestaBase, VestaScalar>(step_proof.clone(), digest, ());
 
     // ---- wrap witness ----
     let public_input = vec![digest];
@@ -1068,6 +1092,11 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     };
     let perm = crate::plonk_checks::perm_scalar(&env, &evals);
 
+    let sg_old_points: Vec<Vesta> = step_proof
+        .prev_challenges
+        .iter()
+        .map(|rc| rc.comm.chunks[0])
+        .collect();
     let ww = crate::wrap::wrap_witness(
         svi.max_poly_size as u64,
         svi.domain.size,
@@ -1075,7 +1104,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         &step_proof,
         &public_comm,
         svi.digest::<VestaBase>(),
-        &[],
+        &sg_old_points,
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,
@@ -1087,7 +1116,13 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         let params = Vesta::sponge_params();
         let mut fr = VestaScalar::from(params);
         fr.absorb(&o.digest);
-        let pcd = VestaScalar::from(params).digest();
+        let pcd = {
+            let mut prev_sponge = VestaScalar::from(params);
+            for rc in &step_proof.prev_challenges {
+                prev_sponge.absorb_multiple(&rc.chals);
+            }
+            prev_sponge.digest()
+        };
         fr.absorb(&pcd);
         fr.absorb(&step_proof.ft_eval1);
         fr.absorb_multiple(&o.public_evals[0]);
@@ -1212,7 +1247,11 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         sg: co(&sg_pt),
         z1_repr: fp_to_fq(ww.z1_repr),
         z2_repr: fp_to_fq(ww.z2_repr),
-        sg_olds: vec![],
+        sg_olds: step_proof
+            .prev_challenges
+            .iter()
+            .map(|rc| co(&rc.comm.chunks[0]))
+            .collect(),
         unfinalized: vec![],
         step_statement: vec![WrapStepStatementSlot::Packed {
             value: fp_to_fq(digest),

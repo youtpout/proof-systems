@@ -66,11 +66,22 @@ recorded, 101/101 lib.
   **Poseidon 825 vs 1001** (176 rows = 16 blocs : absorb/opt-sponge),
   et le domaine : notre wrap déborde à 2^14 (16384 rows) vs 2^13 jsoo —
   il repassera sous 2^13 en résorbant l'excès de Generic.
-État du diff wrap (méthode minimale, après la session iso) :
-- **8192 = 8192 rows** ; CompleteAdd 258=258, VarBaseMul 663=663,
-  EndoMul 2464=2464, **EndoMulScalar 184=184** — 4 types de gates EXACTS ;
-- Poseidon 979 vs 1001 (−2 blocs), Generic 402 vs 569 (−167),
-  Zero +189 (miroir des déficits).
+État du diff wrap (méthode minimale, après le refactor Poseidon/accumulateur) :
+- **8192 = 8192 rows** ; VarBaseMul 663=663,
+  **EndoMulScalar 184=184**, **Poseidon 1001=1001** — le train
+  Poseidon du wrap est maintenant aligné en comptage ;
+- la preuve step base-case porte physiquement les deux accumulateurs dummy
+  (`MAX_PROOFS_VERIFIED`) : `StepCircuit::PREV_CHALLENGES=2`,
+  `prove_with_recursion(..., dummy, dummy)`, replay du digest Fr sur les
+  `prev_challenges`, et `wrap_witness` absorbe ces commitments comme le
+  transcript kimchi généré ;
+- effet secondaire attendu : ces `sg_old` sont encore traités comme actifs
+  par le prover/vérifieur IPA Rust, alors qu'OCaml les transporte avec
+  `keep=false` dans le base-case. Le diff actuel est donc
+  Generic 409 vs 569, CompleteAdd 264 vs 258, EndoMul 2528 vs 2464,
+  Zero +90. Le test à ne pas refaire : simplement passer `sg_olds=[]`
+  au wrap circuit fait tomber l'EC mais casse la contrainte IPA, parce que
+  le step proof a été prouvé avec ces commitments actifs.
 
 Correctifs de la session (commits `5a50fd40`→) :
 - `challenge.rs::lowest_128_bits` : range-check des moitiés 128-bit via
@@ -91,13 +102,14 @@ Pistes précises pour les derniers écarts (localisation par déciles) :
    255-bit en (Field, Boolean) avec seal + assert de recomposition
    (patterns `E3fff` ≈ 2^254 dans le dump) ; nos step_statement_terms
    n'émettent pas ces découpes.
-2. **sg_old masqués** : OCaml absorbe (keep, sg) via mask_g1_opt
-   (coordonnées scalées par le booléen avant absorb, ~2 gen/point) ;
-   nous absorbons sans masque.
-3. **Poseidon −2 blocs** (d1) et redistribution d4/d5 : alignement du
-   Fr-sponge/absorb — comparer les trains bloc par bloc (@997-1207 et
-   @4100-4920 jsoo).
-4. Ensuite : passe coeffs/wiring comme pour le step (ordre d'émission,
+2. **sg_old masqués** : prochain vrai chantier d'iso. Il faut porter la
+   sémantique OCaml `actual_proofs_verified_mask`: les dummies base-case
+   doivent contribuer au padding/digest Fr, mais être absorbés comme
+   `(0,0)` côté Fq sponge et comme `Opt.Nothing` dans la combinaison IPA.
+   Le simple masquage dans `wrap_main` ne suffit pas : le step proof doit
+   aussi être généré avec ce transcript/combine masqué, sinon la preuve et
+   le circuit divergent.
+3. Ensuite : passe coeffs/wiring comme pour le step (ordre d'émission,
    union des constantes, tri des cycles) — même méthodologie éprouvée.
 
 

@@ -414,6 +414,12 @@ pub struct RecursiveStepData {
     pub messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
     pub prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
     pub prev_challenges: Vec<Vec<Fp>>,
+    /// The kimchi-level previous challenge vectors of the *step proof being
+    /// finalized* (its Fr-sponge absorbed their digest) — distinct from
+    /// [`Self::prev_challenges`], the pickles-level accumulator challenges
+    /// bound by the messages digest (OCaml pads the former to width 2,
+    /// `Wrap_hack.Checked.pad_challenges`).
+    pub finalize_prev_challenges: Vec<Vec<Fp>>,
     pub wrap_vk_digest: Fp,
     pub generic: (Fp, Fp),
     pub psm: (Fp, Fp),
@@ -1194,6 +1200,15 @@ pub fn prepare_recursive_step_with_state<
     new_app_state: Vec<Fp>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
     let step_public = [embed_fq_to_fp(base.statement[12])];
+    // The base step proof carries two dummy accumulators
+    // (Wrap_hack.pad_accumulator): its Fr-sponge absorbed their challenge
+    // digest, so the finalize replay needs the same vectors.
+    let base_prev_challenges: Vec<Vec<Fp>> = base
+        .step_proof
+        .prev_challenges
+        .iter()
+        .map(|rc| rc.chals.clone())
+        .collect();
     prepare_recursive_step_from_parts::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>(
         &base.step_verifier.index,
         &base.step_proof,
@@ -1204,6 +1219,7 @@ pub fn prepare_recursive_step_with_state<
         vec![],
         vec![],
         vec![],
+        base_prev_challenges,
         wrap_vk_pts.clone(),
         wrap_vk_pts,
         prev_app_state,
@@ -1226,6 +1242,7 @@ fn prepare_recursive_step_from_parts<
     messages_for_next_step_accumulators: Vec<(Fp, Fp)>,
     prev_challenge_polynomial_commitments: Vec<(Fp, Fp)>,
     prev_challenges: Vec<Vec<Fp>>,
+    finalize_prev_challenges: Vec<Vec<Fp>>,
     previous_messages_vk_pts: Vec<(Fp, Fp)>,
     next_messages_vk_pts: Vec<(Fp, Fp)>,
     prev_app_state: Vec<Fp>,
@@ -1333,6 +1350,7 @@ fn prepare_recursive_step_from_parts<
         messages_for_next_step_accumulators,
         prev_challenge_polynomial_commitments,
         prev_challenges,
+        finalize_prev_challenges,
         wrap_vk_digest: wvi.digest::<PallasBase>(),
         generic: co(&wvi.generic_comm.chunks[0]),
         psm: co(&wvi.psm_comm.chunks[0]),
@@ -2292,6 +2310,13 @@ pub fn prepare_next_recursive_step<
         vec![previous.step.verified_wrap_accumulator],
         vec![],
         vec![previous.step.finalized_step_challenges.clone()],
+        previous
+            .step
+            .proof
+            .prev_challenges
+            .iter()
+            .map(|rc| rc.chals.clone())
+            .collect(),
         previous.step.messages_for_next_step_vk_pts.clone(),
         wrap_vk_pts,
         prev_app_state.clone(),
@@ -2967,6 +2992,11 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .iter()
             .map(|chals| wvec(sys, chals))
             .collect::<SnarkyResult<Vec<_>>>()?,
+        finalize_prev_challenges: d
+            .finalize_prev_challenges
+            .iter()
+            .map(|chals| wvec(sys, chals))
+            .collect::<SnarkyResult<Vec<_>>>()?,
         vk_digest: w1(sys, d.wrap_vk_digest)?,
         vk,
         packed_lagranges: d
@@ -3346,6 +3376,11 @@ impl<
                 .collect::<SnarkyResult<Vec<_>>>()?,
             prev_challenges: d
                 .prev_challenges
+                .iter()
+                .map(|chals| wvec(sys, chals))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            finalize_prev_challenges: d
+                .finalize_prev_challenges
                 .iter()
                 .map(|chals| wvec(sys, chals))
                 .collect::<SnarkyResult<Vec<_>>>()?,

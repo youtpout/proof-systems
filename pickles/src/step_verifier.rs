@@ -262,6 +262,7 @@ pub fn verify_one<F, C>(
     messages_for_next_step_accumulators: &[Point<F>],
     prev_challenge_polynomial_commitments: &[Point<F>],
     prev_challenges: &[Vec<FieldVar<F>>],
+    finalize_prev_challenges: &[Vec<FieldVar<F>>],
     // wrap proof verification
     vk_digest: &FieldVar<F>,
     vk: &VerificationKeyComm<F>,
@@ -313,7 +314,7 @@ where
         perm_repr: stmt.perm.clone(),
         bulletproof_challenges: stmt.bulletproof_challenges.clone(),
         digest: stmt.sponge_digest_before_evaluations.clone(),
-        prev_challenges: prev_challenges.to_vec(),
+        prev_challenges: finalize_prev_challenges.to_vec(),
         ft_eval1: finalize_evals.ft_eval1.clone(),
         public_evals: finalize_evals.public_evals.clone(),
         evals: finalize_evals.evals.clone(),

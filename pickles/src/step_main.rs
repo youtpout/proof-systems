@@ -47,6 +47,9 @@ pub struct PerProofInput<'a, F: PrimeField> {
     /// Commitments folded into the wrap proof's IPA equation.
     pub prev_challenge_polynomial_commitments: Vec<Point<F>>,
     pub prev_challenges: Vec<Vec<FieldVar<F>>>,
+    /// Kimchi-level previous challenges of the finalized step proof (padded
+    /// to width 2 by Mina) — used by the Fr-sponge replay, not the digest.
+    pub finalize_prev_challenges: Vec<Vec<FieldVar<F>>>,
     // the wrap proof itself
     pub vk_digest: FieldVar<F>,
     pub vk: VerificationKeyComm<F>,
@@ -107,6 +110,7 @@ where
             &p.messages_for_next_step_accumulators,
             &p.prev_challenge_polynomial_commitments,
             &p.prev_challenges,
+            &p.finalize_prev_challenges,
             &p.vk_digest,
             &p.vk,
             &p.packed_lagranges,
