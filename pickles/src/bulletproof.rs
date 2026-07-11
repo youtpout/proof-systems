@@ -101,14 +101,14 @@ pub fn bullet_reduce_challenges<F: PrimeField>(
     sponge: &mut crate::sponge::PoseidonSponge<F>,
     lr: &[(crate::oracles::PointVar<F>, crate::oracles::PointVar<F>)],
 ) -> SnarkyResult<Vec<FieldVar<F>>> {
-    use crate::challenge::squeeze_challenge;
+    use crate::challenge::squeeze_scalar;
     use crate::oracles::absorb_commitment;
 
     let mut prechallenges = Vec::with_capacity(lr.len());
     for (l, r) in lr {
         absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(l));
         absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(r));
-        prechallenges.push(squeeze_challenge(sys, loc.clone(), sponge)?);
+        prechallenges.push(squeeze_scalar(sys, loc.clone(), sponge)?);
     }
     Ok(prechallenges)
 }
@@ -147,7 +147,7 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::challenge::squeeze_challenge;
+    use crate::challenge::squeeze_scalar;
     use crate::oracles::absorb_commitment;
     use snarky::gadgets::group_map::to_group;
 
@@ -164,7 +164,7 @@ where
 
     // absorb(delta); c = squeeze_scalar (raw 128-bit)
     absorb_commitment(sys, loc.clone(), sponge, std::slice::from_ref(delta));
-    let c = squeeze_challenge(sys, loc, sponge)?;
+    let c = squeeze_scalar(sys, loc, sponge)?;
 
     Ok((u, prechallenges, c))
 }

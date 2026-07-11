@@ -68,6 +68,19 @@ pub fn lowest_128_bits<F: PrimeField>(
     Ok(lo)
 }
 
+/// Squeezes a 128-bit *scalar* challenge (OCaml `squeeze_scalar`): like
+/// [`squeeze_challenge`] but only the high half is range-checked
+/// (`constrain_low_bits = false`) — scalar challenges need no boolean
+/// constraint on their low bits.
+pub fn squeeze_scalar<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge: &mut crate::sponge::PoseidonSponge<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    let squeezed = sponge.squeeze(sys, loc.clone());
+    lowest_128_bits(sys, loc, &squeezed, false)
+}
+
 /// Squeezes a 128-bit challenge from a duplex sponge (step-8
 /// `squeeze_challenge`): the lowest 128 bits of a sponge squeeze.
 pub fn squeeze_challenge<F: PrimeField>(

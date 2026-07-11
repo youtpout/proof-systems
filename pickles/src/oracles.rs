@@ -28,7 +28,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
-use crate::challenge::squeeze_challenge;
+use crate::challenge::{squeeze_challenge, squeeze_scalar};
 use crate::scalar_challenge::scalar_to_field;
 use crate::sponge::PoseidonSponge;
 
@@ -92,12 +92,12 @@ pub fn derive_fq_oracles<F: PrimeField>(
 
     // absorb the permutation commitment, then sample alpha (endo)
     absorb_commitment(sys, loc.clone(), &mut sponge, z_comm);
-    let alpha_chal = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    let alpha_chal = squeeze_scalar(sys, loc.clone(), &mut sponge)?;
     let alpha = scalar_to_field(sys, loc.clone(), &alpha_chal, endo)?;
 
     // absorb the quotient commitment, then sample zeta (endo)
     absorb_commitment(sys, loc.clone(), &mut sponge, t_comm);
-    let zeta_chal = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    let zeta_chal = squeeze_scalar(sys, loc.clone(), &mut sponge)?;
     let zeta = scalar_to_field(sys, loc.clone(), &zeta_chal, endo)?;
 
     Ok(FqOracles {
