@@ -86,56 +86,42 @@ Correctifs additionnels de cette session (au-delà du handoff précédent) :
   ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
   filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
 
-**Dernier écart Generic — origine localisée : `x_hat` / public input wrap.**
-État actuel après `Flush wrap generic gates before custom rows` :
-- rows/public input : **8192=8192**, **40=40** ;
-- compteurs exacts hors Generic/Zero : Poseidon 1001, CompleteAdd 258,
-  VarBaseMul 663, EndoMulScalar 184, EndoMul 2464 ;
-- reste **Generic 508 vs 569** et **Zero 3114 vs 3053**.
+**Dernier écart Generic (508 vs 569, −61) — MÉCANISME DÉFINITIF.**
+6/7 gate types exacts (Poseidon 1001, CompleteAdd 258, VarBaseMul 663,
+EndoMulScalar 184, EndoMul 2464, public input 40=40, 8192 rows). L'écart
+Generic n'est PAS un simple manque mais une **redistribution** (carte par
+région de 500) :
+- 0-500 : rust +31 (on sur-émet) ; 3500 : rust +41 ;
+- 500-1500 : jsoo +109 (on sous-émet) ; 2000 : jsoo +24.
 
-Pistes testées et écartées :
-1. VK step + `h` en constantes → 450→421 (PIRE, jsoo witnesse la VK),
-   reverté ;
-2. seal des entrées d'`add_fast` → no-op (`add_complete` réduisait déjà) ;
-3. **swap `OptSponge` dans l'IVP → NO-OP** : avec les flags à `true`
-   constant, la machinerie conditionnelle (`add_in`, masque) se replie
-   (mul par constante 1 = 0 contrainte), Generic reste à 450. Donc
-   l'opt-sponge N'est PAS la cause (contrairement à ce que le motif
-   laissait croire) ;
-4. réduction complète de l'état `EcScale` avant émission des rows, comme le
-   backend OCaml → no-op mesurable ;
-5. `combine_commitments` avec préfixe `sg_old` optionnel (`Opt.Maybe`) →
-   casse la parité structurelle EC (EndoMul +64, CompleteAdd +6), reverté ;
-6. flush des generic sur changement de label/loc → overshoot Generic 617,
-   EC/Poseidon inchangés mais mauvais pour l'iso, reverté.
+Localisation exacte du plus gros bloc manquant : **139 rows du motif
+`o = x1 − x2` (`-1,1,-1,0,0`), en région 500-1500, ENTRE deux CompleteAdd**
+(ex. rows jsoo 700-703 encadrées par CompleteAdd 699/704), avec une
+constante `E` dans les demi-lignes voisines (`1,0,0,0,E`).
 
-Localisation mécanique :
-- les premières rows manquantes `jsoo Generic / rust Zero` sont
-  `701,703,705,709,723,725,727,741,743,745,759,761` ;
-- elles tombent dans le premier `scale_fast` de `x_hat`, juste après le
-  `split_field` de `scale_fast2_prime` :
-  - row Rust 657 : `scale_fast2_prime split` (`assert equals` +
-    `split_field: odd bit`) ;
-  - rows Rust 660–761 : `scale_fast` ;
-  - puis `EC complete add` / `if_`.
-- labels des rows manquantes : 24 `scale_fast`, 12 `Poseidon`, 2 `endo`,
-  9 padding/final rows sans label ; la première grosse zone est donc le
-  commitment du public input (`x_hat`), pas `ft_comm`, pas
-  `combine_commitments`, pas Poseidon lui-même.
+Cause : OCaml `reduce_to_v` (snarky `plonk_constraint_system.ml`)
+**matérialise chaque constante passée à un gate en variable interne** via
+`cached_constants` — un generic `x = E` (`[1,0,0,0,-E]`) par coordonnée
+Lagrange constante fournie à un `add_fast`/CompleteAdd/scale dans le fold
+`x_hat` et le `check_bulletproof`. Nous gardons ces coordonnées en
+`FieldVar::Constant` repliées dans le gate → pas de generic. C'est ce qui
+manque en 500-1500, et le décalage pousse les autres régions (d'où
+sur-émission ailleurs et `type=2344` rows au mauvais type par cascade).
 
-Motifs manquants côté jsoo mais absents ou sous-représentés côté Rust :
-- `E,1,E,0,0` (27 demi-lignes, **0** côté Rust) ;
-- `0,0,E,0,0` (9, **0** côté Rust) ;
-- `0,0,1,0,0` (9, **0** côté Rust) ;
-- `1,0,E,0,0` (8, **0** côté Rust).
+Pistes réfutées (toutes revertées, 9/9 préservé) : VK/h constantes
+(pire), seal add_fast (no-op — les entrées étaient déjà des vars),
+OptSponge à flags constants (no-op — se replie), reduce EcScale (no-op),
+combine_commitments sg_old optionnel (casse EC), flush par label
+(overshoot).
 
-Conclusion : l'écart vient du chemin OCaml
-`wrap_verifier.ml::{lagrange_with_correction, x_hat fold, Ops.scale_fast2'}`
-vs Rust `public_input.rs::{statement_terms, public_input_commitment}` +
-`plonk_curve_ops.rs::{scale_fast2_prime, scale_fast2, scale_fast_unpack}`.
-La prochaine correction doit porter fidèlement les seals/réductions et
-corrections Lagrange de ce chemin, en particulier autour du fold
-`Add_with_correction ((x, num_bits), chunks)` et de `scale_fast2_prime`.
+**Fix** : matérialiser en variable interne les coordonnées de point
+**constantes** avant de les passer à un gate EC, à l'identique du chemin
+`reduce_to_v` OCaml (cached_constants : réutiliser la même var pour une
+constante répétée). Le faire de façon SCOPÉE au wrap (le step est à 0
+diff et ne doit pas bouger) — soit un helper `materialize(point)` appelé
+sur les Lagrange/H/corrections avant `add_fast`/scale dans
+`public_input.rs` et `bulletproof.rs`, soit au niveau du gate avec un
+flag. Vérifier après chaque ajout que le step reste à 0 diff.
 
 État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
