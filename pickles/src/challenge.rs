@@ -39,11 +39,26 @@ pub fn lowest_128_bits<F: PrimeField>(
         recompose(&bits[CHALLENGE_BITS..])
     })?;
 
-    // range-check hi (and optionally lo) to CHALLENGE_BITS bits: the unpack
-    // gadget constrains the value to fit in that many boolean-constrained bits
-    let _ = snarky::gadgets::bits::unpack(sys, loc.clone(), &hi, CHALLENGE_BITS)?;
+    // range-check hi (and optionally lo) to CHALLENGE_BITS bits. OCaml's
+    // `assert_128_bits` runs `Scalar_challenge.to_field_checked` for its
+    // side effect: the EndoMulScalar gate recomposes the value from 2-bit
+    // crumbs (8 rows for 128 bits) and `n` is constrained to the input.
+    let endo_r = crate::endo::endo_r_for_field::<F>();
+    let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+        sys,
+        loc.clone(),
+        &hi,
+        endo_r,
+        CHALLENGE_BITS,
+    )?;
     if constrain_low_bits {
-        let _ = snarky::gadgets::bits::unpack(sys, loc.clone(), &lo, CHALLENGE_BITS)?;
+        let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+            sys,
+            loc.clone(),
+            &lo,
+            endo_r,
+            CHALLENGE_BITS,
+        )?;
     }
 
     // x = lo + hi * 2^128

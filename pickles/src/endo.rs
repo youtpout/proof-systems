@@ -26,3 +26,20 @@ pub mod tock {
         *<Pallas as KimchiCurve<FULL_ROUNDS>>::other_curve_endo()
     }
 }
+
+/// The scalar endo used by `to_field_checked`-style range asserts in either
+/// circuit field (OCaml `Endo.Step_inner_curve.scalar` from a wrap circuit,
+/// `Endo.Wrap_inner_curve.scalar` from a step circuit). Only the constraint
+/// matters for those callers, but the value is the canonical endo of the
+/// field's own proving curve pair.
+pub fn endo_r_for_field<F: ark_ff::PrimeField>() -> F {
+    use ark_ff::{BigInteger, PrimeField as _};
+    if F::MODULUS.to_string() == Fp::MODULUS.to_string() {
+        let endo: Fp = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        F::from_le_bytes_mod_order(&endo.into_bigint().to_bytes_le())
+    } else {
+        assert_eq!(F::MODULUS.to_string(), Fq::MODULUS.to_string());
+        let endo: Fq = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        F::from_le_bytes_mod_order(&endo.into_bigint().to_bytes_le())
+    }
+}
