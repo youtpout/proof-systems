@@ -138,29 +138,31 @@ points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 **Wrap parity — Generic 556/569, 13 net.** Autres gate types EXACTS,
 step FULL MATCH, recorded 9/9 (N0/N1/N2).
 
-Confirmations de FIDÉLITÉ OCaml (vérifiées, aucun changement requis) :
-- `snarky::cvar::equal_constraints` = OCaml `Utils.equal_constraints`
-  (`z_inv·z = 1-r` puis `r·z = 0`, ordre identique) ✓.
+Confirmations de FIDÉLITÉ OCaml (vérifiées, code déjà conforme) :
+- `cvar::equal_constraints` = OCaml `Utils.equal_constraints`
+  (`z_inv·z=1-r` puis `r·z=0`) ✓ ;
+- notre `which_branch` (`equal(0)` + assert==1) = OCaml
+  `One_hot_vector.of_index` length 1 (`Field.equal 0 i` + `Assert.any`) ✓.
 
-Gains committés : lookups_per_row_3/4 (`bd6f1b8d2a`, +5 Generic), fix N2
-(`6c2a153c95`, 9/9), forbidden-check remonté avant which_branch
-(`969e09edea`, marginal +6 rows).
+**GAP STRUCTUREL identifié — le vrai reste.** Séquence d'ouverture du wrap
+jsoo (via instrumentation OCaml) : `which_branch` one-hot (2 R1CS) →
+`branch_data` assert → **`exists prev_proof_state`** = OCaml witnesse
+**2 unfinalized proofs DUMMY** (padding à max_proofs_verified=2, MÊME pour
+N0) et `split_field` leurs valeurs différées Type2 (`Field.Assert.equal
+(2y+is_odd) x` = 1 Equal chacune) → les **~28 Equal** d'ouverture.
+Notre base wrap : `unfinalized: vec![]` = 0 (api.rs:1458) → on saute ce
+bloc. Ajouter les 28 Equal (split de 2 dummies) au bon endroit fermerait
+les 13 net ET la cascade type=1989.
 
-**Reste — offset de pairing à l'ouverture du circuit wrap.** Séquence de
-contraintes HL du wrap jsoo (via instrumentation OCaml) : **2 R1CS puis
-~28 Equal** (kind `Equal` = `assert_equals`/seals directs, PAS notre
-gadget equal qui émet du R1CS). Notre ouverture diffère → offset qui
-cascade (type=1989). À investiguer :
-- QUELS sont les 2 R1CS + 28 Equal d'ouverture d'OCaml `wrap_main` (avant
-  le corps) — probablement le one-hot `which_branch` (booleanité R1CS) +
-  des seals de valeurs différées du statement (split/pack). Notre ordre
-  (forbidden R1CS puis which_branch) ne correspond pas.
-- count `forbidden_shifted_values_fq` = **2** : suspect (les 28 Equal jsoo
-  suggèrent plus de valeurs/asserts au début). Vérifier vs OCaml.
-Méthode : capturer les 2 logs HL (jsoo : `rust-pickles-vk-parity.ts` avec
-jsoo instrumenté à `89edaa3204` ; rust : `SNARKY_LOG_HL_CONSTRAINTS`),
-extraire la sous-séquence wrap ordonnée de chaque, aligner → 1ère
-divergence = la contrainte exacte à corriger.
+**ATTENTION avant d'implémenter** : OCaml met should_finalize=false pour
+les dummies → le `finalize_other_proof` tourne quand même mais son
+résultat n'est pas asserté. Il faut ajouter UNIQUEMENT l'`exists`/split
+(28 Equal), PAS un finalize qui émettrait des EndoMul/Poseidon et
+casserait les compteurs EXACTS (EndoMul 2464, Poseidon 1001). Vérifier
+après ajout que ces compteurs ne bougent pas et que N0/N1/N2 passent.
+Piste : peupler `w.unfinalized` de 2 dummies dont le witness ne déclenche
+que le split_field, ou ajouter un bloc `exists_dummy_unfinalized` distinct
+avant le traitement des vrais unfinalized.
 
 
 ⚠️ **TOUJOURS tester les 3 tailles de preuve à chaque changement du
