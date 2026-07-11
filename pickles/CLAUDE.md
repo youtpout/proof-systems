@@ -86,8 +86,14 @@ Correctifs additionnels de cette session (au-delà du handoff précédent) :
   ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
   filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
 
-**Dernier écart Generic (−119) — pistes réfutées, source encore ouverte.**
-Trois hypothèses testées et écartées (suite restée 9/9 à chaque fois) :
+**Dernier écart Generic — origine localisée : `x_hat` / public input wrap.**
+État actuel après `Flush wrap generic gates before custom rows` :
+- rows/public input : **8192=8192**, **40=40** ;
+- compteurs exacts hors Generic/Zero : Poseidon 1001, CompleteAdd 258,
+  VarBaseMul 663, EndoMulScalar 184, EndoMul 2464 ;
+- reste **Generic 508 vs 569** et **Zero 3114 vs 3053**.
+
+Pistes testées et écartées :
 1. VK step + `h` en constantes → 450→421 (PIRE, jsoo witnesse la VK),
    reverté ;
 2. seal des entrées d'`add_fast` → no-op (`add_complete` réduisait déjà) ;
@@ -95,19 +101,41 @@ Trois hypothèses testées et écartées (suite restée 9/9 à chaque fois) :
    constant, la machinerie conditionnelle (`add_in`, masque) se replie
    (mul par constante 1 = 0 contrainte), Generic reste à 450. Donc
    l'opt-sponge N'est PAS la cause (contrairement à ce que le motif
-   laissait croire).
+   laissait croire) ;
+4. réduction complète de l'état `EcScale` avant émission des rows, comme le
+   backend OCaml → no-op mesurable ;
+5. `combine_commitments` avec préfixe `sg_old` optionnel (`Opt.Maybe`) →
+   casse la parité structurelle EC (EndoMul +64, CompleteAdd +6), reverté ;
+6. flush des generic sur changement de label/loc → overshoot Generic 617,
+   EC/Poseidon inchangés mais mauvais pour l'iso, reverté.
 
-Ce qui reste vrai : le motif manquant est `o = s1·x1 + s2·x2`
-(`-1,1,-1,0,0`, ~146 rows région 600-1200, entrelacé Poseidon) = des
-lincombs 2-termes scellées en variable interne que jsoo émet et pas nous.
-Mais leur ORIGINE précise n'est pas encore isolée (ni add_fast, ni
-opt-sponge). Piste suivante : **compter les contraintes par gadget**
-(instrumenter `add_constraint`/`reduce_lincom` avec un compteur nommé,
-diff jsoo vs rust par gadget) plutôt que deviner — les seals aveugles aux
-endroits « évidents » (add_fast) n'ont rien donné. Candidats non encore
-testés : `combine_commitments` (Horner xi, sortie EndoMul réutilisée →
-sceller l'accumulateur entre rounds), `ft_comm` (`reduce_chunks` scale
-Horner), le packing `split_field` du statement (x = 2·x_div_2 + odd).
+Localisation mécanique :
+- les premières rows manquantes `jsoo Generic / rust Zero` sont
+  `701,703,705,709,723,725,727,741,743,745,759,761` ;
+- elles tombent dans le premier `scale_fast` de `x_hat`, juste après le
+  `split_field` de `scale_fast2_prime` :
+  - row Rust 657 : `scale_fast2_prime split` (`assert equals` +
+    `split_field: odd bit`) ;
+  - rows Rust 660–761 : `scale_fast` ;
+  - puis `EC complete add` / `if_`.
+- labels des rows manquantes : 24 `scale_fast`, 12 `Poseidon`, 2 `endo`,
+  9 padding/final rows sans label ; la première grosse zone est donc le
+  commitment du public input (`x_hat`), pas `ft_comm`, pas
+  `combine_commitments`, pas Poseidon lui-même.
 
-État committé : Generic 450 vs 569, 5/7 gate types exacts, 9/9 recorded.
+Motifs manquants côté jsoo mais absents ou sous-représentés côté Rust :
+- `E,1,E,0,0` (27 demi-lignes, **0** côté Rust) ;
+- `0,0,E,0,0` (9, **0** côté Rust) ;
+- `0,0,1,0,0` (9, **0** côté Rust) ;
+- `1,0,E,0,0` (8, **0** côté Rust).
+
+Conclusion : l'écart vient du chemin OCaml
+`wrap_verifier.ml::{lagrange_with_correction, x_hat fold, Ops.scale_fast2'}`
+vs Rust `public_input.rs::{statement_terms, public_input_commitment}` +
+`plonk_curve_ops.rs::{scale_fast2_prime, scale_fast2, scale_fast_unpack}`.
+La prochaine correction doit porter fidèlement les seals/réductions et
+corrections Lagrange de ce chemin, en particulier autour du fold
+`Add_with_correction ((x, num_bits), chunks)` et de `scale_fast2_prime`.
+
+État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
