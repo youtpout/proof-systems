@@ -324,7 +324,8 @@ pub struct WrapWitnessData {
 
 /// The base-case wrap circuit: [`wrap_main`] over one step proof, public
 /// input = the wrap statement (13 scalars, `ROUNDS` bulletproof challenges,
-/// branch data, 8 feature flags; `STMT_LEN = 13 + ROUNDS + 9`).
+/// branch data, 8 feature flags, optional joint combiner
+/// (`STMT_LEN = 13 + ROUNDS + 11` — the OCaml 40-slot layout).
 pub struct WrapCircuit<const ROUNDS: usize, const STMT_LEN: usize> {
     pub w: WrapWitnessData,
 }
@@ -383,6 +384,25 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let sponge_digest = stmt[10].clone();
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
+        // OCaml 40-slot tail: 8 feature-flag booleans + the optional joint
+        // combiner (flag boolean + scalar). o1js compiles with Maybe flags,
+        // so they are public boolean slots; our programs use none of them.
+        for flag in &stmt[14 + ROUNDS..22 + ROUNDS] {
+            sys.assert_r1cs(
+                Some("feature flag bit".into()),
+                loc!(),
+                flag.clone(),
+                flag.clone(),
+                flag.clone(),
+            )?;
+        }
+        sys.assert_r1cs(
+            Some("joint combiner flag bit".into()),
+            loc!(),
+            stmt[22 + ROUNDS].clone(),
+            stmt[22 + ROUNDS].clone(),
+            stmt[22 + ROUNDS].clone(),
+        )?;
 
         let vk_digest: FieldVar<Fq> = w1(sys, w.step_vk_digest)?;
         let vk = VerificationKeyComm {
@@ -957,7 +977,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
-    assert_eq!(STMT_LEN, 13 + ROUNDS + 9, "STMT_LEN mismatch");
+    assert_eq!(STMT_LEN, 13 + ROUNDS + 11, "STMT_LEN mismatch (OCaml 40-slot layout)");
     // ---- step proof ----
     let app_state = app.state(&witness);
     let step = StepCircuit { app };
@@ -1089,12 +1109,13 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         proofs_verified: ProofsVerified::N0,
         domain_log2: svi.domain.log_size_of_group as u8,
     };
-    let statement = crate::composition_types::wrap::wrap_statement_to_field_elements(
+    let statement = crate::composition_types::wrap::wrap_statement_to_field_elements_ocaml(
         &plonk_vals,
         fp_to_fq(ww.cip_repr),
         fp_to_fq(ww.b_repr),
         &ScalarChallenge(fp_to_fq(claimed_xi_raw)),
         &bp_chals,
+        &ScalarChallenge(Fq::from(0u64)),
         &branch,
         fp_to_fq(ww.sponge_digest),
         msgs_wrap_digest,

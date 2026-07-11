@@ -1746,7 +1746,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     proofs_verified: ProofsVerified,
     messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
-    assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 9);
+    assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 11);
     assert_eq!(step_proof.proof.lr.len(), STEP_PROOF_ROUNDS);
     assert_eq!(unfinalized.len(), proofs_verified.to_usize());
 
@@ -1893,12 +1893,13 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         proofs_verified,
         domain_log2: domain_log2 as u8,
     };
-    let statement = crate::composition_types::wrap::wrap_statement_to_field_elements(
+    let statement = crate::composition_types::wrap::wrap_statement_to_field_elements_ocaml(
         &plonk_vals,
         embed_fp_to_fq(ww.cip_repr),
         embed_fp_to_fq(ww.b_repr),
         &ScalarChallenge(embed_fp_to_fq(claimed_xi_raw)),
         &bp_chals,
+        &ScalarChallenge(Fq::from(0u64)),
         &branch,
         embed_fp_to_fq(ww.sponge_digest),
         msgs_wrap_digest,

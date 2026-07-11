@@ -786,7 +786,7 @@ macro_rules! prove_at_rounds {
                     let mut backend = crate::api::BaseCaseRuleBackend::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >::compile(&rule, $app)
                     .map_err(RecordedProveError::Backend)?;
                     let (_, encoded) = backend
@@ -870,16 +870,16 @@ const RECORDED_BASE_WRAP_ROUNDS: usize = crate::common::TOCK_ROUNDS;
 const RECORDED_N1_STEP_ROUNDS: usize = crate::common::TICK_ROUNDS;
 const RECORDED_N1_STEP_STMT_LEN: usize =
     crate::recursive_step::width1_step_statement_len(RECORDED_BASE_WRAP_ROUNDS);
-const RECORDED_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
+const RECORDED_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 11;
 // The stable step statement length depends on the rounds of the *wrap*
 // proof it verifies (always the full Tock SRS now).
 const RECORDED_STABLE_N1_STEP_STMT_LEN: usize =
     crate::recursive_step::width1_step_statement_len(RECORDED_BASE_WRAP_ROUNDS);
-const RECORDED_STABLE_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
+const RECORDED_STABLE_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 11;
 const RECORDED_N2_STEP_ROUNDS: usize = crate::common::TICK_ROUNDS;
 const RECORDED_N2_STEP_STMT_LEN: usize =
     crate::recursive_step::step_statement_len(2, RECORDED_BASE_WRAP_ROUNDS);
-const RECORDED_N2_WRAP_STMT_LEN: usize = 13 + RECORDED_N2_STEP_ROUNDS + 9;
+const RECORDED_N2_WRAP_STMT_LEN: usize = 13 + RECORDED_N2_STEP_ROUNDS + 11;
 
 macro_rules! prove_n1_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $($rounds:literal),+) => {
@@ -899,7 +899,7 @@ macro_rules! prove_n1_at_rounds {
                         $rounds,
                         RECORDED_BASE_WRAP_ROUNDS,
                         RECORDED_N1_STEP_ROUNDS,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                         RECORDED_N1_STEP_STMT_LEN,
                         RECORDED_N1_WRAP_STMT_LEN,
                     >::compile(&rule)
@@ -907,7 +907,7 @@ macro_rules! prove_n1_at_rounds {
                     let base = crate::api::prove_base_case_two_pass::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >($app, $witness);
                     let (proof, encoded) = backend
                         .prove_with_mina_encoding(
@@ -966,14 +966,14 @@ macro_rules! prove_stable_n1_at_rounds {
                     let base = crate::api::prove_base_case_two_pass::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >($app, $witness);
                     let proof = crate::recursive_step::prove_direct_n1_stable_cycles_with_real_vk::<
                         RecordedApp,
                         $rounds,
                         RECORDED_BASE_WRAP_ROUNDS,
                         RECORDED_N1_STEP_ROUNDS,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                         RECORDED_N1_STEP_STMT_LEN,
                         RECORDED_N1_WRAP_STMT_LEN,
                         RECORDED_STABLE_N1_STEP_STMT_LEN,
@@ -1043,7 +1043,7 @@ macro_rules! prove_n2_at_rounds {
                         RecordedApp,
                         $rounds,
                         RECORDED_BASE_WRAP_ROUNDS,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                         RECORDED_N1_STEP_STMT_LEN,
                         RECORDED_N2_STEP_STMT_LEN,
                         RECORDED_N2_STEP_ROUNDS,
@@ -1053,12 +1053,12 @@ macro_rules! prove_n2_at_rounds {
                     let first_base = crate::api::prove_base_case_two_pass::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >($app.clone(), $first_witness);
                     let second_base = crate::api::prove_base_case_two_pass::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >($app, $second_witness);
                     let (proof, encoded) = backend
                         .prove_with_mina_encoding(
@@ -1144,8 +1144,8 @@ impl RecordedBaseHandle {
 
 enum RecordedBaseInner {
     /// Proofs are always made over the full Tick SRS: 16 IPA rounds,
-    /// 38-slot compact wrap statement.
-    R16(crate::api::BaseCaseProof<RecordedApp, 16, 38>),
+    /// 40-slot OCaml wrap statement.
+    R16(crate::api::BaseCaseProof<RecordedApp, 16, 40>),
 }
 
 macro_rules! prove_base_keep_at_rounds {
@@ -1164,7 +1164,7 @@ macro_rules! prove_base_keep_at_rounds {
                     let mut backend = crate::api::BaseCaseRuleBackend::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >::compile(&rule, $app)
                     .map_err(RecordedProveError::Backend)?;
                     let (base, encoded) = backend
@@ -1215,7 +1215,7 @@ macro_rules! prove_n1_over_at_rounds {
                             $rounds,
                             RECORDED_BASE_WRAP_ROUNDS,
                             RECORDED_N1_STEP_ROUNDS,
-                            { 13 + $rounds + 9 },
+                            { 13 + $rounds + 11 },
                             RECORDED_N1_STEP_STMT_LEN,
                             RECORDED_N1_WRAP_STMT_LEN,
                         >(
@@ -1306,7 +1306,7 @@ macro_rules! wrap_dump_at_rounds {
                             })
                             .collect()
                     };
-                    let bootstrap = crate::api::prove_base_case::<RecordedApp, $rounds, { 13 + $rounds + 9 }>(
+                    let bootstrap = crate::api::prove_base_case::<RecordedApp, $rounds, { 13 + $rounds + 11 }>(
                         $app.clone(),
                         $witness.clone(),
                         bootstrap_points,
@@ -1315,7 +1315,7 @@ macro_rules! wrap_dump_at_rounds {
                     let (_, dump) = crate::api::prove_base_case_with_wrap_dump::<
                         RecordedApp,
                         $rounds,
-                        { 13 + $rounds + 9 },
+                        { 13 + $rounds + 11 },
                     >($app, $witness, actual);
                     serde_json::to_string(&dump)
                         .map_err(|_| RecordedProveError::UnsupportedStepRounds($rounds))

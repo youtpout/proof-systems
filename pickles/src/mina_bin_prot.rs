@@ -746,7 +746,9 @@ impl WrapProofPrevEvalsV2 {
 }
 
 impl WrapStatementMinimalV1 {
-    pub const FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES: usize = 22;
+    /// 5 fp + 2 challenges + 3 scalar challenges + 3 digests + branch
+    /// data + 8 feature flags + 2 joint-combiner slots (OCaml 40-slot layout).
+    pub const FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES: usize = 24;
     pub const MAX_BP_CHALLENGES: usize = 16;
 
     pub fn from_flattened(
@@ -940,7 +942,7 @@ impl WrapStatementMinimalV1 {
 
         // Rebuild the flattened compact layout (22 + 16 slots); derivable
         // slots stay zero.
-        let mut flattened = vec![Fq::from(0u64); 22 + Self::MAX_BP_CHALLENGES];
+        let mut flattened = vec![Fq::from(0u64); 24 + Self::MAX_BP_CHALLENGES];
         flattened[5] = beta;
         flattened[6] = gamma;
         flattened[7] = alpha;
@@ -1712,7 +1714,7 @@ mod tests {
         for &slot in &[5usize, 6, 7, 8, 10] {
             assert_eq!(s[slot], d[slot], "slot {slot}");
         }
-        let rounds = s.len() - 22;
+        let rounds = s.len() - WrapStatementMinimalV1::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES;
         assert_eq!(&s[13..13 + rounds], &d[13..13 + rounds]);
         assert_eq!(s[13 + rounds], d[13 + 16], "branch data");
         // the encoder always writes `features_none` (no optional gates in
@@ -1731,7 +1733,7 @@ mod tests {
     }
 
     fn wrap_proof_base_v3() -> WrapProofBaseV3 {
-        let statement: Vec<Fq> = (1..=38).map(Fq::from).collect();
+        let statement: Vec<Fq> = (1..=40).map(Fq::from).collect();
         WrapProofBaseV3 {
             stable_statement: WrapStatementMinimalV1::from_flattened(
                 statement.clone(),
