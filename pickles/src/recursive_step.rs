@@ -143,11 +143,14 @@ pub fn step_statement_slots<const WRAP_ROUNDS: usize>(
     for proof in 0..proofs {
         let base = proof * per_proof;
         for i in (base..base + 10).step_by(2) {
-            slots.push(WrapStepStatementSlot::Packed {
-                value: embed_fp_to_fq(statement[i]),
-                num_bits: 255,
-            });
-            slots.push(WrapStepStatementSlot::Bool(!statement[i + 1].is_zero()));
+            let odd = if statement[i + 1].is_zero() {
+                Fp::from(0u64)
+            } else {
+                Fp::one()
+            };
+            slots.push(WrapStepStatementSlot::Field(embed_fp_to_fq(
+                statement[i].double() + odd,
+            )));
         }
         slots.push(WrapStepStatementSlot::Packed {
             value: embed_fp_to_fq(statement[base + 10]),
@@ -169,7 +172,6 @@ pub fn step_statement_slots<const WRAP_ROUNDS: usize>(
             num_bits: 255,
         });
     }
-    debug_assert_eq!(slots.len(), statement.len());
     slots
 }
 
@@ -1942,20 +1944,37 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     .unwrap();
 
     let co = |p: &Vesta| (p.x, p.y);
-    let step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))> = step_statement
-        .iter()
-        .enumerate()
-        .map(|(i, slot)| {
-            let l = lgr[i].chunks[0];
-            let c = match slot {
-                WrapStepStatementSlot::Packed { num_bits, .. } => {
-                    crate::public_input::lagrange_correction(&l, *num_bits)
-                }
-                WrapStepStatementSlot::Bool(_) => l,
-            };
-            ((l.x, l.y), (c.x, c.y))
-        })
-        .collect();
+    let mut step_statement_lagranges = Vec::new();
+    let mut lagrange_slot = 0usize;
+    for slot in &step_statement {
+        match slot {
+            WrapStepStatementSlot::Field(_) => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                let c = crate::public_input::lagrange_correction(&l, 255);
+                step_statement_lagranges.push(((l.x, l.y), (c.x, c.y)));
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                step_statement_lagranges.push(((l.x, l.y), (l.x, l.y)));
+            }
+            WrapStepStatementSlot::Packed { num_bits, .. } => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                let c = crate::public_input::lagrange_correction(&l, *num_bits);
+                step_statement_lagranges.push(((l.x, l.y), (c.x, c.y)));
+            }
+            WrapStepStatementSlot::Bool(_) => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                step_statement_lagranges.push(((l.x, l.y), (l.x, l.y)));
+            }
+        }
+    }
+    assert_eq!(
+        lagrange_slot,
+        step_statement_lagranges.len(),
+        "recursive wrap x_hat Lagrange slots"
+    );
     let srs_h = svi.srs().h;
     let reconstructed_public_comm =
         reconstruct_step_statement_commitment(&step_statement, &step_statement_lagranges, srs_h);
@@ -2621,21 +2640,45 @@ pub fn reconstruct_step_statement_commitment(
 ) -> Vesta {
     use ark_ec::{AffineRepr, CurveGroup};
 
-    assert_eq!(statement.len(), lagranges.len());
+    let expanded_len: usize = statement
+        .iter()
+        .map(|slot| match slot {
+            WrapStepStatementSlot::Field(_) => 2,
+            WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
+        })
+        .sum();
+    assert_eq!(expanded_len, lagranges.len());
     let mut acc = Vesta::zero().into_group();
-    for (slot, &((x, y), _)) in statement.iter().zip(lagranges) {
-        let lagrange = Vesta::new(x, y);
-        let scalar = match *slot {
-            WrapStepStatementSlot::Packed { value, .. } => embed_fq_to_fp(value),
-            WrapStepStatementSlot::Bool(bit) => {
-                if bit {
+    let mut lagrange_slot = 0usize;
+    for slot in statement {
+        match *slot {
+            WrapStepStatementSlot::Field(value) => {
+                let scalar = embed_fq_to_fp(value);
+                let odd = if scalar.into_bigint().is_odd() {
                     Fp::one()
                 } else {
                     Fp::from(0u64)
-                }
+                };
+                let half = (scalar - odd) / Fp::from(2u64);
+                let ((x, y), _) = lagranges[lagrange_slot];
+                lagrange_slot += 1;
+                acc += Vesta::new(x, y) * half;
+                let ((x, y), _) = lagranges[lagrange_slot];
+                lagrange_slot += 1;
+                acc += Vesta::new(x, y) * odd;
             }
-        };
-        acc += lagrange * scalar;
+            WrapStepStatementSlot::Packed { value, .. } => {
+                let ((x, y), _) = lagranges[lagrange_slot];
+                lagrange_slot += 1;
+                acc += Vesta::new(x, y) * embed_fq_to_fp(value);
+            }
+            WrapStepStatementSlot::Bool(bit) => {
+                let ((x, y), _) = lagranges[lagrange_slot];
+                lagrange_slot += 1;
+                let scalar = if bit { Fp::one() } else { Fp::from(0u64) };
+                acc += Vesta::new(x, y) * scalar;
+            }
+        }
     }
     (-acc + h.into_group()).into_affine()
 }
@@ -3510,37 +3553,39 @@ mod tests {
         let statement: Vec<Fp> = (0..LEN).map(|i| Fp::from((i + 1) as u64)).collect();
         let slots = width1_step_statement_slots::<WRAP_ROUNDS>(&statement);
 
-        assert_eq!(slots.len(), LEN);
-        for i in (0..10).step_by(2) {
+        assert_eq!(slots.len(), LEN - 5);
+        for (slot, i) in (0..10).step_by(2).enumerate() {
+            let odd = if statement[i + 1].is_zero() {
+                Fp::from(0u64)
+            } else {
+                Fp::one()
+            };
             assert_eq!(
-                slots[i],
-                WrapStepStatementSlot::Packed {
-                    value: embed_fp_to_fq(statement[i]),
-                    num_bits: 255
-                }
+                slots[slot],
+                WrapStepStatementSlot::Field(embed_fp_to_fq(statement[i].double() + odd))
             );
-            assert_eq!(slots[i + 1], WrapStepStatementSlot::Bool(true));
         }
         assert_eq!(
-            slots[10],
+            slots[5],
             WrapStepStatementSlot::Packed {
                 value: embed_fp_to_fq(statement[10]),
                 num_bits: 255
             }
         );
-        for i in 11..16 + WRAP_ROUNDS {
+        for (slot, i) in (11..16 + WRAP_ROUNDS).enumerate() {
             assert_eq!(
-                slots[i],
+                slots[6 + slot],
                 WrapStepStatementSlot::Packed {
                     value: embed_fp_to_fq(statement[i]),
                     num_bits: 128
                 }
             );
         }
-        assert_eq!(slots[16 + WRAP_ROUNDS], WrapStepStatementSlot::Bool(true));
-        for i in 17 + WRAP_ROUNDS..LEN {
+        let bool_slot = 6 + (16 + WRAP_ROUNDS - 11);
+        assert_eq!(slots[bool_slot], WrapStepStatementSlot::Bool(true));
+        for (slot, i) in (17 + WRAP_ROUNDS..LEN).enumerate() {
             assert_eq!(
-                slots[i],
+                slots[bool_slot + 1 + slot],
                 WrapStepStatementSlot::Packed {
                     value: embed_fp_to_fq(statement[i]),
                     num_bits: 255
@@ -3553,17 +3598,14 @@ mod tests {
             .collect();
         let width2 = step_statement_slots::<WRAP_ROUNDS>(&width2_statement, 2);
         let segment = 17 + WRAP_ROUNDS;
-        assert_eq!(width2.len(), width2_statement.len());
+        let logical_segment = segment - 5;
+        assert_eq!(width2.len(), width2_statement.len() - 10);
         assert!(matches!(
-            width2[segment],
-            WrapStepStatementSlot::Packed { num_bits: 255, .. }
+            width2[logical_segment],
+            WrapStepStatementSlot::Field(_)
         ));
         assert!(matches!(
-            width2[segment + 1],
-            WrapStepStatementSlot::Bool(true)
-        ));
-        assert!(matches!(
-            width2[2 * segment],
+            width2[2 * logical_segment],
             WrapStepStatementSlot::Packed { num_bits: 255, .. }
         ));
     }

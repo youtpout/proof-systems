@@ -953,6 +953,7 @@ mod tests {
                 messages_for_next_step_accumulators: prev_cpcs.clone(),
                 prev_challenge_polynomial_commitments: prev_cpcs,
                 prev_challenges: prev_chals,
+                finalize_prev_challenges: vec![],
                 vk_digest,
                 vk,
                 packed_lagranges,

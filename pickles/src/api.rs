@@ -263,6 +263,7 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
 /// Everything the wrap circuit witnesses about the step proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrapStepStatementSlot {
+    Field(Fq),
     Packed { value: Fq, num_bits: usize },
     Bool(bool),
 }
@@ -637,6 +638,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .step_statement
             .iter()
             .map(|slot| match slot {
+                WrapStepStatementSlot::Field(_) => 2,
                 WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
             })
             .sum();
@@ -648,6 +650,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let mut elements = Vec::with_capacity(w.step_statement.len());
         for slot in &w.step_statement {
             match *slot {
+                WrapStepStatementSlot::Field(value) => {
+                    let var = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Split(var));
+                }
                 WrapStepStatementSlot::Packed { value, num_bits } => {
                     let var = sys.compute(loc!(), move |_| value)?;
                     elements.push(StepStatementElement::Packed {
