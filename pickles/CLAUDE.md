@@ -169,8 +169,35 @@ Attention : ne pas bouger EC_add_complete/EndoMul (déjà exacts) ; vérifier
 le step reste FULL MATCH après chaque ajout. Le diff par gadget (ci-dessus)
 dit exactement où chercher — plus de devinette.
 
-État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded,
-step FULL MATCH. Instrumentation OCaml sur disque (mina/snarky, sous-module).
+État committé avant reprise Codex : Generic 508 vs 569, 6/7 gate types
+exacts, 9/9 recorded, step FULL MATCH. Instrumentation OCaml sur disque
+(mina/snarky, sous-module).
+
+**Reprise Codex — deux contraintes wrap top-level portées** :
+- `af073a69ea` (`Port wrap branch data assertion`) : assertion
+  `branch_data = domain_log2 * 4 + proofs_verified` dans `WrapCircuit`,
+  portée aussi dans la préparation récursive. Effet mesuré : Generic
+  **508 → 509**, step toujours FULL MATCH.
+- `a3e38bcfca` (`Constrain selected wrap verification key`) : port du bloc
+  `wrap_main.ml:204` / `choose_key` en contraignant les 28 engagements de la
+  VK step witnessée à la clé sélectionnée. Effet mesuré : Generic
+  **509 → 537**, step toujours FULL MATCH.
+
+État actuel mesuré avec `rust-pickles-wrap-gates-diff.ts` :
+- public input **40 = 40**, rows **8192 = 8192** ;
+- Poseidon **1001 = 1001**, CompleteAdd **258 = 258**,
+  VarBaseMul **663 = 663**, EndoMulScalar **184 = 184**,
+  EndoMul **2464 = 2464** ;
+- reste uniquement le compteur **Generic 537 vs 569** (écart net **−32**)
+  et donc **Zero 3085 vs 3053**.
+
+Note importante : un essai de seal global de `DuplexState::absorb`
+(`state[i] <- seal(state[i] + x)`, comme `sponge_inputs.ml`) augmente bien
+les `Equal` HL, mais **ne change pas le histogramme Kimchi wrap**. Même chose
+pour une matérialisation explicite des constantes `CompleteAdd` via
+`assert_equals`. Le reliquat de 32 rows doit donc être fermé par les vraies
+contraintes `R1CS`/`Field.Checked.mul` encore absentes, principalement autour
+de `check_bulletproof` / `Other_field.Packed`, pas par des seals aveugles.
 
 **Instrumentation Rust HL AUSSI faite** (`SNARKY_LOG_HL_CONSTRAINTS=1`,
 `snarky/src/runner.rs::add_constraint`) : log constraint-level (avant
