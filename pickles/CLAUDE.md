@@ -86,29 +86,28 @@ Correctifs additionnels de cette session (au-delà du handoff précédent) :
   ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
   filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
 
-**Dernier écart Generic (−119) — CAUSE RACINE TROUVÉE : l'opt-sponge.**
-Deux expériences réfutées et revertées proprement (suite restée 9/9) :
-VK/`h` en constantes (450→421, pire) ; seal des entrées d'`add_fast`
-(no-op, `add_complete` réduisait déjà). Localisation finale : le motif
-`o = s1·x1 + s2·x2` scellé (`-1,1,-1,0,0`) fait **146 rows en région
-600-1200**, entrelacé avec les blocs Poseidon de la boucle d'absorption
-de l'IVP.
+**Dernier écart Generic (−119) — pistes réfutées, source encore ouverte.**
+Trois hypothèses testées et écartées (suite restée 9/9 à chaque fois) :
+1. VK step + `h` en constantes → 450→421 (PIRE, jsoo witnesse la VK),
+   reverté ;
+2. seal des entrées d'`add_fast` → no-op (`add_complete` réduisait déjà) ;
+3. **swap `OptSponge` dans l'IVP → NO-OP** : avec les flags à `true`
+   constant, la machinerie conditionnelle (`add_in`, masque) se replie
+   (mul par constante 1 = 0 contrainte), Generic reste à 450. Donc
+   l'opt-sponge N'est PAS la cause (contrairement à ce que le motif
+   laissait croire).
 
-C'est l'overhead de l'**absorption conditionnelle** : OCaml
-`incrementally_verify_proof` crée son sponge via `Wrap_verifier.Opt.create`
-(à cause des feature flags `Maybe`) et absorbe via `Opt.absorb` +
-`simulate_optional_sponge_with_alignment` — chaque absorb émet des
-generics (`add_in`, masque, `cond_permute`). Nous utilisons le
-`PoseidonSponge` (DuplexState) simple dans `incrementally_verify.rs`, sans
-cette machinerie → 146 rows en moins.
-
-**Fix (net, machinerie déjà présente)** : brancher `OptSponge`
-(`opt_sponge.rs`, déjà porté avec `add_in`/`consume`/`cond_permute`) dans
-`incrementally_verify_proof` à la place de `PoseidonSponge`, flags tous à
-`true` (cas base, pas de lookups). Adapter les `absorb_commitment` →
-`Opt.absorb (true, coord)`, le fork `sponge_before_evaluations`, et les
-squeezes beta/gamma/alpha/zeta. Risque : le threading du sponge (fork +
-squeeze) doit rester bit-exact ; tester chaque squeeze contre le mirror.
+Ce qui reste vrai : le motif manquant est `o = s1·x1 + s2·x2`
+(`-1,1,-1,0,0`, ~146 rows région 600-1200, entrelacé Poseidon) = des
+lincombs 2-termes scellées en variable interne que jsoo émet et pas nous.
+Mais leur ORIGINE précise n'est pas encore isolée (ni add_fast, ni
+opt-sponge). Piste suivante : **compter les contraintes par gadget**
+(instrumenter `add_constraint`/`reduce_lincom` avec un compteur nommé,
+diff jsoo vs rust par gadget) plutôt que deviner — les seals aveugles aux
+endroits « évidents » (add_fast) n'ont rien donné. Candidats non encore
+testés : `combine_commitments` (Horner xi, sortie EndoMul réutilisée →
+sceller l'accumulateur entre rounds), `ft_comm` (`reduce_chunks` scale
+Horner), le packing `split_field` du statement (x = 2·x_div_2 + odd).
 
 État committé : Generic 450 vs 569, 5/7 gate types exacts, 9/9 recorded.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
