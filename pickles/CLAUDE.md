@@ -66,19 +66,34 @@ recorded, 101/101 lib.
   **Poseidon 825 vs 1001** (176 rows = 16 blocs : absorb/opt-sponge),
   et le domaine : notre wrap déborde à 2^14 (16384 rows) vs 2^13 jsoo —
   il repassera sous 2^13 en résorbant l'excès de Generic.
-État du diff wrap (méthode minimale, après masquage `sg_old`) :
-- **8192 = 8192 rows** ; **Poseidon 1001=1001** ;
-  **CompleteAdd 258=258**, **VarBaseMul 663=663**,
-  **EndoMulScalar 184=184**, **EndoMul 2464=2464** — tous les types
-  structurels/EC/Poseidon sont exacts en comptage ;
-- les accumulateurs dummy base-case sont physiques dans la preuve
-  (`PREV_CHALLENGES=2`) mais masqués comme OCaml `Opt.Nothing` :
-  Fq-sponge absorbe `(0,0)`, Fr-sponge et IPA n'incluent que les entrées
-  `keep=true`, et `wrap_main` dérive le masque depuis la largeur logique
-  (`N0=[false,false]`, `N1=[false,true]`, `N2=[true,true]`) ;
-- diff restant : **Generic 407 vs 569**, **Zero 3215 vs 3053**. Donc il
-  reste une passe Generic/Zero + wiring/ordre d'émission, pas un écart
-  Poseidon/EC. `rust-pickles-recorded.ts` passe jusqu'au N2 standalone.
+État du diff wrap (méthode minimale) — **5/7 gate types EXACTS** :
+- 8192=8192 rows, CompleteAdd 258, VarBaseMul 663, EndoMul 2464,
+  EndoMulScalar 184, **Poseidon 1001=1001** tous exacts ;
+- reste **Generic 450 vs 569** (−119) et l'ordre (type=2795 rows
+  déplacées, coeffs=764, wiring=373).
+
+Correctifs additionnels de cette session (au-delà du handoff précédent) :
+- `Wrap_hack.pad_accumulator` : le step de base porte 2 accumulateurs
+  dummy (kimchi `prev_challenges`, sg over full Tick SRS) ; le wrap
+  absorbe/masque les 2 sg_old ; le finalize récursif distingue
+  `finalize_prev_challenges` (padded, Fr-sponge) de `prev_challenges`
+  (unpadded, digest) — commit `Pad step-proof accumulators`.
+- Codex : masque optionnel des sg_old, packing du statement différé dans
+  l'IVP (`public_input.rs` : `scale_fast2_prime`/`split_field`/correction
+  Lagrange), seal des champs, consistance des feature flags,
+  ordonnancement du witness wrap.
+- `Wrap.Other_field.check` : les 5 slots fp du statement sont contraints
+  ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
+  filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
+
+**Dernier gros écart Generic (−119)** localisé : région rows ~700-1206,
+motif `*,*,*,0,0,-1,1,-1,0,0` × 139 chez jsoo, absent chez nous. C'est
+le packing du statement de l'étape vérifiée dans `x_hat`
+(`pack_statement` OCaml → `split_field` par slot 255-bit → term Packed +
+Cond). Notre `XHatInput::Statement` pour le wrap de base ne passe qu'un
+slot (le digest) : il faut router les 40 slots du statement step à
+travers `statement_terms` avec les Lagrange correspondants. Ensuite :
+passe d'ORDRE d'émission (comme la phase step) puis coeffs/wiring.
 
 Correctifs de la session (commits `5a50fd40`→) :
 - `challenge.rs::lowest_128_bits` : range-check des moitiés 128-bit via
