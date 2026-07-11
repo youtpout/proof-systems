@@ -86,35 +86,29 @@ Correctifs additionnels de cette session (au-delà du handoff précédent) :
   ≠ des `forbidden_shifted_values` (patterns 255-bit ambigus mod Fp,
   filtrés aux représentables en Fq) — `shifted_value::forbidden_shifted_values_fq`.
 
-**Dernier écart Generic (−119) — DIAGNOSTIC COMPLET.** Ce ne sont PAS des
-contraintes absentes : ce sont les `assert_on_curve` des points absorbés
-(`exists Inner_curve.typ` OCaml, motif coeff `c=5` : y²=x³+5). Mesure sur
-les dumps :
-- jsoo : **73** on-curve, RÉPARTIS — 57 en région 0-500 (les 28 pts de la
-  VK step, absorbés au digest d'index / step 1) + 4/6/6 en région
-  4000-5500 (messages w/z/t et openings lr/δ/sg, witnessés `exists`
-  INLINE juste avant `check_bulletproof`) ;
-- nous : **88** on-curve, TOUS clusterisés en 0-500 (rows 89-263).
+**Dernier écart Generic (−119) — mécanisme identifié (expérience faite).**
+Test réfuté : passer la VK step + `h_generator` en constantes fait
+EMPIRER (Generic 450→421, on s'éloigne de 569) — jsoo witnesse bien la
+VK (on-curve). Reverté proprement, suite 9/9.
 
-Deux causes :
-1. **Sur-application (88 vs 73)** : `mkpt` (api.rs) appelle
-   `assert_on_curve` sur TOUS les points, y compris ~15 qui ne passent pas
-   par `Inner_curve.typ` côté OCaml (candidats : `h_generator` = constante
-   SRS chez OCaml → doit être `cpt` pas `mkpt` ; certains lr/δ).
-2. **Placement (région)** : nous construisons `VerificationKeyComm` +
-   `Messages` + `OpeningProof` avec `mkpt` (=on-curve immédiat) AVANT
-   d'appeler `wrap_main`/l'IVP, alors qu'OCaml witnesse messages+openings
-   via `exists Inner_curve.typ` À L'INTÉRIEUR de l'IVP, juste avant
-   l'absorption — leurs on-curve tombent donc dans la boucle d'absorption
-   (700-1206, 4000+), pas en préambule.
+Le vrai déficit est dans les **réductions de combinaisons linéaires**
+(`reduce_lincom`/`reduce_to_v`/`Util.Wrap.seal` OCaml), pas les on-curve.
+Motifs jsoo absents chez nous (dumps, hors `c=5`) :
+- `*,*,*,0,0,-1,1,-1,0,0` (×~193 demi-lignes) = `o = s1·x1 + s2·x2`, la
+  création d'une variable interne quand une lincomb multi-termes est
+  scellée avant usage ;
+- `E,-1,0,0,0` (48 vs 25) = `sx = s·x`, scaling d'une variable par une
+  constante (endo/shift 2^k) scellé en variable fraîche.
+OCaml scelle agressivement (`seal`) les lincombs et vars scalées avant de
+les passer à un gate ; nous les gardons non réduites (repliées dans les
+coeffs du gate suivant), d'où moins de rows generic.
 
-**Fix (refactor ciblé, ~3 fichiers)** : passer les coordonnées brutes
-`(Fq,Fq)` des points messages/openings dans l'IVP (au lieu de `Point`
-pré-witnessés), et les witnesser+on-curve au moment de l'absorption dans
-`incrementally_verify.rs`. Garder les 28 VK points en préambule (OCaml les
-check tôt au digest d'index). Retirer l'on-curve de `h_generator`
-(constante). Ça résorbe les 15 excédentaires ET replace les ~16 restants
-dans la bonne région → Generic 569=569. Ensuite : passe finale coeffs/
-wiring (double-generic pairing) comme la phase step.
+**Fix** : insérer des `.seal()` aux points où OCaml scelle — notamment
+dans `combine_commitments` (puissances de xi), `ft_comm`, le packing du
+statement, et les sorties de `scale_fast`/`endo` réutilisées. Repérage :
+diff des motifs `-1,1,-1,0,0` et `E,-1,0,0,0` par région dans les dumps.
+C'est la passe fine (comme la fin du step) — chaque seal manquant = 1 row.
+
+État committé : Generic 450 vs 569, 5/7 gate types exacts, 9/9 recorded.
 
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
