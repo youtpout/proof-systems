@@ -8,7 +8,7 @@ use pickles::{
 };
 use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
-const SQUARE_STEP_ROUNDS: usize = 9;
+const SQUARE_STEP_ROUNDS: usize = 16;
 const SQUARE_STATEMENT_LEN: usize = 13 + SQUARE_STEP_ROUNDS + 9;
 
 #[derive(Clone, Copy)]

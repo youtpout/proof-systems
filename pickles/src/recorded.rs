@@ -751,8 +751,15 @@ impl From<RecordedCircuitError> for RecordedProveError {
 /// Measures the IPA rounds (domain log2) of the step circuit hosting `app`.
 fn measure_step_rounds(app: RecordedApp) -> SnarkyResult<u32> {
     use snarky::api::SnarkyCircuit as _;
+    // Proofs are made over the full Tick SRS (2^16), so the IPA round count
+    // is fixed; this only checks that the circuit's domain fits.
     let (_, verifier) = crate::api::StepCircuit { app }.compile_to_indexes()?;
-    Ok(verifier.index.domain.log_size_of_group)
+    let domain_log2 = verifier.index.domain.log_size_of_group;
+    assert!(
+        domain_log2 as usize <= crate::common::TICK_ROUNDS,
+        "recorded circuit domain 2^{domain_log2} exceeds the Tick SRS"
+    );
+    Ok(crate::common::TICK_ROUNDS as u32)
 }
 
 /// The result of proving a recorded circuit: the application state the proof
@@ -809,7 +816,7 @@ pub fn prove_recorded_base_case(
     let app_state = circuit.state(&witness);
     let app = RecordedApp { circuit };
     let public = app_state.clone();
-    let proof = prove_at_rounds!(app, witness, public; 9, 10, 11, 12, 13, 14, 15, 16)?;
+    let proof = prove_at_rounds!(app, witness, public; 16)?;
     Ok(RecordedProof { app_state, proof })
 }
 
@@ -855,17 +862,19 @@ pub struct RecordedN2Proof {
     pub dlog_plonk_index: Vec<(Fp, Fp)>,
 }
 
-/// The wrap circuit of the base (`N0`) program always compiles to a 2^13
-/// domain (`wrap_domains(0)`).
-const RECORDED_BASE_WRAP_ROUNDS: usize = 13;
-/// The recursive step circuit (finalize + incremental verification of the
-/// base wrap proof) compiles to a 2^14 domain, independent of the app.
-const RECORDED_N1_STEP_ROUNDS: usize = 14;
+/// Wrap proofs are made over the full Tock SRS (2^15), so their IPA round
+/// count is fixed regardless of the wrap circuit's domain.
+const RECORDED_BASE_WRAP_ROUNDS: usize = crate::common::TOCK_ROUNDS;
+/// Step proofs (including recursive steps) are made over the full Tick SRS
+/// (2^16).
+const RECORDED_N1_STEP_ROUNDS: usize = crate::common::TICK_ROUNDS;
 const RECORDED_N1_STEP_STMT_LEN: usize =
     crate::recursive_step::width1_step_statement_len(RECORDED_BASE_WRAP_ROUNDS);
 const RECORDED_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
+// The stable step statement length depends on the rounds of the *wrap*
+// proof it verifies (always the full Tock SRS now).
 const RECORDED_STABLE_N1_STEP_STMT_LEN: usize =
-    crate::recursive_step::width1_step_statement_len(RECORDED_N1_STEP_ROUNDS);
+    crate::recursive_step::width1_step_statement_len(RECORDED_BASE_WRAP_ROUNDS);
 const RECORDED_STABLE_N1_WRAP_STMT_LEN: usize = 13 + RECORDED_N1_STEP_ROUNDS + 9;
 const RECORDED_N2_STEP_ROUNDS: usize = crate::common::TICK_ROUNDS;
 const RECORDED_N2_STEP_STMT_LEN: usize =
@@ -944,7 +953,7 @@ pub fn prove_recorded_n1(
     let app_state = circuit.state(&witness);
     let app = RecordedApp { circuit };
     let public = app_state;
-    prove_n1_at_rounds!(app, witness, public; 9, 10, 11, 12, 13, 14, 15, 16)
+    prove_n1_at_rounds!(app, witness, public; 16)
 }
 
 macro_rules! prove_stable_n1_at_rounds {
@@ -1134,13 +1143,8 @@ impl RecordedBaseHandle {
 }
 
 enum RecordedBaseInner {
-    R9(crate::api::BaseCaseProof<RecordedApp, 9, 31>),
-    R10(crate::api::BaseCaseProof<RecordedApp, 10, 32>),
-    R11(crate::api::BaseCaseProof<RecordedApp, 11, 33>),
-    R12(crate::api::BaseCaseProof<RecordedApp, 12, 34>),
-    R13(crate::api::BaseCaseProof<RecordedApp, 13, 35>),
-    R14(crate::api::BaseCaseProof<RecordedApp, 14, 36>),
-    R15(crate::api::BaseCaseProof<RecordedApp, 15, 37>),
+    /// Proofs are always made over the full Tick SRS: 16 IPA rounds,
+    /// 38-slot compact wrap statement.
     R16(crate::api::BaseCaseProof<RecordedApp, 16, 38>),
 }
 
@@ -1195,7 +1199,7 @@ pub fn prove_recorded_base_case_keep(
     let app = RecordedApp { circuit };
     let public = app_state;
     prove_base_keep_at_rounds!(app, witness, public;
-        (9, R9), (10, R10), (11, R11), (12, R12), (13, R13), (14, R14), (15, R15), (16, R16))
+        (16, R16))
 }
 
 macro_rules! prove_n1_over_at_rounds {
@@ -1279,7 +1283,7 @@ pub fn prove_recorded_n1_over(
     let main: crate::recursive_step::EmbeddedAppMain =
         Box::new(move |sys| app.main(sys, Some(&witness)));
     prove_n1_over_at_rounds!(handle, main, new_state;
-        (9, R9), (10, R10), (11, R11), (12, R12), (13, R13), (14, R14), (15, R15), (16, R16))
+        (16, R16))
 }
 
 macro_rules! wrap_dump_at_rounds {
@@ -1336,5 +1340,5 @@ pub fn dump_recorded_wrap_circuit(
         ));
     }
     let app = RecordedApp { circuit };
-    wrap_dump_at_rounds!(app, witness; 9, 10, 11, 12, 13, 14, 15, 16)
+    wrap_dump_at_rounds!(app, witness; 16)
 }

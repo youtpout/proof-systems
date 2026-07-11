@@ -64,7 +64,9 @@ pub fn wrap_verifier_index_from_side_loaded(
 ) -> VerifierIndex<FULL_ROUNDS, Pallas, SRS<Pallas>> {
     let domain = ark_poly::Radix2EvaluationDomain::<Fq>::new(1 << vk.wrap_domain_log2)
         .expect("wrap domain size is a supported power of two");
-    let srs = SRS::<Pallas>::create(domain.size());
+    // Wrap proofs are made over the full Tock SRS (2^15) regardless of the
+    // circuit's domain, so their IPA openings always have 15 rounds.
+    let srs = SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
     srs.get_lagrange_basis(domain);
 
     let comms = vk.commitments();

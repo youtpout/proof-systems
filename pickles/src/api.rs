@@ -961,7 +961,11 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     // ---- step proof ----
     let app_state = app.state(&witness);
     let step = StepCircuit { app };
-    let (mut step_pi, step_ver) = step.compile_to_indexes().unwrap();
+    // Mina proves over the full Tick SRS (2^16) regardless of the circuit's
+    // domain, so step IPA proofs always have 16 rounds.
+    let (mut step_pi, step_ver) = step
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+        .unwrap();
     let svi = &step_ver.index;
 
     let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
@@ -1173,8 +1177,9 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         .clone()
         .try_into()
         .unwrap_or_else(|_| unreachable!());
+    // Full Tock SRS (2^15): wrap IPA proofs always have 15 rounds.
     let (mut wrap_pi, wrap_ver) = WrapCircuit::<ROUNDS, STMT_LEN> { w: wdata }
-        .compile_to_indexes()
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
         .unwrap();
     let wrap_dump = WrapCircuitDump {
         public_input_size: wrap_pi.index.cs.public,

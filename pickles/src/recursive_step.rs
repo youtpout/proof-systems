@@ -582,7 +582,7 @@ pub struct DirectN1StableProof<
 > {
     pub first: RecursiveCycleProof<R, WR, SR, SS, WS>,
     pub stable_cycles:
-        Vec<RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>>,
+        Vec<RecursiveCycleProof<SR, WR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>>,
     pub base_wrap_vk_pts: Vec<(Fp, Fp)>,
 }
 
@@ -656,7 +656,7 @@ impl<
 {
     pub fn final_cycle(
         &self,
-    ) -> &RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN> {
+    ) -> &RecursiveCycleProof<SR, WR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN> {
         self.stable_cycles
             .last()
             .expect("DirectN1StableProof always contains at least one stable cycle")
@@ -715,7 +715,7 @@ impl<
     fn verify_stable_digest(
         &self,
         public: &[Fp],
-        cycle: &RecursiveCycleProof<SR, SR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>,
+        cycle: &RecursiveCycleProof<SR, WR, SR, STABLE_STEP_STMT_LEN, STABLE_WRAP_STMT_LEN>,
     ) -> Result<(), DirectRecursiveBackendError> {
         let final_vk = cycle.step.messages_for_next_step_vk_pts.as_slice();
         let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
@@ -800,7 +800,7 @@ pub fn prove_direct_n1_stable_cycles_with_real_vk<
         SR,
         SS,
         WS,
-        SR,
+        WR,
         STABLE_STEP_STMT_LEN,
         SR,
         STABLE_WRAP_STMT_LEN,
@@ -812,11 +812,11 @@ pub fn prove_direct_n1_stable_cycles_with_real_vk<
             .expect("stable_cycles contains the initial stable transition");
         let next = prove_next_recursive_cycle_with_real_vk::<
             SR,
-            SR,
+            WR,
             SR,
             STABLE_STEP_STMT_LEN,
             STABLE_WRAP_STMT_LEN,
-            SR,
+            WR,
             STABLE_STEP_STMT_LEN,
             SR,
             STABLE_WRAP_STMT_LEN,
@@ -1502,7 +1502,7 @@ pub fn prove_recursive_step_with_app<
         d: [prepared.data],
         app: app_main,
     }
-    .compile_to_indexes()
+    .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
     .unwrap();
     let (proof, _) = prover
         .prove_with_recursion::<VestaBase, VestaScalar>(
@@ -1689,7 +1689,10 @@ pub fn prove_recursive_step_width2<
         messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts,
     };
     let (mut prover, verifier) = circuit
-        .compile_to_indexes_with_minimum_domain_log2(crate::common::TICK_ROUNDS as u32)
+        .compile_to_indexes_with_domain_and_srs(
+            crate::common::TICK_ROUNDS as u32,
+            Some(crate::common::TICK_ROUNDS as u32),
+        )
         .unwrap();
     let (proof, _) = prover
         .prove_with_recursion::<VestaBase, VestaScalar>(
@@ -2076,7 +2079,10 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
     let next_wrap_dummy_challenges = prepared.next_wrap_dummy_challenges;
     let circuit = WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> { w: prepared.data };
     let (mut prover, verifier) = circuit
-        .compile_to_indexes_with_minimum_domain_log2(domain_log2)
+        .compile_to_indexes_with_domain_and_srs(
+            domain_log2,
+            Some(crate::common::TOCK_ROUNDS as u32),
+        )
         .unwrap();
     let (proof, _) = prover
         .prove::<PallasBase, PallasScalar>(statement, (), true)
@@ -2397,7 +2403,7 @@ pub fn prove_next_recursive_step<
             d: [prepared.data],
             app: None,
         }
-        .compile_to_indexes()
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
         .unwrap();
     let (proof, _) = prover
         .prove_with_recursion::<VestaBase, VestaScalar>(
