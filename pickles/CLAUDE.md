@@ -123,30 +123,39 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**Wrap parity — état actuel : Generic 551/569, 18 net à fermer.**
-Tous les autres gate types EXACTS (Poseidon 1001, CompleteAdd 258,
-VarBaseMul 663, EndoMulScalar 184, EndoMul 2464, public input 40=40,
-8192 rows). Codex a monté Generic de 508 → 551 (branch data assertion,
-selected VK constraint, boolean statement terms, opening shifted scalars,
-mask constraints).
+**Wrap parity — Generic 556/569, 13 net à fermer** (progrès : 508→551
+codex, 551→556 moi). Autres gate types tous EXACTS. Divergences row-level :
+3213 (type 1989), en baisse depuis 3884.
 
-**Nature du reste : PAIRING double-generic, PAS des contraintes
-manquantes.** Les compteurs de contraintes HL matchent quasi ; le diff de
-MOTIFS Generic diverge de ±88 mais le NET n'est que 18 — les mêmes
-contraintes (on-curve `c=5`, reductions `E,-1,0,0,0`) sont appariées
-différemment dans les rows double-generic :
-- jsoo `1,0,-1,0,5,0,0,1,-1,0` ×73 (on-curve en slot 0-4)
-- rust `0,0,-1,1,0,1,0,-1,0,5` ×88 (on-curve en slot 5-9)
-La PARITÉ du pairing est décalée d'une contrainte : il y a ~1 generic
-structurel de décalage tôt dans le circuit qui déphase tous les
-appariements suivants → d'où type=2741 rows au mauvais type (cascade).
+**Gain (`bd6f1b8d2a`)** : le port codex de `Features.to_full` omettait
+`lookups_per_row_4` (`any[xor, lookup_pattern_range_check, ffmul]`) et
+`lookups_per_row_3` (`|| lookup`) — forcés par le sponge OCaml. Ajoutés
+dans l'ordre OCaml → +5 Generic, divergences halvées.
 
-**MÉTHODE pour fermer** : trouver la contrainte generic tôt qui déphase
-le pairing (aligner l'ordre d'émission, comme la fin du step), puis les
-18 net se ferment et la cascade type=2741 s'effondre. Outils :
-`SNARKY_LOG_CONSTRAINTS` (Rust gate-level) + `SNARKY_LOG_HL_CONSTRAINTS`
-(Rust HL) + instrumentation OCaml `SNARKY_LOG_CONSTRAINTS` dans
-checked_runner.ml.
+**Reste : réordonnancement dans x_hat** (première divergence row 40).
+rust[40] == jsoo[44] : un sous-bloc de ~4 rows du packing x_hat est
+émis dans un ordre différent (landmark : la constante `-36`,
+`1,-36,0,0,0`, à jsoo row 75 vs rust row 42). C'est l'ordre d'émission
+de `public_input_commitment`/`scale_fast2`/`split_field` vs le fold
+OCaml `x_hat` (`Add_with_correction`, corrections Lagrange, Cond_add).
+Aligner cet ordre ferme le reste + effondre la cascade type=1989.
+
+**RÉGRESSION N2 (codex, pré-existante — suite 8/9)** : `recorded_n2`
+casse. Deux couches :
+1. `api.rs:425` assertion branch_data : `expected = w.step_domain_log2·4
+   + proofs_verified` mais le statement N2 (recursive_step.rs:1916)
+   encode `wrap_domain_log2(2)=15` alors que `w.step_domain_log2 =
+   svi.domain = 16` (le circuit step width-2 est plus grand). Coïncident
+   pour N0/N1 (13/14), pas N2. Sémantique ambiguë : le branch_data
+   réseau-correct est `wrap_domains` (15), mais base/N1 utilisent
+   `svi.domain` partout → l'implémentation est incohérente. À trancher :
+   soit tout en `wrap_domains` (corriger base+assertion), soit tout en
+   `svi.domain` (corriger statement 1916) — vérifier verify.rs.
+2. Sous-jacent : `snarky/api.rs:473` "requested SRS smaller than circuit
+   domain" — le circuit step N2 (width-2) dépasse le SRS Tick 2^16.
+   Problème de dimensionnement propre à N2.
+Fixer N2 est un chantier séparé (2 bugs), non lié à la parité wrap.
+
 
 **Fausses pistes testées aujourd'hui (ne PAS refaire)** :
 - witness des slots zeta Type2 seul → aucun effet gate ;
