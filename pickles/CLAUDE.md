@@ -123,29 +123,36 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**Wrap parity — Generic 556/569, 13 net à fermer** (progrès : 508→551
-codex, 551→556 moi). Autres gate types tous EXACTS. Divergences row-level :
-3213 (type 1989), en baisse depuis 3884.
+**Wrap parity — Generic 556/569, 13 net.** Tous les autres gate types
+EXACTS, step FULL MATCH, recorded 9/9 (N0/N1/N2). Divergences row-level
+3207 (type 1989, coeffs 757, wiring 461).
 
-**Gain (`bd6f1b8d2a`)** : le port codex de `Features.to_full` omettait
-`lookups_per_row_4` (`any[xor, lookup_pattern_range_check, ffmul]`) et
-`lookups_per_row_3` (`|| lookup`) — forcés par le sponge OCaml. Ajoutés
-dans l'ordre OCaml → +5 Generic, divergences halvées.
+Gains committés cette passe :
+- `bd6f1b8d2a` : lookups_per_row_3/4 manquants dans l'expansion des
+  feature flags (Features.to_full) → +5 Generic ;
+- `6c2a153c95` : **fix régression N2** (séparer branch-data domain =
+  svi.domain de compile domain = wrap_domains — coïncident N0/N1, pas N2) ;
+- `969e09edea` : `Other_field.check` (forbidden values) remonté avant
+  which_branch/branch_data (OCaml le fait au `exists` du statement, donc
+  1ère contrainte circuit) → les secondes moitiés double-generic matchent.
 
-**Reste : réordonnancement dans x_hat** (première divergence row 40).
-rust[40] == jsoo[44] : un sous-bloc de ~4 rows du packing x_hat est
-émis dans un ordre différent (landmark : la constante `-36`,
-`1,-36,0,0,0`, à jsoo row 75 vs rust row 42). C'est l'ordre d'émission
-de `public_input_commitment`/`scale_fast2`/`split_field` vs le fold
-OCaml `x_hat` (`Add_with_correction`, corrections Lagrange, Cond_add).
-Aligner cet ordre ferme le reste + effondre la cascade type=1989.
+**Reste : parité de PAIRING double-generic dès la 1ère contrainte circuit
+(dump row 40 = 1ère contrainte, les rows 0-39 = public input matchent).**
+À row 40 les secondes moitiés matchent (`1,0,-1,0,E`) mais les premières
+diffèrent (jsoo `0,0,0,1,0` produit AND, rust `-1,0,-1,0,1` réduction not)
+— un offset de pairing par UNE contrainte cascade en type=1989.
 
-**N2 corrigé (`6c2a153c95`) — suite 9/9.** La récursion wrap confondait
-DEUX domaines qui coïncident pour N0/N1 mais pas N2 : le branch-data
-(slot du statement = domaine du circuit step vérifié, `svi.domain` = 16
-pour le step width-2) et le domaine de compilation/SRS du circuit wrap
-(`wrap_domains(proofs)` = 15, ce pour quoi le SRS Tock 2^15 est
-dimensionné). Séparés : branch data → `svi.domain`, compile → wrap_domains.
+Pistes pour l'offset (non tranchées) :
+- `Boolean::any` (snarky) : ≥3 = `not(sum==0)`, OCaml = `not(all(not))`
+  (produits AND). Diffère structurellement MAIS le step à 0 diff prouve
+  qu'il matche pour le step → probablement pas la cause seule.
+- count `forbidden_shifted_values_fq` = **2** ; vérifier vs OCaml (si
+  OCaml en a plus, c'est un manque de checks ET un décalage de parité).
+- ordre exact equal-gadget (z, z_inv, r) vs OCaml `Field.equal`.
+Outils : `SNARKY_LOG_CONSTRAINTS` (gate), `SNARKY_LOG_HL_CONSTRAINTS`
+(constraint-level), instrumentation OCaml (checked_runner.ml). Aligner la
+séquence de contraintes depuis row 40 ferme le reste.
+
 
 ⚠️ **TOUJOURS tester les 3 tailles de preuve à chaque changement du
 pipeline pickles** (`cargo test -p pickles --release --test recorded`) :
