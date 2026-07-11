@@ -8,6 +8,18 @@ voir `o1js/RUST_MIGRATION.md`).
 Méthode éprouvée sur snarky : porter module par module, avec à chaque étape
 un test de parité contre l'implémentation kimchi/OCaml existante.
 
+## Principe d'audit — fidélité à l'OCaml
+
+Ce code sera audité et doit correspondre le plus possible à la version de
+base OCaml (`~/Projects/mina/.../pickles`). **Tout changement qui rapproche
+le code de la structure OCaml et qui est NEUTRE (ni régression de tests, ni
+changement de compteurs de gates) doit être committé quand même** — la
+fidélité au source OCaml est une valeur en soi pour l'auditabilité, pas
+seulement l'optimisation de la parité de gates. Ne pas rejeter un
+refactor « fidèle mais gate-neutre » : le committer avec un message qui
+dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
+toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
+
 ## Handoff actuel — parité VK o1js
 
 Dernier jalon : commit `9aba71a8f5` (`Port o1js Pickles dummy constraints`).
