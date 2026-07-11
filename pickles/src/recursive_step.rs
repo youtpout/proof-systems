@@ -1983,6 +1983,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         "recursive wrap step statement x_hat"
     );
     let data = WrapWitnessData {
+        step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
         psm: co(&svi.psm_comm.chunks[0]),

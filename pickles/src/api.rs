@@ -298,6 +298,7 @@ pub struct WrapUnfinalizedWitnessData {
 }
 
 pub struct WrapWitnessData {
+    pub step_domain_log2: u8,
     pub step_vk_digest: Fq,
     pub generic: (Fq, Fq),
     pub psm: (Fq, Fq),
@@ -396,6 +397,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let sponge_digest = stmt[10].clone();
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
+        let branch_data = stmt[13 + ROUNDS].clone();
+        let proofs_verified = Fq::from(w.unfinalized.len() as u64);
+        let expected_branch_data =
+            Fq::from(u64::from(w.step_domain_log2)) * Fq::from(4u64) + proofs_verified;
+        branch_data.assert_equals(
+            sys,
+            loc!(),
+            &FieldVar::constant(expected_branch_data),
+        )?;
         // OCaml `Wrap.Other_field.check`: each deferred Tick-field slot of
         // the statement (cip, b, zeta_to_srs_length, zeta_to_domain_size,
         // perm) must not be one of the forbidden shifted values — the 255-bit
@@ -1328,6 +1338,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         sg_olds
     };
     let wdata = WrapWitnessData {
+        step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
         psm: co(&svi.psm_comm.chunks[0]),
