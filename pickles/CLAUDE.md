@@ -123,14 +123,32 @@ constantes Lagrange/H n'ajoute que ~6 generics, pas 61 — et ses points
 bullet_reduce_terms}` et `commitments.rs::ft_comm`, qui manipulent 28+
 points (VK comms, sg_old, w/z/t, lr) via add_fast/EndoMul/scale.
 
-**Vraie piste** : instrumenter un compteur nommé de contraintes
-(`add_constraint`/`reduce_lincom` avec un label loc) et diffuser jsoo vs
-rust PAR label pour isoler quel gadget de `bulletproof.rs` sous-émet les
-139 reductions `o=x1−x2` en région 500-1500. Ne PAS re-deviner : 8
-hypothèses ciblées ont échoué (VK/h constantes → pire ; seal add_fast →
-no-op ; OptSponge flags constants → no-op ; EcScale reduce → no-op ;
-combine sg_old opt → casse EC ; flush par label → overshoot ; materialize
-x_hat → no-op). Le comptage par gadget est le seul chemin fiable restant.
+**Outil de comptage par gadget FAIT** (`SNARKY_LOG_CONSTRAINTS=1`, déjà
+présent dans `snarky/src/constraint_system.rs::add_row`) :
+`SNARKY_LOG_CONSTRAINTS=1 cargo test -p pickles --release --test recorded
+recorded_square -- --nocapture 2>/dev/null | grep -aE "^[0-9]+: "` →
+`row: loc - labels` par contrainte. Découper par circuit (reset de row) :
+7 circuits, le wrap final = index 4 (~5868 contraintes).
+
+Breakdown wrap (labels) : endo 2541, scale_fast 1326, Poseidon 1266,
+`EC complete add` 265, scalar_to_field 185, `on-curve check` 176 +
+`on-curve x^2` 88 (= **88 points on-curve**), checked_mul 123,
+`assert equals` 113, `if_` **15**.
+
+Findings actionnables :
+- **on-curve 88 vs jsoo 73** (over de 15) : on applique `assert_on_curve`
+  à 15 points de trop. `h_generator` est constant chez OCaml (−1) ; les
+  14 autres restent à identifier (candidats : sg_old masqués, certains lr).
+  Réduire à 73 corrige une partie du +31 en région 0-500.
+- `if_` = 15 seulement : notre scale_fast2/x_hat utilise peu de selects.
+
+BLOCAGE : le comptage symétrique côté jsoo manque. Prochaine étape nette :
+**instrumenter l'OCaml** (rebuild le wasm bundlé avec un log de contraintes
+équivalent dans `plonk_constraint_system.ml::add_row`/`with_label`) pour
+diff PAR gadget jsoo vs rust. Sans ça, on devine — et 9 hypothèses ont
+déjà échoué (VK/h constantes → pire ; seal add_fast → no-op ; OptSponge
+flags constants → no-op ; EcScale reduce → no-op ; combine sg_old opt →
+casse EC ; flush par label → overshoot ; materialize x_hat → no-op).
 
 État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded.
 Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
