@@ -66,10 +66,40 @@ recorded, 101/101 lib.
   **Poseidon 825 vs 1001** (176 rows = 16 blocs : absorb/opt-sponge),
   et le domaine : notre wrap déborde à 2^14 (16384 rows) vs 2^13 jsoo —
   il repassera sous 2^13 en résorbant l'excès de Generic.
-Prochaine étape : remplacer les conversions de challenges du chemin wrap
-(xi, alpha, zeta, 16 bp) par le gadget EndoMulScalar in-circuit, puis
-chasser les émissions Generic excédentaires bloc par bloc (dumps + diff).
-Dumps : `/tmp/claude-1000/wrap-circuit-{jsoo,rust}.json`.
+État du diff wrap (méthode minimale, après la session iso) :
+- **8192 = 8192 rows** ; CompleteAdd 258=258, VarBaseMul 663=663,
+  EndoMul 2464=2464, **EndoMulScalar 184=184** — 4 types de gates EXACTS ;
+- Poseidon 979 vs 1001 (−2 blocs), Generic 402 vs 569 (−167),
+  Zero +189 (miroir des déficits).
+
+Correctifs de la session (commits `5a50fd40`→) :
+- `challenge.rs::lowest_128_bits` : range-check des moitiés 128-bit via
+  `to_field_checked` (gate EndoMulScalar, 8 rows) au lieu de 128 booléens
+  unpack (≈ −3000 Generic) ; split `squeeze_scalar` (hi seul) vs
+  `squeeze_challenge` (hi+lo) — alpha/zeta/prechallenges/c en scalar ;
+- digest de la VK step **calculé in-circuit** (28 points, ordre
+  VerifierIndex::digest) au lieu de témoigné ;
+- `hash_messages_for_next_wrap_proof` reprend le sponge d'un état
+  CONSTANT pré-calculé (Wrap_hack) : préfixe dummy hors-circuit,
+  `DuplexState::from_constant_state` ajouté à snarky ;
+- tous les points witnessés du wrap passent `assert_on_curve`
+  (exists Inner_curve.typ).
+
+Pistes précises pour les derniers écarts (localisation par déciles) :
+1. **Generic −91 dans rows 820-1640** : le packing du statement step dans
+   l'IVP — OCaml `pack_statement`/`split_field` découpe chaque slot
+   255-bit en (Field, Boolean) avec seal + assert de recomposition
+   (patterns `E3fff` ≈ 2^254 dans le dump) ; nos step_statement_terms
+   n'émettent pas ces découpes.
+2. **sg_old masqués** : OCaml absorbe (keep, sg) via mask_g1_opt
+   (coordonnées scalées par le booléen avant absorb, ~2 gen/point) ;
+   nous absorbons sans masque.
+3. **Poseidon −2 blocs** (d1) et redistribution d4/d5 : alignement du
+   Fr-sponge/absorb — comparer les trains bloc par bloc (@997-1207 et
+   @4100-4920 jsoo).
+4. Ensuite : passe coeffs/wiring comme pour le step (ordre d'émission,
+   union des constantes, tri des cycles) — même méthodologie éprouvée.
+
 
 **Session parité wrap — faits vérifiés & gotchas** :
 - Layout du statement wrap o1js = **40 slots** (décodé depuis le spec OCaml,
