@@ -76,6 +76,7 @@ pub fn wrap_witness(
     public_comm: &poly_commitment::commitment::PolyComm<Vesta>,
     vk_digest: Fq,
     sg_olds: &[Vesta],
+    sg_old_mask: Option<&[bool]>,
     combined_inner_product: Fp,
     zeta: Fp,
     evalscale: Fp,
@@ -89,13 +90,26 @@ pub fn wrap_witness(
         s.absorb(&[p.x]);
         s.absorb(&[p.y]);
     };
+    let default_sg_old_mask;
+    let sg_old_mask = if let Some(mask) = sg_old_mask {
+        assert_eq!(mask.len(), sg_olds.len(), "one mask bit per sg_old");
+        mask
+    } else {
+        default_sg_old_mask = vec![true; sg_olds.len()];
+        &default_sg_old_mask
+    };
 
     // oracle transcript: vk digest, then the accumulated challenge-polynomial
     // commitments (kimchi absorbs the recursion challenges' commitments right
     // after the index digest), then the public commitment and the messages
     s.absorb(&[vk_digest]);
-    for sg in sg_olds {
-        abpt(&mut s, sg);
+    for (keep, sg) in sg_old_mask.iter().zip(sg_olds) {
+        if *keep {
+            abpt(&mut s, sg);
+        } else {
+            s.absorb(&[Fq::zero()]);
+            s.absorb(&[Fq::zero()]);
+        }
     }
     for c in &public_comm.chunks {
         abpt(&mut s, c);
@@ -265,6 +279,7 @@ mod tests {
             &public_comm,
             vi.digest::<BaseSponge>(),
             &[],
+            None,
             o.combined_inner_product,
             oracles.zeta,
             oracles.u,

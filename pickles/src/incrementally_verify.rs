@@ -142,6 +142,7 @@ pub fn incrementally_verify_proof<F, C>(
     vk_digest: &FieldVar<F>,
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
+    sg_old_mask: &[Boolean<F>],
     x_hat: &[Point<F>],
     messages: &Messages<F>,
     openings: &OpeningProof<F>,
@@ -156,12 +157,21 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
+    assert_eq!(sg_old.len(), sg_old_mask.len(), "one mask bit per sg_old");
     let mut sponge = PoseidonSponge::new();
 
     // == IVC Steps 1-2: absorb the verifier-index digest, then sg_old (PC) ==
     sponge.absorb(sys, loc.clone(), std::slice::from_ref(vk_digest));
-    for sg in sg_old {
-        absorb_commitment(sys, loc.clone(), &mut sponge, &[to_pv(sg)]);
+    for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
+        let keep = keep.to_field_var();
+        let x = sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
+        let y = sg.y.mul(&keep, Some("mask sg_old.y".into()), loc.clone(), sys)?;
+        absorb_commitment(
+            sys,
+            loc.clone(),
+            &mut sponge,
+            &[(x, y)],
+        );
     }
 
     // == IVC Steps 3-5: absorb x_hat, then the witness commitments ==
@@ -203,7 +213,12 @@ where
     // == IVC Step 15: combine the commitments by xi (Split_commitments.combine) ==
     // without_degree_bound order (wrap_verifier.ml:1360-1388), base/no-lookup.
     let mut commitments: Vec<Point<F>> = Vec::new();
-    commitments.extend(sg_old.iter().cloned());
+    for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
+        if matches!(keep.to_field_var(), FieldVar::Constant(c) if c.is_zero()) {
+            continue;
+        }
+        commitments.push(sg.clone());
+    }
     commitments.extend(x_hat.iter().cloned());
     commitments.push(ft);
     commitments.extend(messages.z_comm.iter().cloned());
@@ -453,6 +468,7 @@ mod tests {
                 &vk_digest,
                 &vk,
                 &sg_old,
+                &vec![Boolean::true_(); sg_old.len()],
                 &x_hat,
                 &messages,
                 &openings,
@@ -717,6 +733,7 @@ mod tests {
                 loc!(),
                 &vk_digest,
                 &vk,
+                &[],
                 &[],
                 &x_hat,
                 &messages,

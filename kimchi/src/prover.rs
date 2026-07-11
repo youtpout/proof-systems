@@ -172,7 +172,7 @@ where
     /// Will panic if `lookup_context.joint_lookup_table_d8` is None.
     pub fn create_recursive<EFqSponge, EFrSponge, RNG>(
         group_map: &G::Map,
-        mut witness: [Vec<G::ScalarField>; COLUMNS],
+        witness: [Vec<G::ScalarField>; COLUMNS],
         runtime_tables: &[RuntimeTable<G::ScalarField>],
         index: &ProverIndex<FULL_ROUNDS, G, OpeningProof::SRS>,
         prev_challenges: Vec<RecursionChallenge<G>>,
@@ -186,6 +186,53 @@ where
         RNG: RngCore + CryptoRng,
         VerifierIndex<FULL_ROUNDS, G, OpeningProof::SRS>: Clone,
     {
+        Self::create_recursive_with_recursion_mask::<EFqSponge, EFrSponge, RNG>(
+            group_map,
+            witness,
+            runtime_tables,
+            index,
+            prev_challenges,
+            None,
+            blinders,
+            rng,
+        )
+    }
+
+    /// Like [`Self::create_recursive`], but with a Pickles optional-commitment
+    /// mask for the previous recursion challenges. Masked-out challenges stay
+    /// physically present in the proof, but their Fq-sponge commitment
+    /// absorption is `(0,0)` and they are omitted from both the old-challenge
+    /// Fr digest and the IPA opening.
+    pub fn create_recursive_with_recursion_mask<EFqSponge, EFrSponge, RNG>(
+        group_map: &G::Map,
+        mut witness: [Vec<G::ScalarField>; COLUMNS],
+        runtime_tables: &[RuntimeTable<G::ScalarField>],
+        index: &ProverIndex<FULL_ROUNDS, G, OpeningProof::SRS>,
+        prev_challenges: Vec<RecursionChallenge<G>>,
+        prev_challenges_mask: Option<&[bool]>,
+        blinders: Option<[Option<PolyComm<G::ScalarField>>; COLUMNS]>,
+        rng: &mut RNG,
+    ) -> Result<Self>
+    where
+        EFqSponge: Clone + FqSponge<G::BaseField, G, G::ScalarField, FULL_ROUNDS>,
+        EFrSponge: FrSponge<G::ScalarField>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<G::ScalarField, FULL_ROUNDS>>,
+        RNG: RngCore + CryptoRng,
+        VerifierIndex<FULL_ROUNDS, G, OpeningProof::SRS>: Clone,
+    {
+        let default_prev_challenges_mask;
+        let prev_challenges_mask = if let Some(mask) = prev_challenges_mask {
+            assert_eq!(
+                mask.len(),
+                prev_challenges.len(),
+                "one recursion mask bit per previous challenge"
+            );
+            mask
+        } else {
+            default_prev_challenges_mask = vec![true; prev_challenges.len()];
+            &default_prev_challenges_mask
+        };
+
         internal_tracing::checkpoint!(internal_traces; create_recursive);
         let d1_size = index.cs.domain.d1.size();
 
@@ -260,8 +307,18 @@ where
         fq_sponge.absorb_fq(&[verifier_index_digest]);
 
         //~ 1. Absorb the commitments of the previous challenges with the Fq-sponge.
-        for RecursionChallenge { comm, .. } in &prev_challenges {
-            absorb_commitment(&mut fq_sponge, comm)
+        for (keep, RecursionChallenge { comm, .. }) in
+            prev_challenges_mask.iter().zip(&prev_challenges)
+        {
+            if *keep {
+                absorb_commitment(&mut fq_sponge, comm)
+            } else {
+                for _ in &comm.chunks {
+                    let zero = G::BaseField::zero();
+                    fq_sponge.absorb_fq(&[zero]);
+                    fq_sponge.absorb_fq(&[zero]);
+                }
+            }
         }
 
         //~ 1. Compute the negated public input polynomial as
@@ -1174,8 +1231,12 @@ where
             // Note: we absorb in a new sponge here to limit the scope in which we need the
             // more-expensive 'optional sponge'.
             let mut fr_sponge = EFrSponge::from(G::sponge_params());
-            for RecursionChallenge { chals, .. } in &prev_challenges {
-                fr_sponge.absorb_multiple(chals);
+            for (keep, RecursionChallenge { chals, .. }) in
+                prev_challenges_mask.iter().zip(&prev_challenges)
+            {
+                if *keep {
+                    fr_sponge.absorb_multiple(chals);
+                }
             }
             fr_sponge.digest()
         };
@@ -1185,11 +1246,15 @@ where
         internal_tracing::checkpoint!(internal_traces; build_polynomials);
         let polys = prev_challenges
             .iter()
-            .map(|RecursionChallenge { chals, comm }| {
-                (
+            .zip(prev_challenges_mask)
+            .filter_map(|(RecursionChallenge { chals, comm }, keep)| {
+                if !*keep {
+                    return None;
+                }
+                Some((
                     DensePolynomial::from_coefficients_vec(b_poly_coefficients(chals)),
                     comm.len(),
-                )
+                ))
             })
             .collect::<Vec<_>>();
 

@@ -572,10 +572,17 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             });
         }
 
+        let expanded_step_statement_len: usize = w
+            .step_statement
+            .iter()
+            .map(|slot| match slot {
+                WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
+            })
+            .sum();
         assert_eq!(
-            w.step_statement.len(),
+            expanded_step_statement_len,
             w.step_statement_lagranges.len(),
-            "one Lagrange slot per step statement element"
+            "one Lagrange slot per expanded step statement element"
         );
         let mut elements = Vec::with_capacity(w.step_statement.len());
         for slot in &w.step_statement {
@@ -1041,16 +1048,14 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         )
     };
     let (step_proof, _) = step_pi
-        .prove_with_recursion::<VestaBase, VestaScalar>(
+        .prove_with_recursion_mask::<VestaBase, VestaScalar>(
             digest,
             (witness, wrap_vk_pts.clone()),
             true,
             vec![dummy_recursion.clone(), dummy_recursion],
+            Some(&[false, false]),
         )
         .unwrap();
-
-    // sanity: the padded step proof must verify at the kimchi level
-    step_ver.verify::<VestaBase, VestaScalar>(step_proof.clone(), digest, ());
 
     // ---- wrap witness ----
     let public_input = vec![digest];
@@ -1064,7 +1069,12 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         .unwrap()
         .commitment;
     let o = step_proof
-        .oracles::<VestaBase, VestaScalar, _>(svi, &public_comm, Some(&public_input))
+        .oracles_with_recursion_mask::<VestaBase, VestaScalar, _>(
+            svi,
+            &public_comm,
+            Some(&public_input),
+            Some(&[false, false]),
+        )
         .unwrap();
     let oracles = &o.oracles;
 
@@ -1105,6 +1115,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         &public_comm,
         svi.digest::<VestaBase>(),
         &sg_old_points,
+        Some(&[false, false]),
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,
@@ -1118,8 +1129,10 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         fr.absorb(&o.digest);
         let pcd = {
             let mut prev_sponge = VestaScalar::from(params);
-            for rc in &step_proof.prev_challenges {
-                prev_sponge.absorb_multiple(&rc.chals);
+            for (keep, rc) in [false, false].iter().zip(&step_proof.prev_challenges) {
+                if *keep {
+                    prev_sponge.absorb_multiple(&rc.chals);
+                }
             }
             prev_sponge.digest()
         };

@@ -1200,15 +1200,6 @@ pub fn prepare_recursive_step_with_state<
     new_app_state: Vec<Fp>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
     let step_public = [embed_fq_to_fp(base.statement[12])];
-    // The base step proof carries two dummy accumulators
-    // (Wrap_hack.pad_accumulator): its Fr-sponge absorbed their challenge
-    // digest, so the finalize replay needs the same vectors.
-    let base_prev_challenges: Vec<Vec<Fp>> = base
-        .step_proof
-        .prev_challenges
-        .iter()
-        .map(|rc| rc.chals.clone())
-        .collect();
     prepare_recursive_step_from_parts::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>(
         &base.step_verifier.index,
         &base.step_proof,
@@ -1219,7 +1210,7 @@ pub fn prepare_recursive_step_with_state<
         vec![],
         vec![],
         vec![],
-        base_prev_challenges,
+        vec![],
         wrap_vk_pts.clone(),
         wrap_vk_pts,
         prev_app_state,
@@ -1767,6 +1758,12 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 11);
     assert_eq!(step_proof.proof.lr.len(), STEP_PROOF_ROUNDS);
     assert_eq!(unfinalized.len(), proofs_verified.to_usize());
+    let logical_proofs_verified = proofs_verified.to_usize();
+    let inactive = sg_olds
+        .len()
+        .checked_sub(logical_proofs_verified)
+        .expect("more logical proofs than physical sg_olds");
+    let sg_old_mask: Vec<bool> = (0..sg_olds.len()).map(|i| i >= inactive).collect();
 
     let step_public = step_statement_values.to_vec();
     let lgr = svi.srs().get_lagrange_basis(svi.domain);
@@ -1779,7 +1776,12 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         .unwrap()
         .commitment;
     let o = step_proof
-        .oracles::<VestaBase, VestaScalar, _>(svi, &public_comm, Some(&step_public))
+        .oracles_with_recursion_mask::<VestaBase, VestaScalar, _>(
+            svi,
+            &public_comm,
+            Some(&step_public),
+            Some(&sg_old_mask),
+        )
         .unwrap();
     let oracles = &o.oracles;
 
@@ -1815,6 +1817,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         &public_comm,
         svi.digest::<VestaBase>(),
         &sg_olds,
+        Some(&sg_old_mask),
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,
@@ -1828,8 +1831,10 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         fr.absorb(&o.digest);
         let pcd = {
             let mut prev = VestaScalar::from(params);
-            for challenge in &step_proof.prev_challenges {
-                prev.absorb_multiple(&challenge.chals);
+            for (keep, challenge) in sg_old_mask.iter().zip(&step_proof.prev_challenges) {
+                if *keep {
+                    prev.absorb_multiple(&challenge.chals);
+                }
             }
             prev.digest()
         };

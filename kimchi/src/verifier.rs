@@ -134,6 +134,43 @@ where
         EFrSponge: FrSponge<G::ScalarField>,
         EFrSponge: From<&'static ArithmeticSpongeParams<G::ScalarField, FULL_ROUNDS>>,
     {
+        self.oracles_with_recursion_mask::<EFqSponge, EFrSponge, Srs>(
+            index,
+            public_comm,
+            public_input,
+            None,
+        )
+    }
+
+    /// Like [`Self::oracles`], but with Pickles' optional-recursion mask for
+    /// `prev_challenges`. Masked entries are physically present, but are
+    /// absorbed as `(0,0)` in the Fq sponge and omitted from both the
+    /// old-challenge Fr digest and the IPA polynomial list.
+    pub fn oracles_with_recursion_mask<EFqSponge, EFrSponge, Srs>(
+        &self,
+        index: &VerifierIndex<FULL_ROUNDS, G, Srs>,
+        public_comm: &PolyComm<G>,
+        public_input: Option<&[G::ScalarField]>,
+        prev_challenges_mask: Option<&[bool]>,
+    ) -> Result<OraclesResult<FULL_ROUNDS, G, EFqSponge>>
+    where
+        EFqSponge: Clone + FqSponge<G::BaseField, G, G::ScalarField, FULL_ROUNDS>,
+        EFrSponge: FrSponge<G::ScalarField>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<G::ScalarField, FULL_ROUNDS>>,
+    {
+        let default_prev_challenges_mask;
+        let prev_challenges_mask = if let Some(mask) = prev_challenges_mask {
+            assert_eq!(
+                mask.len(),
+                self.prev_challenges.len(),
+                "one recursion mask bit per previous challenge"
+            );
+            mask
+        } else {
+            default_prev_challenges_mask = vec![true; self.prev_challenges.len()];
+            &default_prev_challenges_mask
+        };
+
         //~
         //~ #### Fiat-Shamir argument
         //~
@@ -163,8 +200,18 @@ where
         fq_sponge.absorb_fq(&[verifier_index_digest]);
 
         //~ 1. Absorb the commitments of the previous challenges with the Fq-sponge.
-        for RecursionChallenge { comm, .. } in &self.prev_challenges {
-            absorb_commitment(&mut fq_sponge, comm);
+        for (keep, RecursionChallenge { comm, .. }) in
+            prev_challenges_mask.iter().zip(&self.prev_challenges)
+        {
+            if *keep {
+                absorb_commitment(&mut fq_sponge, comm);
+            } else {
+                for _ in &comm.chunks {
+                    let zero = G::BaseField::zero();
+                    fq_sponge.absorb_fq(&[zero]);
+                    fq_sponge.absorb_fq(&[zero]);
+                }
+            }
         }
 
         //~ 1. Absorb the commitment of the public input polynomial with the Fq-Sponge.
@@ -291,8 +338,12 @@ where
             // Note: we absorb in a new sponge here to limit the scope in which we need the
             // more-expensive 'optional sponge'.
             let mut fr_sponge = EFrSponge::from(G::sponge_params());
-            for RecursionChallenge { chals, .. } in &self.prev_challenges {
-                fr_sponge.absorb_multiple(chals);
+            for (keep, RecursionChallenge { chals, .. }) in
+                prev_challenges_mask.iter().zip(&self.prev_challenges)
+            {
+                if *keep {
+                    fr_sponge.absorb_multiple(chals);
+                }
             }
             fr_sponge.digest()
         };
@@ -311,7 +362,11 @@ where
         let polys: Vec<(PolyComm<G>, _)> = self
             .prev_challenges
             .iter()
-            .map(|challenge| {
+            .zip(prev_challenges_mask)
+            .filter_map(|(challenge, keep)| {
+                if !*keep {
+                    return None;
+                }
                 let evals = challenge.evals(
                     index.max_poly_size,
                     &evaluation_points,
@@ -321,7 +376,7 @@ where
                     ],
                 );
                 let RecursionChallenge { chals: _, comm } = challenge;
-                (comm.clone(), evals)
+                Some((comm.clone(), evals))
             })
             .collect();
 

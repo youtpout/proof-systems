@@ -229,6 +229,19 @@ where
     // == commit to the step statement and fully verify the step proof ==
     let terms = step_statement_terms(sys, loc.clone(), step_statement_elements, lagranges)?;
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
+    let inactive_sg_olds = sg_olds
+        .len()
+        .checked_sub(unfinalized.len())
+        .expect("more logical proofs than physical sg_olds");
+    let sg_old_mask: Vec<Boolean<F>> = (0..sg_olds.len())
+        .map(|i| {
+            if i >= inactive_sg_olds {
+                Boolean::true_()
+            } else {
+                Boolean::false_()
+            }
+        })
+        .collect();
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
         sys,
@@ -236,6 +249,7 @@ where
         vk_digest,
         vk,
         sg_olds,
+        &sg_old_mask,
         &terms,
         h_generator,
         messages,

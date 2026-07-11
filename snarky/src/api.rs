@@ -97,6 +97,39 @@ where
         EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
         EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
     {
+        self.prove_with_recursion_mask::<EFqSponge, EFrSponge>(
+            public_input,
+            private_input,
+            debug,
+            prev_challenges,
+            None,
+        )
+    }
+
+    /// Like [`Self::prove_with_recursion`], but with Pickles' optional
+    /// accumulator mask for previous recursion challenges.
+    pub fn prove_with_recursion_mask<EFqSponge, EFrSponge>(
+        // TODO: this should not be mutable ideally
+        &mut self,
+        public_input: <Circuit::PublicInput as SnarkyType<ScalarField<Circuit::Curve>>>::OutOfCircuit,
+        private_input: Circuit::PrivateInput,
+        // TODO: rename to verify_witness?
+        debug: bool,
+        prev_challenges: Vec<kimchi::proof::RecursionChallenge<Circuit::Curve>>,
+        prev_challenges_mask: Option<&[bool]>,
+    ) -> SnarkyResult<(Proof<Circuit>, Box<Output<Circuit>>)>
+    where
+        <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
+        EFqSponge: Clone
+            + FqSponge<
+                BaseField<Circuit::Curve>,
+                Circuit::Curve,
+                ScalarField<Circuit::Curve>,
+                FULL_ROUNDS,
+            >,
+        EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
+    {
         // create public input
         let public_input_without_output =
             Circuit::PublicInput::value_to_field_elements(&public_input).0;
@@ -167,16 +200,18 @@ where
         let group_map = <Circuit::Curve as CommitmentCurve>::Map::setup();
 
         // TODO: return error instead of panicking
-        let proof: Proof<Circuit> = ProverProof::create_recursive::<EFqSponge, EFrSponge, _>(
-            &group_map,
-            witness.0,
-            &[],
-            &self.index,
-            prev_challenges,
-            None,
-            &mut rand::rngs::OsRng,
-        )
-        .unwrap();
+        let proof: Proof<Circuit> =
+            ProverProof::create_recursive_with_recursion_mask::<EFqSponge, EFrSponge, _>(
+                &group_map,
+                witness.0,
+                &[],
+                &self.index,
+                prev_challenges,
+                prev_challenges_mask,
+                None,
+                &mut rand::rngs::OsRng,
+            )
+            .unwrap();
 
         // return proof + public output
         Ok((proof, Box::new(public_output)))

@@ -54,6 +54,7 @@ pub fn verify<F, C>(
     vk_digest: &FieldVar<F>,
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
+    sg_old_mask: &[Boolean<F>],
     public_input_terms: &[Term<F>],
     h_generator: &Point<F>,
     messages: &Messages<F>,
@@ -86,6 +87,7 @@ where
         vk_digest,
         vk,
         sg_old,
+        sg_old_mask,
         std::slice::from_ref(&x_hat),
         messages,
         openings,
@@ -344,12 +346,14 @@ where
 
     // the wrap statement public input, then the full wrap-proof check
     let terms = wrap_statement_terms(stmt, &msgs_step_digest, packed_lagranges, flag_lagranges);
+    let sg_old_mask = vec![Boolean::true_(); prev_challenge_polynomial_commitments.len()];
     let verified = verify::<F, C>(
         sys,
         loc.clone(),
         vk_digest,
         vk,
         prev_challenge_polynomial_commitments,
+        &sg_old_mask,
         &terms,
         h_generator,
         messages,
@@ -562,6 +566,7 @@ mod tests {
                 &vk_digest,
                 &vk,
                 &sg_old,
+                &vec![Boolean::true_(); sg_old.len()],
                 &terms,
                 &h,
                 &messages,
