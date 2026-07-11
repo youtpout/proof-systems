@@ -401,6 +401,31 @@ where
             }
 
             if !env.has_witness {
+                // High-level constraint log (env-gated), aligned with the
+                // OCaml checked_runner SNARKY_LOG_CONSTRAINTS granularity —
+                // for constraint-sequence diffing.
+                if std::env::var("SNARKY_LOG_HL_CONSTRAINTS").is_ok() {
+                    let kind = match &constraint {
+                        Constraint::BasicSnarkyConstraint(c) => match c {
+                            crate::constraint_system::BasicSnarkyConstraint::Boolean(_) => "Boolean",
+                            crate::constraint_system::BasicSnarkyConstraint::Equal(..) => "Equal",
+                            crate::constraint_system::BasicSnarkyConstraint::Square(..) => "Square",
+                            crate::constraint_system::BasicSnarkyConstraint::R1CS(..) => "R1CS",
+                        },
+                        Constraint::KimchiConstraint(c) => match c {
+                            crate::constraint_system::KimchiConstraint::Basic(..) => "Basic",
+                            crate::constraint_system::KimchiConstraint::Poseidon(..)
+                            | crate::constraint_system::KimchiConstraint::Poseidon2(..) => "Poseidon",
+                            crate::constraint_system::KimchiConstraint::EcAddComplete(..) => "EC_add_complete",
+                            crate::constraint_system::KimchiConstraint::EcScale(..) => "EC_scale",
+                            crate::constraint_system::KimchiConstraint::EcEndoscale(..) => "EC_endoscale",
+                            crate::constraint_system::KimchiConstraint::EcEndoscalar(..) => "EC_endoscalar",
+                            _ => "KimchiOther",
+                        },
+                    };
+                    println!("HLCONSTRAINT {} @ {}", kind, env.labels_stack.join(" | "));
+                }
+
                 // TODO: we should have a mode "don't create constraints" instead of having an option here
                 let cs = match &mut env.system {
                     Some(cs) => cs,
