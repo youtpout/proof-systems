@@ -4,6 +4,21 @@ Rust port of the OCaml [snarky](https://github.com/o1-labs/snarky) circuit-writi
 DSL, integrated into the proof-systems workspace as the `snarky` crate (plus the
 `snarky-deriver` proc-macro crate in `snarky/deriver`).
 
+## Audit principle — fidelity to OCaml
+
+This code will be audited and must correspond as closely as possible to the
+base OCaml source (`~/Projects/snarky`, `src/base` + `src/intf`; and the mina
+`plonk_constraint_system.ml`). **Any change that brings the code closer to the
+OCaml structure and is NEUTRAL (no test regression, no change in gate counts)
+should still be committed** — fidelity to the OCaml source is a value in
+itself for auditability, not only gate-parity optimisation. Do not reject a
+"faithful but gate-neutral" refactor: commit it with a message stating it
+aligns the structure on the OCaml without gate effect. Always confirm no
+regression (`cargo test -p snarky`, and downstream `pickles` recorded 9/9:
+N0/N1/N2). This is especially important for the constraint-emission order,
+reductions and the double-generic pairing, where matching OCaml exactly is
+what closes gate-parity gaps downstream (pickles wrap circuit).
+
 ## Origin
 
 - The core of this crate is the snarky DSL that used to live in
