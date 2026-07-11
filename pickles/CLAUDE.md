@@ -171,4 +171,42 @@ dit exactement où chercher — plus de devinette.
 
 État committé : Generic 508 vs 569, 6/7 gate types exacts, 9/9 recorded,
 step FULL MATCH. Instrumentation OCaml sur disque (mina/snarky, sous-module).
+
+**Instrumentation Rust HL AUSSI faite** (`SNARKY_LOG_HL_CONSTRAINTS=1`,
+`snarky/src/runner.rs::add_constraint`) : log constraint-level (avant
+expansion en gates), même granularité que le log OCaml → **séquences
+comparables 1:1**. Capture :
+`SNARKY_LOG_HL_CONSTRAINTS=1 cargo test -p pickles --release --test
+recorded recorded_square -- --nocapture 2>/dev/null | grep '^HLCONSTRAINT'`.
+
+**Diff kind-level DÉFINITIF** (rust recorded_square = two-pass, ÷2 ; jsoo
+vk-parity = 1 pass ; step à 0 diff donc tout l'écart est wrap) :
+| kind | jsoo | rust÷2 | écart |
+|------|------|--------|-------|
+| Equal | 584 | 302 | **jsoo +282** |
+| R1CS | 349 | 243 | **jsoo +106** |
+| Square | 265 | 323 | rust +58 (on-curve 88 vs 73) |
+| EC_add_complete | 264 | 265 | ✓ |
+| EC_endoscale/scalar/scale | 79/25/15 | ✓ | |
+
+OCaml émet **+282 Equal (seals `Util.Wrap.seal`/`Field.Assert.equal`) et
++106 R1CS (checked-muls)** d'intermédiaires que nous calculons sans
+sceller. Répartition Equal jsoo : endo 158, check_bulletproof 133,
+hash_messages 110, wrap_main:204 56, absorb 54.
+
+**MÉTHODE pour fermer (traçable, plus de devinette)** :
+1. Capturer les deux logs HL (OCaml : `rust-pickles-vk-parity.ts` ;
+   Rust : `recorded_square`).
+2. Extraire la sous-séquence WRAP de chaque (labels wrap_main/
+   wrap_verifier/bulletproof/combine côté jsoo ; circuit final côté rust),
+   en ORDRE.
+3. Aligner les séquences de kinds → première divergence = première
+   contrainte OCaml qu'on n'émet pas → identifie le gadget + la ligne
+   exacte à corriger (ajouter le seal/mul).
+4. Ajouter le seal, re-tester (cargo test recorded), re-diff, itérer.
+   Vérifier à CHAQUE fois : step reste FULL MATCH, EC/EndoMul inchangés.
+
+Fichiers : logs `/tmp/claude-1000/{jsoo-constraints.log, rust-hl.log}`.
+Nested proof-systems : jsoo needs `89edaa3204`, bundled wasm needs
+`866c3ab277` (fq_prover) — actuellement à 866c3ab277.
 Dumps : `/tmp/claude-1000/{wrap-circuit-*.json, jsoo-constraints.log}`.
