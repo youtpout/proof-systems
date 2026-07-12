@@ -503,3 +503,70 @@ côtés, tous les types de gate non-Generic exacts, `Generic 556 vs 569`.
 Le travail restant concerne l’ordre et la réduction des contraintes privées
 du wrap — en premier `Other_field.check`, puis les chemins qui réutilisent
 les challenges `beta`/`gamma` — et non le layout public du step.
+
+## Correction du handoff — 2026-07-12 (suite, codex)
+
+**Le commit `ce01aa6d9f` ("Align wrap transcript witness order") AMÉLIORE
+effectivement l'état, contrairement à ce que documentaient les essais
+précédents (91bf44b457/acb2de2a2e) qui donnaient 3203.** Différence clé :
+cet essai-ci ne se contente pas de déplacer `messages`/`sg_olds` avant le
+sponge — il **recalcule `vk_digest` EN CIRCUIT depuis les 28 points de la
+VK** (absorb direct des coordonnées `vk.sigma_init/…/endomul_scalar` dans un
+`PoseidonSponge::new()`, api.rs:629-651) **au lieu de le witnesser**. C'est
+cette combinaison (constants → variables déjà en main + réordonnancement)
+qui débloque, pas le réordonnancement seul. Mesuré après rebuild napi :
+
+- **divergence 2869** (record, contre 2917 précédent), Generic toujours
+  **556/569** (13 net, inchangé), tous les autres types de gates EXACTS,
+  `recorded` 9/9 (N0/N1/N2) OK.
+- Première divergence de **type/coeffs** : row **40** (pas row 5 — la
+  divergence de *wiring* à row 5-38 n'est qu'un artefact de cible de
+  permutation en aval, cascadée par le déficit de 13 Generic ; rows 0-39
+  = 40 gates `public_input`, byte-exact des deux côtés).
+
+**Localisation précise du nouveau premier écart (row 40-73) — PAS un bug
+snarky.** Ce bloc correspond au check de cohérence des feature-flags
+(`assert_consistent`, wrap_main.ml ~301, 8 flags: range_check0/1,
+foreign_field_add/mul, xor, rot, lookup, runtime_tables — cf. api.rs:493-505
+qui les witnesse déjà comme `Boolean<Fq>` variables depuis `stmt[...]`, pas
+des constantes). Comparaison coeff-à-coeff (outil labels) :
+- Les FORMULES snarky sont byte-exactes vis-à-vis d'OCaml : `equal_constraints`
+  (`cvar.rs:195`, R1CS `z_inv·z=1-r` puis R1CS `r·z=0`, labels `equals_1`/
+  `equals_2`) et `Boolean::and` (`boolean.rs:89`, label `bool.and`) encodent
+  bien un `a*b=c` via `m=1` — confirmé en comparant les POSITIONS de
+  coefficient (`m` = index 3 d'un demi-generic) sur les rows qui matchent
+  encore (ex. row 42-44, 47 : jsoo et rust identiques byte-à-byte).
+- Sur les rows qui divergent (40, 41, 45…), le coefficient apparaît chez
+  **rust en position `c` (constante, index 4) alors que jsoo le met en
+  position `m` (index 3)** pour le même label logique — signe qu'un des
+  trois opérandes (`a`,`b`,`c`) passés à `assert_r1cs` est un
+  `FieldVar::Constant` côté rust là où OCaml le garde comme variable
+  witnessée (et l'aurait matérialisée via `cached_constants`/`reduce_to_v`,
+  cf. la note "Cause: OCaml reduce_to_v matérialise…" plus haut — même
+  mécanisme que le déficit 500-1500, mais ici sur le bloc feature-flags,
+  pas x_hat).
+- **`assert_r1cs`/`assert_eq` (runner.rs:344-367) ne passent PAS par
+  `reduce_to_var`/`cached_constants`** (ce mécanisme n'existe que dans
+  `reduce_lincom`/`reduce_to_var`, constraint_system.rs:940-1058, utilisé
+  pour les `scale`) : un `FieldVar::Constant` donné tel quel à `assert_r1cs`
+  est plié directement dans le coefficient du gate plutôt que d'être
+  matérialisé en variable + Equal, contrairement à OCaml qui matérialise
+  systématiquement via `cached_constants` dès qu'une constante entre dans
+  N'IMPORTE quelle contrainte (pas seulement `scale`).
+- **Ce n'est donc PAS un bug de formule snarky** (les deux formules
+  `equal_constraints`/`Boolean::and` sont correctes et déjà vérifiées
+  ailleurs — step FULL MATCH), mais un **écart de couverture du mécanisme de
+  matérialisation des constantes** : OCaml l'applique à toute contrainte
+  basique (R1CS/Equal/Square), notre port ne l'a branché que sur
+  `reduce_lincom`. Etendre `cached_constants`-style materialization à
+  `assert_r1cs`/`assert_eq`/`assert_square` (quand un opérande est
+  `FieldVar::Constant`) est la prochaine piste concrète — mais c'est un
+  changement AU NIVEAU SNARKY (pas pickles), donc à tester avec précaution
+  sur tout le corpus (step FULL MATCH doit rester intact) avant de le
+  généraliser. Prochaine étape : identifier PRÉCISÉMENT quel opérande
+  (`z`, `z_inv`, ou `r`/`one_minus_r`) est Constant côté rust à la row 40
+  (probablement un des flags de `feature_flags[]` qui est structurellement
+  toujours 0 ou 1 dans ce test minimal et se replie en Constant lors du
+  calcul de `Boolean::and`/`not`), puis matérialiser CE point précis (pas
+  un changement générique dans runner.rs, plus risqué) avant d'envisager la
+  généralisation.
