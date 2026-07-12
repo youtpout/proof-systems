@@ -957,3 +957,84 @@ précisément row par row 4096-5376 avec les labels (comme fait pour
 row 40 et row 594) pour identifier QUELLE fonction précise réagit au
 décalage, plutôt que deviner (ft_comm/finalize étaient des hypothèses
 non vérifiées cette session, faute de temps).
+
+## Session — jsoo label instrumentation attempt (2026-07-12/13)
+
+**Bug fix RÉEL et VALIDÉ (indépendant de l'objectif labels)** : le bundle
+jsoo (`o1js_node.bc.cjs`) ne pouvait plus être reconstruit du tout depuis
+l'état actuel des sources — `npm run build:jsoo:node` échouait avec 3+
+erreurs de type (`wrap.ml:115`, `step.ml:480/491/900`, `pickles.ml:1079/1273`)
+: `p_eval_1`/`p_eval_2` (Tick.Oracles) retournent désormais un `array`
+(support multi-chunk) là où ces sites faisaient encore
+`[| p_eval_1 o |]` (double-wrap). **Confirmé PRÉEXISTANT** (même échec avec
+mes modifs stashées). Corrigé en retirant le wrap redondant aux 6 sites où
+c'était un vrai bug (`wrap.ml:115`, `step.ml:480,491,900`, `pickles.ml:1079,1273`),
+et en mettant à jour `X_hat.t` (step.ml, local à `expand_proof`) de
+`Tock.Field.t Double.t` vers `Tock.Field.t array Double.t` pour rester
+cohérent avec le flux array désormais uniforme. **`proof.ml` (`of_repr`) a
+délibérément GARDÉ son wrap** — ce n'est PAS le même bug : c'est une
+conversion Stable.V1 (scalaire, sérialisé sur disque) → live (array), le
+wrap y est correct et nécessaire (à ne pas retoucher).
+
+**Validation** : `dune build src/mina/src/lib/crypto/pickles/` exit 0 ;
+jsoo bundle rebuild réussi ; `rust-pickles-wrap-gates-diff.ts` donne
+EXACTEMENT 2869/556 (identique à avant le fix, confirmant neutralité
+sémantique) ; `rust-pickles-step-gates-diff.ts` toujours FULL MATCH.
+**Ce fix mérite d'être committé séparément dans le submodule o1js/mina —
+il débloque TOUT travail OCaml futur sur ce repo**, indépendamment des
+labels.
+
+**Objectif labels jsoo — implémenté mais NE MARCHE PAS pour la raison
+attendue.** Ajouté `snarky_intf/constraint_label_debug.ml` (ref global +
+flag env), threadé un champ `label` dans `Gate_spec.t`
+(`kimchi_pasta_snarky_backend/plonk_constraint_system.ml`), à travers
+`add_row`/`add_generic_constraint`/le flush du pending generic/le public
+input, et un export `GATE_LABEL <row>: <label>` en fin de
+`finalize_and_get_gates` (miroir exact du mécanisme rust
+`GateSpec.label`/`gate_labels()` de `3409b070ed`). **Compile proprement,
+gate-neutre (vérifié : dump identique 2869/556 avant/après)**.
+
+**MAIS : `finalize_and_get_gates` n'est JAMAIS appelé pendant le compile
+réel utilisé par `rust-pickles-wrap-gates-diff.ts`.** Vérifié avec des
+`Printf.printf`/`Stdlib.prerr_endline` inconditionnels à 3 niveaux :
+`finalize_and_get_gates` lui-même, et `Impls.{Step,Wrap}.Keypair.generate`
+(qui d'après la lecture statique du code — `cache.ml:124/267` →
+`Keypair.generate` → `Tick/Tock.Keypair.create` = `Dlog_plonk_based_keypair.create`
+→ `Inputs.Constraint_system.finalize_and_get_gates` — DEVRAIT être sur le
+chemin) : **aucun des 3 print ne s'affiche**, alors que le compile
+RÉUSSIT et produit des bytes de wrap-pk corrects (le test entier
+fonctionne). Donc le vrai chemin de compilation utilisé par
+`Program.compile()` d'o1js N'EST PAS celui que la lecture statique du
+code suggère — soit un cache (`Key_cache.Sync.read`, mais `cache=[]` par
+défaut dans `compile.ml:1038`, donc improbable), soit une exécution dans
+un contexte (worker/thread jsoo `Promise.run_in_thread`) dont le
+stdout/stderr n'est pas capturé par notre pipe, soit une toute autre
+fonction de compilation plus récente que je n'ai pas trouvée. **Piste
+`Promise.run_in_thread`** (utilisé ailleurs, ex.
+`plonk_dlog_proof.ml:batch_verify`) **la plus probable mais NON
+confirmée** — pas eu le temps de vérifier si jsoo mappe ça sur un vrai
+`worker_threads.Worker` (il y en a dans `node-backend.js:107`, mais pour
+des workers WASM/Rust multi-thread, pas manifestement pour OCaml/jsoo).
+
+**Prochaine étape concrète (non faite)** : soit (a) trouver la VRAIE
+fonction de compilation OCaml appelée par `Program.compile()`
+(chercher differently — tracer depuis le binding jsoo_exports plutôt que
+depuis `cache.ml`/`impls.ml` en lecture statique, ou binary-search avec
+des prints à des points de plus en plus profonds en partant du binding
+JS d'entrée), soit (b) confirmer/infirmer l'hypothèse
+`Promise.run_in_thread`/stdout-non-capturé (essayer de rediriger stderr
+différemment, ou chercher un moyen de forcer une exécution synchrone),
+soit (c) abandonner l'approche OCaml-side label et se rabattre sur une
+méthode de corrélation différente (ex. comparer les MULTI-SETS de
+coefficients/types entre jsoo et rust sans labels, ou instrumenter côté
+RUST/WASM kimchi si c'est bien là que la finalisation a lieu réellement).
+
+**État du repo** : tous les fichiers OCaml modifiés sont dans
+`o1js/src/mina` (submodule) et `o1js/src/mina/src/lib/snarky` (submodule
+imbriqué) — PAS COMMITÉS (git status propre à committer, rien de perdu,
+un `git stash@{0}` existe dans `src/mina` avec de l'état préexistant non
+lié à ce travail, à ne pas drop sans vérifier). Le jsoo bundle actuel
+(`src/bindings/compiled/node_bindings/o1js_node.bc.cjs`) intègre TOUS ces
+changements (build fix + label plumbing inutilisé) et est vérifié
+fonctionnellement identique (2869/556, step FULL MATCH, 9/9 recorded côté
+rust inchangé).
