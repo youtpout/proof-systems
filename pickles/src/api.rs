@@ -553,47 +553,51 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
         }
 
-        // OCaml's wrap rule selects the step verification key from the compiled
-        // key vector with `Inner_curve.constant`; only the proof payload itself
-        // is witnessed through `Inner_curve.typ`.  Keep these commitments as
-        // constants here as well, otherwise the circuit gets extra
-        // assert-on-curve rows before the index digest.
+        // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
+        // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
+        // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,
+        // sealed to a var (the 56 `Equal` at wrap_main.ml:204). The selected
+        // points are THEN checked on-curve (the following Square/R1CS block),
+        // with no separate per-point equality assert. Reproduce that exactly:
+        // all selections first, then all on-curve checks.
+        let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
+            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
+            let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
+            Ok(Point::new(x, y))
+        };
+        let choose_pts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
+            let mut out = vec![];
+            for &p in ps {
+                out.push(choose_pt(sys, p)?);
+            }
+            Ok(out)
+        };
         let vk = VerificationKeyComm {
-            generic: mkpt(sys, w.generic)?,
-            psm: mkpt(sys, w.psm)?,
-            complete_add: mkpt(sys, w.complete_add)?,
-            mul: mkpt(sys, w.mul)?,
-            emul: mkpt(sys, w.emul)?,
-            endomul_scalar: mkpt(sys, w.endomul_scalar)?,
-            coefficients: mkpts(sys, &w.coefficients)?,
-            sigma_init: mkpts(sys, &w.sigma_init)?,
-            sigma_last: mkpts(sys, &w.sigma_last)?,
+            generic: choose_pt(sys, w.generic)?,
+            psm: choose_pt(sys, w.psm)?,
+            complete_add: choose_pt(sys, w.complete_add)?,
+            mul: choose_pt(sys, w.mul)?,
+            emul: choose_pt(sys, w.emul)?,
+            endomul_scalar: choose_pt(sys, w.endomul_scalar)?,
+            coefficients: choose_pts(sys, &w.coefficients)?,
+            sigma_init: choose_pts(sys, &w.sigma_init)?,
+            sigma_last: choose_pts(sys, &w.sigma_last)?,
         };
-        let assert_vk_point = |sys: &mut RunState<Fq>,
-                               point: &Point<Fq>,
-                               expected: (Fq, Fq)|
-         -> SnarkyResult<()> {
-            point
-                .x
-                .assert_equals(sys, loc!(), &FieldVar::constant(expected.0))?;
-            point
-                .y
-                .assert_equals(sys, loc!(), &FieldVar::constant(expected.1))
-        };
-        assert_vk_point(sys, &vk.generic, w.generic)?;
-        assert_vk_point(sys, &vk.psm, w.psm)?;
-        assert_vk_point(sys, &vk.complete_add, w.complete_add)?;
-        assert_vk_point(sys, &vk.mul, w.mul)?;
-        assert_vk_point(sys, &vk.emul, w.emul)?;
-        assert_vk_point(sys, &vk.endomul_scalar, w.endomul_scalar)?;
-        for (point, &expected) in vk.coefficients.iter().zip(&w.coefficients) {
-            assert_vk_point(sys, point, expected)?;
-        }
-        for (point, &expected) in vk.sigma_init.iter().zip(&w.sigma_init) {
-            assert_vk_point(sys, point, expected)?;
-        }
-        for (point, &expected) in vk.sigma_last.iter().zip(&w.sigma_last) {
-            assert_vk_point(sys, point, expected)?;
+        for point in vk
+            .sigma_init
+            .iter()
+            .chain(vk.sigma_last.iter())
+            .chain(vk.coefficients.iter())
+            .chain([
+                &vk.generic,
+                &vk.psm,
+                &vk.complete_add,
+                &vk.mul,
+                &vk.emul,
+                &vk.endomul_scalar,
+            ])
+        {
+            point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
         }
         // IVC step 1 (OCaml `absorb verifier index`): recompute the step
         // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
