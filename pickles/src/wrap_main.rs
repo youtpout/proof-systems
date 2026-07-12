@@ -81,6 +81,9 @@ pub fn wrap_main<F, C, W>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     unfinalized: &[PerUnfinalized<'_, F>],
+    // `Wrap_verifier.mask (which_branch, step_widths)` (wrap_main.ml:165) —
+    // computed by the caller right after `which_branch`, where OCaml emits it.
+    _actual_proofs_verified_mask: &[Boolean<F>],
     // Physical backend accumulators, padded independently of `unfinalized`.
     sg_olds: &[Point<F>],
     // the step proof + its statement (the verifier-index digest is computed
@@ -149,7 +152,11 @@ where
         ok.to_field_var()
             .assert_equals(sys, finalize_loc, &FieldVar::constant(F::one()))?;
 
-        // the previous accumulator digest for the step statement
+        new_bulletproof_challenges.push(fin.challenges);
+    }
+    // OCaml computes the previous accumulator digests in a SECOND pass over
+    // the unfinalized proofs (wrap_main.ml:423-427), after every finalize.
+    for u in unfinalized {
         prev_msgs_wrap.push(hash_messages_for_next_wrap_proof(
             sys,
             loc.clone(),
@@ -157,7 +164,6 @@ where
             &u.hash_old_bulletproof_challenges,
             &u.prev_step_acc,
         ));
-        new_bulletproof_challenges.push(fin.challenges);
     }
 
     // OCaml `exists openings_proof` (:440) then `exists messages` (:470):
@@ -166,17 +172,6 @@ where
 
     // == commit to the step statement and fully verify the step proof ==
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
-    let actual_proofs_verified: FieldVar<F> =
-        sys.compute(loc.clone(), |_| F::from(unfinalized.len() as u64))?;
-    let mut _actual_proofs_verified_mask = Vec::with_capacity(sg_olds.len());
-    let mut keep = Boolean::true_();
-    for i in 0..sg_olds.len() {
-        let is_first_zero =
-            actual_proofs_verified.equal(sys, loc.clone(), &FieldVar::constant(F::from(i as u64)))?;
-        keep = keep.and(&is_first_zero.not(), sys, loc.clone());
-        _actual_proofs_verified_mask.push(keep.clone());
-    }
-    _actual_proofs_verified_mask.reverse();
     let inactive_sg_olds = sg_olds
         .len()
         .checked_sub(unfinalized.len())
@@ -546,6 +541,7 @@ mod tests {
                 sys,
                 loc!(),
                 std::slice::from_ref(&per_unf),
+                &[],
                 std::slice::from_ref(&per_unf.prev_step_acc),
                 &vk,
                 &elements,

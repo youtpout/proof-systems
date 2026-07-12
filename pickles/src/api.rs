@@ -437,6 +437,24 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             loc!(),
             sys,
         )?;
+        // `actual_proofs_verified_mask = Wrap_verifier.mask (which_branch,
+        // step_widths)` (wrap_main.ml:165): `Util.ones_vector` with
+        // `first_zero = Pseudo.choose(which_branch, step_widths)` — emitted
+        // right here, before `domain_log2`, as in OCaml.
+        let actual_proofs_verified_mask: Vec<Boolean<Fq>> = {
+            let mut mask = Vec::with_capacity(w.sg_olds.len());
+            let mut keep = Boolean::true_();
+            for i in 0..w.sg_olds.len() {
+                let is_first_zero = proofs_verified.equal(
+                    sys,
+                    loc!(),
+                    &FieldVar::constant(Fq::from(i as u64)),
+                )?;
+                keep = keep.and(&is_first_zero.not(), sys, loc!());
+                mask.push(keep.clone());
+            }
+            mask
+        };
         let domain_log2 = branch0.to_field_var().mul(
             &FieldVar::constant(Fq::from(u64::from(w.step_domain_log2))),
             Some("choose domain_log2".into()),
@@ -799,6 +817,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sys,
             loc!(),
             &unfinalized,
+            &actual_proofs_verified_mask,
             &sg_olds,
             &vk,
             &elements,
