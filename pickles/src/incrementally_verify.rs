@@ -30,9 +30,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::bulletproof::{
-    bullet_reduce_terms, check_bulletproof_equation, combine_commitments, ipa_challenges_transcript,
-};
+use crate::bulletproof::{bullet_reduce_terms, check_bulletproof_equation, combine_commitments};
 use crate::challenge::squeeze_challenge;
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
@@ -270,26 +268,35 @@ where
     commitments.extend(vk.coefficients.iter().cloned());
     commitments.extend(vk.sigma_init.iter().cloned());
 
+    // OCaml `check_bulletproof` (wrap_verifier.ml:580-606) order: absorb cip
+    // -> squeeze t -> u = group_map(t) -> combined_polynomial =
+    // Split_commitments.combine(xi, commitments) -> bullet_reduce(lr) ->
+    // absorb delta -> c. Our port previously computed `combined_polynomial`
+    // BEFORE absorbing cip/squeezing u — reordered here to match exactly.
+    advice
+        .combined_inner_product
+        .absorb(sys, loc.clone(), &mut sponge_before_evaluations);
+    let t = sponge_before_evaluations.squeeze(sys, loc.clone());
+    let (ux, uy) = snarky::gadgets::group_map::to_group(sys, loc.clone(), group_map_params, &t)?;
+    let u = Point::new(ux, uy);
+
     let combined_polynomial = combine_commitments(sys, loc.clone(), &commitments, xi, endo_base)?;
 
-    // IPA transcript on the forked sponge: absorb_shifted(cip) -> u=group_map ->
-    // per-round absorb(L,R)+squeeze prechallenge -> absorb(delta) -> c.
+    // bullet_reduce(sponge, lr): per round absorb(L,R)+squeeze prechallenge
+    // (batch), then separately fold pre^{-1}·L + pre·R (batch) — matches
+    // OCaml's own two-pass `bullet_reduce` (wrap_verifier.ml:168-184), which
+    // is NOT interleaved either.
     let lr_pv: Vec<(PointVar<F>, PointVar<F>)> = openings
         .lr
         .iter()
         .map(|(l, r)| (to_pv(l), to_pv(r)))
         .collect();
-    let (u, prechallenges, c) = ipa_challenges_transcript::<F, C>(
+    let prechallenges = crate::bulletproof::bullet_reduce_challenges(
         sys,
         loc.clone(),
         &mut sponge_before_evaluations,
-        &advice.combined_inner_product,
         &lr_pv,
-        &to_pv(&openings.delta),
-        group_map_params,
     )?;
-
-    // The elliptic-curve fold of the bullet reduction (pre_i^{-1}·L + pre_i·R).
     let lr_prod = bullet_reduce_terms::<F, C>(
         sys,
         loc.clone(),
@@ -298,6 +305,15 @@ where
         endo_base,
         endo_scalar,
     )?;
+
+    // absorb(delta); c = squeeze_scalar (raw 128-bit)
+    absorb_commitment(
+        sys,
+        loc.clone(),
+        &mut sponge_before_evaluations,
+        std::slice::from_ref(&to_pv(&openings.delta)),
+    );
+    let c = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge_before_evaluations)?;
 
     // == The final inner-product-argument equation ==
     let success = check_bulletproof_equation(
