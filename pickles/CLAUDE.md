@@ -1232,3 +1232,52 @@ de `scale_fast2_prime`/`lagrange_with_correction` (le calcul de la
 correction Lagrange elle-même) qui diffère de
 `Ops.scale_fast2'`/`lagrange_with_correction` OCaml (lignes 382-430+ de
 wrap_verifier.ml, pas encore lues en détail cette session).
+
+**Suite (même session) — chaîne COMPLÈTE de vérifications, TOUTES
+fidèles, aucun bug trouvé** :
+- `lagrange_with_correction` (wrap_verifier.ml:382-443) : intégralement
+  CONSTANT (branche `which_branch=1` → `base_and_correction` direct,
+  zéro gate) — ne peut pas être la source d'un écart de gates.
+- `Ops.scale_fast2'`/`scale_fast2` (plonk_curve_ops.ml:236-278) : witness
+  `(s_div_2,s_odd)` via `exists` + `Assert.equal(2·s_div_2+s_odd, s)` +
+  `scale_fast2` (unpack + contrainte top-bits=0 + select) — notre
+  `scale_fast2_prime`/`scale_fast2` (plonk_curve_ops.rs:379-401,508-517)
+  matche exactement, structure et ordre identiques.
+- `wrap_main.ml::split_field` (ligne 57-69, DIFFÉRENT de
+  `plonk_curve_ops.ml`'s propre split interne à scale_fast2') : witness
+  `(y,is_odd)` + `Assert.equal(2y+is_odd,x)` — notre `split_field`
+  (plonk_curve_ops.rs:417-448) matche. Le "double split" (une fois dans
+  `StatementElement::Split`, une deuxième fois DANS `scale_fast2_prime`
+  appelé sur le résultat) est CONFIRMÉ voulu — OCaml fait exactement la
+  même chose (`wrap_main.ml:491` `split_field x` produit un terme
+  `Field(y,255)` qui repasse ENSUITE par `Add_with_correction`→
+  `scale_fast2'`, qui re-split `y` en interne). Pas un bug.
+- **`Spec.pack`'s traitement de `Digest`** (`spec.ml:229-230`) :
+  `Digest -> \`Packed_bits (x, Field.size_in_bits)` — PAS
+  `\`Field (Shifted_value ...)`. Donc le digest
+  `messages_for_next_step_proof` (le SEUL élément du step statement pour
+  N0, `unfinalized_proofs` étant un vecteur de longueur 0) ne passe
+  JAMAIS par `split_field` dans `pack_statement`
+  (`wrap_main.ml:487-493`, le filtre `\`Field (Shifted_value x) ->
+  \`Field (split_field x)` ne s'applique qu'aux `\`Field`, pas aux
+  `\`Packed_bits`). **Notre choix de `WrapStepStatementSlot::Packed{value,
+  num_bits:255}` (api.rs:1478-1481, PAS `::Field`) est donc CORRECT** —
+  j'ai failli le "corriger" à tort vers `::Field`, ce qui aurait
+  introduit une régression. Vérifié avant de toucher au code, rien
+  changé.
+
+**Bilan** : toute la chaîne de fonctions impliquées dans le x_hat/step
+statement (ft_comm, absorb_shifted, squeeze_scalar/lowest_128_bits,
+lagrange_with_correction, scale_fast2/scale_fast2'/split_field, le type
+de packing du Digest) est vérifiée fidèle à OCaml, ligne par ligne. La
+divergence résiduelle des rows 700-810 (et le reste, 1024+) doit donc
+venir d'ailleurs — soit une différence subtile dans les VALEURS
+witnessed elles-mêmes (peu probable, les tests recorded passent), soit
+un endroit non encore identifié. **Prochaine piste à explorer (non
+commencée)** : comparer précisément `messages_for_next_step_proof`'s
+propre calcul (`Wrap_hack.Checked.hash_messages_for_next_wrap_proof` /
+`hash_messages_for_next_step_proof` côté step) — c'est la fonction qui
+PRODUIT le digest witnessed, en amont de tout ce qui a été vérifié ici;
+si SA construction (ordre des inputs Poseidon) diffère, ça expliquerait
+un décalage qui se propage ensuite sans qu'aucune des fonctions
+vérifiées ci-dessus soit en cause.
