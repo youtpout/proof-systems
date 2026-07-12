@@ -928,3 +928,32 @@ cette piste doit d'abord identifier CE QUI dans la région 4096-8192
 dépend du nombre de rows émises en amont** (probablement un `ft_comm`/
 `finalize` dont les positions de padding/domaine sont sensibles au
 compte total de Generic déjà émis) avant de retoucher `lr`.
+
+**Vérifié (session suivante) — ce n'est PAS `combine_commitments`.**
+Hypothèse testée : peut-être `combine_commitments` (le fold Horner des
+~40 commitments VK/messages/sg_old/x_hat, lignes 231-543) a besoin du
+même traitement interleaved que `lr`, et c'est ça qui manque. **Réfuté
+par la donnée** : re-mesuré cette même fenêtre (0-543) AVEC le patch
+`bullet_reduce_interleaved` appliqué → **toujours exact des deux côtés**
+(236=236 sur 0-300, 19=19 sur 300-543), inchangé par rapport au 2869
+baseline. Donc `combine_commitments`/VK/messages ne sont PAS en cause et
+n'ont pas besoin d'un traitement analogue — la régression 4096-8192
+(-14→+32 avec le patch lr) est un pur EFFET DE CASCADE en aval (le total
+de rows générique déplacé en amont décale quelque chose de sensible
+plus loin dans le circuit), pas un second bug indépendant qu'on
+pourrait corriger "en même temps". Root cause de la cascade toujours
+NON identifiée (candidats plausibles : `finalize_deferred`, `ft_comm`,
+ou `check_bulletproof_equation`/`scale_fast` juste après le fold — tous
+consomment des valeurs qui dépendent indirectement du layout amont).
+**Reverté à nouveau** (mêmes 6 fichiers), re-confirmé 2869/556 et 9/9
+recorded.
+
+**Conclusion de cette 2e passe** : la piste `lr` interleaved seule est
+définitivement insuffisante ET son échec n'est pas "réparable" par un
+fix ponctuel ailleurs trouvé jusqu'ici — les deux régions qui matchaient
+déjà parfaitement (0-543) n'ont pas besoin de retouche. Le vrai
+prochain pas est d'INSTRUMENTER la cascade elle-même : comparer
+précisément row par row 4096-5376 avec les labels (comme fait pour
+row 40 et row 594) pour identifier QUELLE fonction précise réagit au
+décalage, plutôt que deviner (ft_comm/finalize étaient des hypothèses
+non vérifiées cette session, faute de temps).
