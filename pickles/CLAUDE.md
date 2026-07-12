@@ -1728,3 +1728,35 @@ côté = signal fiable et rapide pour localiser les sur/sous-émissions
 structurelles ; le diff row-à-row ne sert qu'ensuite. Les fixes
 "contenu" (reduce_lincom) se voient dans la classe coeffs, les fixes
 "structure" (sg_old vide) dans les histogrammes.
+
+### Dernière découverte de la nuit — comptage des markers on-curve (c=+5)
+
+Comptage des demi-gates dont la constante vaut exactement +5 (le b de
+y²=x³+5, marker fiable d'un assert_on_curve) :
+- **rust : 51 au total** = VK(28) + messages(23) — les points des
+  OPENINGS (lr 32, delta, sg) ne sont PLUS checkés on-curve du tout
+  (suite au commit "Align wrap opening point witnesses" qui les a rendus
+  unchecked pour aligner le pré-sponge) ;
+- **jsoo : 73 au total** = 51 (VK+messages, pré-sponge comme nous)
+  + **6 pré-sponge en plus = 2 points = DELTA + SG** (les 4 rows
+  227-230 qui décalent tout de -4) + **16 markers TARDIFS aux rows
+  4261..5371, espacés EXACTEMENT de 74 rows** = un marker par ROUND
+  bulletproof (16 rounds Tick) — les lr sont checkés INLINE dans
+  bullet_reduce, un par round (pas 2 — vérifier si c'est L seul, R seul,
+  ou une paire fusionnée, en regardant les rows 4261±5 en détail).
+
+**Fix à implémenter (précis, prochaine session)** :
+1. dans `witness_proof` (api.rs) : delta et sg witnessés AVEC
+   assert_on_curve (revenir à `mkpt` pour ces deux-là), lr reste
+   unchecked ;
+2. dans `bullet_reduce_challenges`/`bullet_reduce_terms`
+   (bulletproof.rs) : émettre l'assert_on_curve d'UN point par round à
+   la position jsoo (au début de chaque round, avant/entre les endos —
+   caler sur les rows 4261+74k, structure du bloc de 74 rows :
+   [marker][2×endo 32][absorb/permute ~8]) — c'est la variante VALIDÉE
+   EMPIRIQUEMENT de l'ancienne idée `bullet_reduce_interleaved` (qui
+   avait échoué parce qu'elle checkait 2 points par round ET gardait les
+   2 sg_old dummies — les deux erreurs sont maintenant comprises).
+3. Après ça, l'écart Generic devrait passer de +16 à ~0 : bilan
+   +16 rust = -22 markers manquants (16 lr + 6 delta/sg... en halves)
+   + les demi-rows de réalignement — re-mesurer après chaque sous-étape.
