@@ -1281,3 +1281,43 @@ PRODUIT le digest witnessed, en amont de tout ce qui a été vérifié ici;
 si SA construction (ordre des inputs Poseidon) diffère, ça expliquerait
 un décalage qui se propage ensuite sans qu'aucune des fonctions
 vérifiées ci-dessus soit en cause.
+
+## 3 essais de réordonnancement du witnessing api.rs — TOUS reverted
+
+Suite à la découverte que `wrap_main.ml` witnesse `openings_proof` (lr,
+z1, z2, delta, sg) AVANT `messages` (w_comm, z_comm, t_comm)
+(wrap_main.ml:440-477 : `let openings_proof = exists (...)` précède
+`let messages = exists (...)`), 3 variantes testées sur la base du fix
+combine_commitments (2756, confirmé) :
+
+1. **`openings` avant `messages`, `vk_digest` déplacé après les deux**
+   (matching littéral de l'ordre OCaml complet) → **3090** (pire).
+2. **Seulement `vk_digest` déplacé après messages+openings** (sans
+   toucher l'ordre messages/openings) → **3090** (identique à #1 —
+   montre que déplacer `vk_digest` tard est LE facteur dominant de la
+   régression).
+3. **Seulement `openings` avant `messages`** (en gardant `vk_digest` à
+   sa position actuelle, entre messages+h et openings) → **3090**
+   (identique aussi — montre qu'INVERSER messages/openings est LUI AUSSI
+   à lui seul suffisant pour régresser, indépendamment de vk_digest).
+
+**Conclusion** : les deux changements (position de vk_digest ET ordre
+messages/openings) sont CHACUN individuellement nuisibles au score
+actuel, malgré le fait que l'ordre OCaml LITTÉRAL est
+`openings→messages→[digest calculé plus tard, dans incrementally_verify_proof]`.
+Ceci confirme (pour la 3e fois cette session, cf. essais précédents
+`6abbec7b88`/`91bf44b457`) que l'optimum EMPIRIQUE actuel (`messages`
+avant `openings`, `vk_digest` calculé tôt) est un minimum local
+robuste — le vrai ordre OCaml ne peut être atteint que par un
+changement plus large et cohérent (probablement en même temps que le
+sous-ordre exact à l'intérieur de `messages`/`openings` eux-mêmes, pas
+juste leur ordre relatif). **Ne plus retenter ces 3 variantes
+individuellement** — si retenté, le faire en changeant PLUSIEURS choses
+à la fois (ex. l'ordre relatif ET le sous-détail du digest EN MÊME
+TEMPS que le fix scale_fast/split_field interne), pas un seul facteur
+isolé comme ici.
+
+Toutes les 3 variantes ont été testées avec build+9/9 recorded+mesure
+gate-diff complète avant d'être revertées ; le repo est resté systématiquement
+propre entre chaque essai. État final : 2756 divergent rows, 555/569
+Generic, step FULL MATCH, 9/9 recorded — confirmé stable.
