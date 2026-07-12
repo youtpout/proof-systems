@@ -135,6 +135,37 @@ witness-gen (les `exists` n'émettent pas de contraintes), nous = snarky
 (tout émet) → mapper l'ordre des opérations qui ÉMETTENT des contraintes
 (checks on-curve, range, R1CS, sponge), pas les exists nus.
 
+**OUTIL DE LABELS ALIGNÉS (committé `3409b070ed`) — utilisable.**
+Le dump JSON rust porte maintenant `labels[]` alignés 1:1 aux gates
+(`WrapCircuitDump.labels`, via `snarky GateSpec.label` → finalize →
+`ProverIndexWrapper::gate_labels()`). Instrumentation pure, gates inchangés.
+Charger `wrap-circuit-rust.json`, `d['labels'][row]` donne l'op émettrice
+(ex `gen1:[on-curve check] gen2:[checked_mul]`, `Poseidon`, `equals_1`,
+`feature flag bit`, `assert equals`). Le pattern coeff `05` (=b de y²=x³+5)
+= on-curve check.
+
+**DIAGNOSTIC via labels — première divergence de TYPE à row 179 :**
+- ordre RUST : forbidden(40-74) → flags(75-92) → choose_key/branch(93-121)
+  → VK on-curve(122-178) → **vk_digest sponge Poseidon(179-541)** →
+  messages+openings on-curve(542+).
+- ordre JSOO : … → VK on-curve(103-166) → **messages on-curve(181-230)** →
+  sponge(231+) → openings/lr on-curve (plus tard).
+- Donc jsoo witnesse les MESSAGES on-curve AVANT le sponge (openings APRÈS),
+  rust met TOUT (messages+openings) après le sponge.
+
+**Test fait (régresse, mais instructif) :** déplacer les messages AVANT le
+vk_digest sponge (openings restent après) → 1er Poseidon 179→**225** (jsoo
+231, quasi aligné !), type 1989→1951, MAIS coeffs 757→**804**, net **3203**
+(>2917). Les coeffs des messages on-curve à 179-224 diffèrent de jsoo
+181-230 → l'ORDRE/valeurs internes des points messages (w_comm 15 / z_comm 1
+/ t_comm 7) ou la structure mkpt ne matchent pas la typ messages jsoo.
+**Prochain pas CONCRET** : avec le tool, comparer coeff-à-coeff rust[179-224]
+(messages-avant-sponge) vs jsoo[181-230] pour trouver la permutation/ordre
+des points messages, corriger l'ordre d'émission des mkpt messages, PUIS
+remettre messages-avant-sponge (ça devrait alors passer sous 2917 car la
+position Poseidon est déjà quasi bonne à 225). Ne déplacer QUE les messages,
+pas les openings (déjà vérifié : tout-après=2917, tout-avant=3203).
+
 **LOCALISATION PRÉCISE du reste (comptage Generic par fenêtre) :**
 - rows **0-231 : MATCH EXACT** (231 Generic des deux côtés) → tout
   l'opening (forbidden, which_branch, choose_key, VK on-curve, feature
