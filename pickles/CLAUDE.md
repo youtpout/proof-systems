@@ -1429,10 +1429,20 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    (wrap_verifier.ml:627-633) squeezent l'OPT sponge directement pendant
    les étapes 7-12 ; seul le Step 13 convertit.
 2. Migrer le chemin step de `IndexDigest::Precomputed` vers
-   `SpongeAfterIndex` (step_verifier.ml:533-537 : copy + squeeze de
-   `sponge_after_index`, déjà disponible dans `PerProofInput`). Vérifier
-   que le squeeze du sponge-après-index == `vi.digest()` kimchi (sinon les
-   recorded N1/N2 casseront — c'est le test).
+   `SpongeAfterIndex` — **TENTÉ ET REVERTÉ** : la migration naïve
+   (passer `p.sponge_after_index` à la place du digest witnessé) fait
+   passer 8/9 recorded mais CASSE `recorded_stable_n1_chain`
+   (UnsatisfiedEqualConstraint à recursive_step.rs:3467, digest de
+   transcript divergent). Diagnostic : dans la chaîne stable, notre
+   `PerProofInput.sponge_after_index` est construit sur un VK DIFFÉRENT
+   du wrap VK réellement vérifié (il sert au hash d'accumulateur du
+   next-step, pas forcément au proof en cours), alors qu'OCaml garantit
+   que les deux coïncident. Pré-requis avant de re-tenter : aligner la
+   construction de `sponge_after_index` dans `recursive_step.rs` (sites
+   ~3059 et ~3343) pour qu'elle porte sur le VK du wrap vérifié, puis
+   vérifier que `squeeze(sponge_after_index) == wvi.digest()` (ordre
+   `to_list()` = ordre kimchi digest : sigma(7), coefficients(15),
+   generic, psm, cadd, mul, emul, endosc — vérifié identique).
 3. Granularité fine des `exists` du prev_statement : OCaml witnesse les
    valeurs déférées des unfinalized à :191 mais les `evals`/old_bp_chals à
    :361+ ; notre boucle fait tout en un bloc à la position :306-421 (ok
