@@ -159,12 +159,24 @@ vk_digest sponge (openings restent après) → 1er Poseidon 179→**225** (jsoo
 (>2917). Les coeffs des messages on-curve à 179-224 diffèrent de jsoo
 181-230 → l'ORDRE/valeurs internes des points messages (w_comm 15 / z_comm 1
 / t_comm 7) ou la structure mkpt ne matchent pas la typ messages jsoo.
-**Prochain pas CONCRET** : avec le tool, comparer coeff-à-coeff rust[179-224]
-(messages-avant-sponge) vs jsoo[181-230] pour trouver la permutation/ordre
-des points messages, corriger l'ordre d'émission des mkpt messages, PUIS
-remettre messages-avant-sponge (ça devrait alors passer sous 2917 car la
-position Poseidon est déjà quasi bonne à 225). Ne déplacer QUE les messages,
-pas les openings (déjà vérifié : tout-après=2917, tout-avant=3203).
+**Test affiné (messages + sg_olds avant sponge, openings après)** :
+1er Poseidon 179→**229** (jsoo 231, à 2 rows près !), type 1989→**1943**
+(mieux), MAIS coeffs 757→**808** (pire) → net **3203** (>2917). Donc :
+- La STRUCTURE est correcte : witnesser messages + sg_olds on-curve avant le
+  sponge aligne quasi-parfaitement le bloc Poseidon (position + type↓).
+- Le blocage résiduel est les COEFFS : le pairing double-generic à la
+  frontière des on-curve messages/sg_olds diffère de jsoo (les on-curve ont
+  pourtant les mêmes coeffs `05` — donc c'est le PAIRING des demi-generics
+  aux jonctions, ou une réduction en trop, qui décale les coeffs en aval).
+- 2917 garde de meilleurs coeffs mais un type/position faux (sponge trop tôt).
+Aucun des deux n'est pleinement correct : il faut messages+sg_olds-avant
+(pour type/Poseidon) ET aligner le pairing double-generic aux jonctions
+on-curve (pour coeffs). Le pairing est piloté par l'ORDRE exact d'émission
+des demi-generics (equal_constraints, seal, on-curve Square/mul) à ces rows.
+**Prochain pas** : garder messages+sg_olds-avant (structure juste), puis avec
+le tool comparer coeff-à-coeff rust vs jsoo autour de 229-260 et 340+ pour
+trouver le demi-generic mal apparié (souvent 1 reduction/seal en trop ou en
+ordre inverse), le corriger dans incrementally_verify.rs / oracles.rs.
 
 **LOCALISATION PRÉCISE du reste (comptage Generic par fenêtre) :**
 - rows **0-231 : MATCH EXACT** (231 Generic des deux côtés) → tout
