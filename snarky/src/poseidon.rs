@@ -156,6 +156,17 @@ where
         }
     }
 
+    /// Resumes a sponge from an in-circuit state in `Squeezed(n)` mode — the
+    /// opt-sponge -> plain-sponge conversion of pickles' wrap verifier
+    /// (`wrap_verifier.ml:1294-1304`, IVC Step 13): the raw state array is
+    /// carried over and squeezing continues from position `n`.
+    pub fn from_var_state_squeezed(state: [FieldVar<F>; 3], squeezed: usize) -> DuplexState<F> {
+        DuplexState {
+            state,
+            mode: SpongeMode::Squeezed(squeezed),
+        }
+    }
+
     /// The in-circuit permutation, as the [`SpongeMachine`] permute closure.
     fn permute_closure<'a>(
         sys: &'a mut RunState<F>,

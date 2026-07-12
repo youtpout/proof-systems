@@ -190,6 +190,7 @@ where
         sys,
         verify_loc.clone(),
         IndexDigest::ComputeFromVk,
+        true,
         vk,
         sg_olds,
         &sg_old_mask,

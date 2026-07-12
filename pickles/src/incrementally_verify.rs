@@ -31,7 +31,6 @@ use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::bulletproof::{bullet_reduce_terms, check_bulletproof_equation, combine_commitments};
-use crate::challenge::squeeze_challenge;
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
 use crate::plonk_curve_ops::ShiftedScalar;
@@ -132,6 +131,75 @@ fn to_pvs<F: PrimeField>(ps: &[Point<F>]) -> Vec<PointVar<F>> {
     ps.iter().map(to_pv).collect()
 }
 
+/// The Fiat-Shamir transcript sponge of `incrementally_verify_proof` up to
+/// IVC Step 13. The two OCaml sides differ:
+/// - the wrap verifier drives an *opt sponge* (`Wrap_verifier.Opt.create`,
+///   wrap_main.ml:479) — every absorb goes through
+///   `Opt.absorb (Boolean.true_, x)` and the challenges are squeezed from the
+///   opt sponge — which is converted into a plain sponge at IVC Step 13
+///   (`wrap_verifier.ml:1294-1304`) right before the fork/digest;
+/// - the step verifier uses a plain sponge throughout (`step_verifier.ml`).
+pub enum Transcript<F: PrimeField> {
+    Plain(PoseidonSponge<F>),
+    Opt(crate::opt_sponge::OptSponge<F>),
+}
+
+impl<F: PrimeField> Transcript<F> {
+    fn new(use_opt_sponge: bool) -> Self {
+        if use_opt_sponge {
+            Transcript::Opt(crate::opt_sponge::OptSponge::new())
+        } else {
+            Transcript::Plain(PoseidonSponge::new())
+        }
+    }
+
+    /// Absorbs field elements (`Opt.absorb (Boolean.true_, x)` on the wrap
+    /// side; plain absorb on the step side).
+    fn absorb(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>, xs: &[FieldVar<F>]) {
+        match self {
+            Transcript::Plain(sponge) => sponge.absorb(sys, loc, xs),
+            Transcript::Opt(sponge) => {
+                for x in xs {
+                    sponge.absorb((Boolean::true_(), x.clone()));
+                }
+            }
+        }
+    }
+
+    /// Absorbs a commitment's chunks coordinate by coordinate.
+    fn absorb_commitment(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        chunks: &[PointVar<F>],
+    ) {
+        for (x, y) in chunks {
+            self.absorb(sys, loc.clone(), std::slice::from_ref(x));
+            self.absorb(sys, loc.clone(), std::slice::from_ref(y));
+        }
+    }
+
+    fn squeeze(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) -> SnarkyResult<FieldVar<F>> {
+        match self {
+            Transcript::Plain(sponge) => Ok(sponge.squeeze(sys, loc)),
+            Transcript::Opt(sponge) => sponge.squeeze(sys, loc),
+        }
+    }
+
+    /// The opt->plain conversion of IVC Step 13 (`wrap_verifier.ml:1294-1304`):
+    /// the opt sponge must be in `Squeezed n` state (it is, right after zeta);
+    /// its raw state becomes a plain sponge. Identity on the step side.
+    fn into_plain(self) -> PoseidonSponge<F> {
+        match self {
+            Transcript::Plain(sponge) => sponge,
+            Transcript::Opt(sponge) => {
+                let (state, squeezed) = sponge.into_squeezed_parts();
+                PoseidonSponge::from_var_state_squeezed(state, squeezed)
+            }
+        }
+    }
+}
+
 /// How `incrementally_verify_proof` obtains the verifier-index digest it
 /// absorbs at IVC Step 1. The two OCaml sides differ:
 /// - the wrap verifier builds a *fresh* index sponge over the step VK's
@@ -173,6 +241,8 @@ pub fn incrementally_verify_proof<F, C>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     index_digest: IndexDigest<'_, F>,
+    // Wrap side: true (opt-sponge transcript, wrap_main.ml:479); step: false.
+    use_opt_sponge: bool,
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
     sg_old_mask: &[Boolean<F>],
@@ -191,7 +261,7 @@ where
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
     assert_eq!(sg_old.len(), sg_old_mask.len(), "one mask bit per sg_old");
-    let mut sponge = PoseidonSponge::new();
+    let mut sponge = Transcript::new(use_opt_sponge);
 
     // == IVC Step 1: derive and absorb the verifier-index digest ==
     // (OCaml "absorb verifier index": the digest is computed HERE, inside
@@ -232,12 +302,7 @@ where
         let keep = keep.to_field_var();
         let x = sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
         let y = sg.y.mul(&keep, Some("mask sg_old.y".into()), loc.clone(), sys)?;
-        absorb_commitment(
-            sys,
-            loc.clone(),
-            &mut sponge,
-            &[(x, y)],
-        );
+        sponge.absorb_commitment(sys, loc.clone(), &[(x, y)]);
     }
 
     // == IVC Steps 3-5: compute and absorb x_hat, then the witness commitments ==
@@ -263,26 +328,40 @@ where
             std::slice::from_ref(&x_hat)
         }
     };
-    absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(x_hat));
+    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(x_hat));
     for w in &messages.w_comm {
-        absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(w));
+        sponge.absorb_commitment(sys, loc.clone(), &to_pvs(w));
     }
 
-    // == IVC Step 7: beta, gamma (raw 128-bit) ==
-    let beta = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
-    let gamma = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    // == IVC Step 7: beta, gamma (raw 128-bit, `Opt.challenge`) ==
+    let beta = {
+        let squeezed = sponge.squeeze(sys, loc.clone())?;
+        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, true)?
+    };
+    let gamma = {
+        let squeezed = sponge.squeeze(sys, loc.clone())?;
+        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, true)?
+    };
 
-    // == IVC Steps 9-10: absorb z_comm, sample alpha (raw scalar challenge) ==
-    absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.z_comm));
-    let alpha = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge)?;
+    // == IVC Steps 9-10: absorb z_comm, sample alpha (`Opt.scalar_challenge`) ==
+    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(&messages.z_comm));
+    let alpha = {
+        let squeezed = sponge.squeeze(sys, loc.clone())?;
+        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, false)?
+    };
 
-    // == IVC Steps 11-12: absorb t_comm, sample zeta (raw scalar challenge) ==
-    absorb_commitment(sys, loc.clone(), &mut sponge, &to_pvs(&messages.t_comm));
-    let zeta = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge)?;
+    // == IVC Steps 11-12: absorb t_comm, sample zeta (`Opt.scalar_challenge`) ==
+    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(&messages.t_comm));
+    let zeta = {
+        let squeezed = sponge.squeeze(sys, loc.clone())?;
+        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, false)?
+    };
 
-    // == IVC Step 13: fork the sponge, then squeeze the digest ==
-    // `sponge_before_evaluations` continues into the IPA transcript; the digest
-    // is squeezed from the same post-zeta state and fed to the Fr-sponge.
+    // == IVC Step 13: opt->plain conversion, fork, then squeeze the digest ==
+    // (wrap_verifier.ml:1294-1306.) `sponge_before_evaluations` continues into
+    // the IPA transcript; the digest is squeezed from the same post-zeta state
+    // and fed to the Fr-sponge.
+    let mut sponge = sponge.into_plain();
     let mut sponge_before_evaluations = sponge.clone();
     let sponge_digest = sponge.squeeze(sys, loc.clone());
 
@@ -572,6 +651,7 @@ mod tests {
                 sys,
                 loc!(),
                 IndexDigest::Precomputed(&vk_digest),
+                false,
                 &vk,
                 &sg_old,
                 &vec![Boolean::true_(); sg_old.len()],
@@ -838,6 +918,7 @@ mod tests {
                 sys,
                 loc!(),
                 IndexDigest::Precomputed(&vk_digest),
+                false,
                 &vk,
                 &[],
                 &[],

@@ -93,6 +93,19 @@ impl<F: PrimeField> OptSponge<F> {
             }
         }
     }
+
+    /// Consumes the opt sponge into `(state, squeezed)` for the opt->plain
+    /// conversion of the wrap verifier (`wrap_verifier.ml:1294-1304`, IVC
+    /// Step 13). Panics if the sponge is still absorbing, exactly as the
+    /// OCaml `assert false` on the `Absorbing` arm.
+    pub fn into_squeezed_parts(self) -> ([FieldVar<F>; 3], usize) {
+        match self.sponge_state {
+            SpongeState::Squeezed(n) => (self.state, n),
+            SpongeState::Absorbing { .. } => {
+                panic!("OptSponge::into_squeezed_parts: sponge is still absorbing")
+            }
+        }
+    }
 }
 
 /// `a[i] += x` where `i` is a boolean position (0 or 1):

@@ -1415,19 +1415,19 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
 
 ### Restant pour l'iso complet (ordre de priorité)
 
-1. **OptSponge comme sponge principal du wrap** : OCaml crée le transcript
-   avec `Wrap_verifier.Opt.create sponge_params` (wrap_main.ml:479), tous
-   les absorbs passent par `Opt.absorb (Boolean.true_, x)`, et la
-   conversion opt→plain a lieu à IVC Step 13 (wrap_verifier.ml:1294-1304)
-   avant le fork/digest. Notre `incrementally_verify_proof` utilise un
-   `PoseidonSponge` simple. Le crate a déjà `opt_sponge.rs` (porté,
-   testé) ; un essai antérieur a montré qu'avec flags constants true il se
-   REPLIE en absorbs simples (gate-neutre) — le switch est donc pure
-   fidélité structurelle : paramétrer le sponge de
-   `incrementally_verify_proof` (wrap = OptSponge, step = plain), avec la
-   conversion Step-13. Attention : `Opt.challenge`/`scalar_challenge`
-   (wrap_verifier.ml:627-633) squeezent l'OPT sponge directement pendant
-   les étapes 7-12 ; seul le Step 13 convertit.
+1. **OptSponge comme sponge principal du wrap — FAIT** : enum
+   `Transcript { Plain, Opt }` dans incrementally_verify.rs, paramètre
+   `use_opt_sponge` (wrap = true via wrap_main, step = false via
+   verify_one), absorbs via `Opt.absorb (Boolean.true_, x)`, beta/gamma =
+   `Opt.challenge` (lowest_128 constrain=true), alpha/zeta =
+   `Opt.scalar_challenge` (constrain=false), et conversion opt→plain à
+   IVC Step 13 via `OptSponge::into_squeezed_parts()` +
+   `DuplexState::from_var_state_squeezed()` (nouveau constructeur snarky,
+   miroir de `S.make ~state ~sponge_state:(Squeezed n)`,
+   wrap_verifier.ml:1294-1304). Validé : 101/101 lib + 9/9 recorded (le
+   transcript OptSponge à flags constants true produit les MÊMES valeurs
+   que le sponge simple — soundness intacte, prouvé de bout en bout par
+   les recorded).
 2. Migrer le chemin step de `IndexDigest::Precomputed` vers
    `SpongeAfterIndex` — **TENTÉ ET REVERTÉ** : la migration naïve
    (passer `p.sponge_after_index` à la place du digest witnessé) fait
