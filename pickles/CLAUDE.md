@@ -1055,3 +1055,69 @@ neutre (2869/556 + step FULL MATCH identiques au comportement attendu).
 **NE PLUS RECOMPILER LE JSOO, ne plus toucher AUCUN fichier OCaml.** Toute
 la suite du travail de parité de gates reste 100% côté RUST
 (proof-systems), en utilisant le dump jsoo existant comme référence figée.
+
+## TRIANGULATION du root cause profond (2026-07-13, rust-only)
+
+Sur l'état de référence 2869 (baseline, PAS l'interleaving), comptage par
+fenêtre de 128 rows sur toute la région 1024-8192 : divergences
+concentrées en 3 zones (1024-1280 : rust −36 ; 2048-2176 : rust −30 ;
+3584-3712 : rust +35), puis un bruit résiduel diffus et alterné partout
+ailleurs (±1 à ±3, cohérent avec une PROPAGATION en aval d'un décalage
+originel, pas des bugs indépendants).
+
+**Zone 1024-1070 inspectée en détail** : mélange `EndoMulScalar`/`Poseidon`
+des deux côtés, mêmes comptes totaux sur la fenêtre 1000-1100
+(EndoMulScalar 40=40, Poseidon 41 vs 46 — proche) **mais ORDRE différent** :
+jsoo fait une longue série `EndoMulScalar` PUIS bascule sur `Poseidon` ;
+rust fait l'inverse (`Poseidon` d'abord, `EndoMulScalar` après), avec un
+chevauchement partiel entre les deux.
+
+**Zone 3575-3625 inspectée en détail** (bloc `EndoMul`, la boucle Horner de
+`combine_commitments` sur les ~46 commitments `sg_old/x_hat/ft_comm/z_comm/
+generic/psm/complete_add/mul/emul/endomul_scalar/w_comm[15]/coefficients[15]/
+sigma_init[6]`) : les DEUX interruptions `add_fast` de rust (rows 3582 et
+3597, séparées de 15 rows = 1 item) tombent à des endroits où jsoo continue
+tout droit en `EndoMul` — jsoo interrompt son propre chemin `EndoMul` PLUS
+TARD et MOINS SOUVENT dans cette fenêtre (une seule interruption visible
+contre deux côté rust) : signe que jsoo regroupe/scale plusieurs items
+différemment (peut-être un ordre de traitement légèrement différent des 15
+`w_comm`/`coefficients`, ou un point de départ décalé dans la liste).
+
+**Conclusion : 3 angles indépendants (row-40 déjà documenté = encodage
+double-generic ; row 594 = check-on-curve batché vs interleaved du
+bulletproof ; row 1024 = squeeze Poseidon batché vs interleaved avec la
+conversion EndoMulScalar ; row 3582 = Horner `combine_commitments`
+légèrement déphasé) pointent TOUS vers le MÊME mécanisme racine :**
+**OCaml traite chaque "item" (challenge, commitment, round bulletproof)
+en UNE PASSE LOCALE complète (squeeze→convert→fold, ou check→fold) avant
+de passer à l'item suivant, alors que notre port RUST BATCHE chaque PHASE
+séparément à travers TOUS les items** (tous les squeezes d'abord, toutes
+les conversions ensuite, tous les folds à la fin — ou l'inverse selon la
+fonction). C'est exactement la structure de `ipa_challenges_transcript`
+(bullet_reduce_challenges séparé de bullet_reduce_terms) MAIS le MÊME
+schéma se retrouve ailleurs (oracles, combine_commitments) — **ce n'est
+pas un bug localisé au bulletproof, c'est un pattern architectural
+systémique dans TOUT `incrementally_verify_proof`.**
+
+**Pourquoi l'essai `bullet_reduce_interleaved` (cette session, revert
+final) n'a pas suffi malgré un mécanisme prouvé correct** : il ne
+corrigeait qu'UNE instance de ce pattern (le bulletproof) sur plusieurs
+qui existent dans la même fonction — d'où l'amélioration locale (543-700)
+mais la régression ailleurs (4096-8192), puisque le reste de la fonction
+(oracles, combine_commitments) reste batché et donc DÉSYNCHRONISÉ
+différemment par rapport au nouveau layout amont.
+
+**Ce qu'il faudrait pour vraiment fermer l'écart** : une réécriture
+complète et HOLISTIQUE de `incrementally_verify_proof` (et possiblement
+`combine_commitments`) en miroir strict et LIGNE-À-LIGNE de
+`wrap_verifier.ml`, où CHAQUE item (challenge, commitment, round) est
+squeeze→converti→plié avant de passer au suivant — PAS une série de
+correctifs locaux. C'est un chantier de plusieurs heures, à haut risque
+de régression si fait par morceaux (déjà démontré 2 fois cette session :
+combine_commitments seul ne suffit pas, bulletproof seul ne suffit pas).
+Prochaine session : soit s'attaquer à CETTE réécriture complète d'un
+coup (avec mesure après CHAQUE sous-étape, jamais en fin de parcours),
+soit accepter 2869 comme palier stable et documenté, et chercher un axe
+totalement différent (ex. le row-40 encodage, cosmétique mais peut-être
+plus vite gagnable pour réduire le compteur "divergent rows" même sans
+toucher Generic).
