@@ -1038,3 +1038,20 @@ lié à ce travail, à ne pas drop sans vérifier). Le jsoo bundle actuel
 changements (build fix + label plumbing inutilisé) et est vérifié
 fonctionnellement identique (2869/556, step FULL MATCH, 9/9 recorded côté
 rust inchangé).
+
+**DIRECTIVE UTILISATEUR (2026-07-13) : l'OCaml est fonctionnel, NE PLUS LE
+MODIFIER.** Tout le travail d'instrumentation jsoo ci-dessus a été
+ENTIÈREMENT REVERTÉ : `checked_runner.ml` restauré à son état
+`SNARKY_LOG_CONSTRAINTS` préexistant-avant-cette-session (pas HEAD — HEAD
+n'a même pas cette instrumentation, elle était déjà en dirty state avant
+que je commence) ; `wrap.ml`/`step.ml`/`pickles.ml`/`plonk_constraint_system.ml`
+restaurés à HEAD (`git checkout HEAD --`, pas `git checkout --` seul —
+piège rencontré : ce dernier restaure depuis l'INDEX si le fichier y est
+staged, pas depuis HEAD) ; `constraint_label_debug.ml` supprimé. Le
+bundle jsoo compilé (non tracké par git, `.gitignore`) reste sur le
+DERNIER BUILD RÉUSSI (avec le fix p_eval array — un `dune build` qui
+échoue ne touche pas l'artefact précédent) — vérifié fonctionnellement
+neutre (2869/556 + step FULL MATCH identiques au comportement attendu).
+**NE PLUS RECOMPILER LE JSOO, ne plus toucher AUCUN fichier OCaml.** Toute
+la suite du travail de parité de gates reste 100% côté RUST
+(proof-systems), en utilisant le dump jsoo existant comme référence figée.
