@@ -616,3 +616,57 @@ session, `/tmp/claude-1000/wraplog2.txt`, ne contenait pas de marqueurs
 de labels actuelle ne couvre que le côté RUST, pas jsoo à ce niveau de
 détail ; il faudrait ajouter des labels OCaml explicites ou recouper avec
 les line numbers du fichier comme fait plus haut pour `choose_key`).
+
+## Localisation AUTHENTIFIÉE de row 40 (via labels file:line rust + lecture OCaml) — 2026-07-12
+
+**Contrairement à l'hypothèse précédente (assert_consistent/feature-flags),
+row 40 (dump) = log_row 0 vient du bloc `forbidden_shifted_values` (`Wrap.Other_field.check`),
+PAS du bloc feature-flags.** Vérifié en capturant `SNARKY_LOG_CONSTRAINTS=1`
+côté rust avec labels `file:line` (`/tmp/claude-1000/rustlog.txt`, dump_row =
+log_row + 40, confirmé par `api.rs:416 equals_1` au tout début du dernier
+bloc `^0:`) : log rows 0-32 → `api.rs:413-423` (boucle `forbidden` × 5 slots
+`[cip,b,zsl,zds,perm]` en ordre inverse) ; log row 33 → `api.rs:430`
+(`which_branch.equal`) ; log rows 35-38 → `api.rs:472` (**feature flag
+bit**, i.e. le bloc feature-flags ne commence qu'à **dump row 75**, PAS 40).
+
+**CAUSE RACINE TROUVÉE (source OCaml lue directement,
+`~/Projects/mina/src/lib/crypto/pickles/impls.ml:91-102`,
+`Other_field.check`) :**
+```ocaml
+let equal (x1, b1) (x2, b2) =
+  let%bind x_eq = Field.Checked.equal x1 (Field.Var.constant x2) in
+  let b_eq = match b2 with true -> b1 | false -> Boolean.not b1 in
+  Boolean.( && ) x_eq b_eq
+in
+Checked.List.map (Lazy.force forbidden_shifted_values) ~f:(equal t)
+>>= Boolean.any >>| Boolean.not >>= Boolean.Assert.is_true
+```
+`Impls.Wrap.Other_field.t = Field.t * Boolean.var` — **(low bits, high
+bit)**, PAS un simple `Field.t`. Le Fp (Tick, ~255 bits) ne rentre pas
+losslessly dans un seul élément Fq (Tock, ~254 bits) ; OCaml représente donc
+chaque valeur déférée (`cip`, `b`, `zsl`, `zds`, `perm`) comme une PAIRE
+(bas + bit haut), et chaque comparaison à une valeur interdite compare
+**LES DEUX composantes** (`x_eq` ET `b_eq`, combinés par un `Boolean.&&`
+— un R1CS `bool.and` en PLUS des 2 R1CS `equal_constraints` par valeur
+interdite). **Notre `stmt[0..5]` (api.rs:387-391) sont de simples
+`FieldVar<Fq>` SANS bit haut séparé** — `forbidden_shifted_values_fq()`
+(shifted_value.rs:172) recolle tout dans une seule valeur Fq, donc notre
+boucle (api.rs:413-423) ne compare QUE la valeur, jamais un bit haut → il
+manque structurellement un `bool.and` par valeur interdite testée, et
+potentiellement toute la construction du statement (`stmt[0..5]`) est
+LOSSY/simplifiée par rapport au layout OCaml réel (qui a un slot de bit
+haut séparé quelque part dans le statement public wrap).
+
+**NE PAS PATCHER À L'AVEUGLE** (ex. ajouter un `bool.and` avec une valeur
+bidon) : `cvar::mul` replie tout produit par une `Constant` (voir plus haut)
+donc un faux bit ne produirait même pas la contrainte recherchée. Le
+vrai fix nécessite : (1) retrouver où/si le bit haut de `cip`/`b`/`zsl`/
+`zds`/`perm` existe déjà ailleurs dans le statement wrap (40 slots, cf.
+`o1js-to-zkvm/crates/pickles-verifier/src/deferred.rs::wrap_public_input`
+et le layout `composition_types` OCaml `Wrap.Statement.to_data`), sinon (2)
+l'AJOUTER au layout (potentiellement rupture de layout public input, à
+faire avec grand soin et en vérifiant `public_input_size` reste 40 des
+deux côtés). C'est un travail de restructuration du statement, pas un
+patch local de la boucle forbidden — prochaine étape prioritaire pour
+fermer row 40 et probablement une bonne partie du reste (556 vs 569
+Generic).
