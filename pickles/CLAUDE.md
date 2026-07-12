@@ -670,3 +670,51 @@ deux côtés). C'est un travail de restructuration du statement, pas un
 patch local de la boucle forbidden — prochaine étape prioritaire pour
 fermer row 40 et probablement une bonne partie du reste (556 vs 569
 Generic).
+
+**CORRECTION IMMÉDIATE (même session) — hypothèse top-bit RÉFUTÉE.**
+`impls.ml:50` (`type t = Field.t * Boolean.var`, avec le `bool.and`) est le
+`Other_field` du module **Step** (Tock-in-Tick, PAS notre cas). Le
+`Other_field` du **Wrap** (Tick-in-Tock, notre cas) est à `impls.ml:187` :
+```ocaml
+module Other_field = struct
+  module Constant = Tick.Field
+  type t = Field.t   (* PAS de paire, PAS de bit haut *)
+  let check t =
+    let equal x1 x2 = Field.Checked.equal x1 (Field.Var.constant x2) in
+    Checked.List.map (Lazy.force forbidden_shifted_values) ~f:(equal t)
+    >>= Boolean.any >>| Boolean.not >>= Boolean.Assert.is_true
+end
+```
+C'est EXACTEMENT ce que fait notre boucle rust (api.rs:413-423) — simple
+comparaison de valeur, `Boolean.any`, `not`, `assert is_true`. **Aucun bit
+haut manquant côté wrap.** Ne pas réessayer cette piste.
+
+**Nouvelle piste, non résolue — écart de CARDINALITÉ dans le comptage
+observé.** `forbidden_shifted_values_fq()` (rust) retourne **2** valeurs
+(vérifié par test temporaire). Avec 5 slots × 2 valeurs interdites, on
+attend 5×2=10 appels `equal()` = 20 R1CS (equals_1+equals_2, 10+10). Or le
+comptage réel des labels dans le dump rust pour log rows 0-32 (le bloc
+`forbidden`, 33 lignes) donne **32 equals_1 / 20 equals_2 / 15 bool.and /
+1 assert equals** — largement AU-DESSUS de 10+10, plutôt cohérent avec
+~26 appels `equal()` (donc ~5.2 valeurs interdites par slot, pas 2) et
+15 `bool.and` (incohérent avec `Boolean::any(2 items)` qui ne devrait
+produire qu'1 `.or()`/slot = 5 `bool.and` total, pas 15). **Hypothèses à
+vérifier avant tout nouveau patch** (prochaine étape, PAS encore faite) :
+1. Le nombre exact de `forbidden_shifted_values` côté OCaml (`Tick.Field`
+   modulus, `size_in_bits`) pourrait différer de 2 — recompter via
+   `~/Projects/mina` directement (script OCaml ou lire les constantes) ;
+2. Notre appel réel dans la boucle `for slot in stmt[0..5].rev() { for
+   value in &forbidden { ... } }` (api.rs:413-416) pourrait ne PAS
+   utiliser `forbidden_shifted_values_fq()` mais une variante différente
+   — À VÉRIFIER en relisant l'import exact ligne 408 (`crate::shifted_value::
+   forbidden_shifted_values_fq()`) et en s'assurant qu'aucune autre
+   fonction similaire n'est utilisée ailleurs et confondue dans le comptage
+   de labels (le fenêtrage log rows 0-32 pourrait chevaucher un autre bloc
+   voisin, à re-vérifier avec le tool de labels précisément borné).
+3. Ne pas conclure sans avoir d'abord recompté proprement des DEUX côtés
+   (rust ET jsoo) le nombre exact d'appels `equal()`/`Field.Checked.equal`
+   dans ce bloc précis, avec la même méthode qu'utilisée pour authentifier
+   row 40 (labels file:line rust + recoupement jsoo `SNARKY_LOG_CONSTRAINTS`
+   avec labels de fichier — actuellement seul le côté rust a des labels
+   file:line utilisables ; jsoo n'a pas toujours de `File "..."` sur ces
+   lignes `impls.ml` génériques, à vérifier).
