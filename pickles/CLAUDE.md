@@ -158,6 +158,26 @@ witness-gen (les `exists` n'émettent pas de contraintes), nous = snarky
   `Add_with_correction`/`Cond_add`, `add_fast`, ordre des `lagrange`) —
   c'est là que rust émet 79 Generic trop tôt.
 
+**Outillage testé et ses LIMITES (ne pas refaire naïvement) :**
+- Comparaison HL : `SNARKY_LOG_CONSTRAINTS=1 SNARKY_LOG_HL_CONSTRAINTS=1`
+  émet côté jsoo `CONSTRAINT <kind> @ file:line` (niveau add_constraint
+  OCaml) et côté rust `HLCONSTRAINT <kind> @ label` (runner.rs add_constraint).
+  MÊME vocabulaire de kinds (R1CS/Equal/Square/Poseidon/EC_add_complete/
+  EC_endoscale/EC_endoscalar/EC_scale/Basic/Boolean) MAIS 3 mismatches
+  bloquants pour un diff kind-pour-kind :
+  1. GRANULARITÉ : jsoo logue `Equal`(1) pour un `Field.Checked.equal` là où
+     rust logue `R1CS`+`R1CS`(2) via equal_constraints ;
+  2. SÉPARATION wrap/step : le forbidden est labellisé `impls.ml` (présent
+     aussi côté step/préambule dummy), wrap_main/wrap_verifier ne suffit pas
+     à isoler proprement ;
+  3. ÉMISSION vs DUMP : le dump réordonne (double-generic pairing), donc
+     l'ordre HL d'émission ≠ l'ordre des rows du dump.
+  → Un diff utile exige de NORMALISER la granularité (fusionner les paires
+     R1CS de equal_constraints en un `Equal` logique) ET de segmenter
+     wrap/step par bornes explicites. Non fait.
+- Comptes HL wrap bruts : jsoo ~1154 (filtre wrap_main+wrap_verifier seul,
+  sans forbidden), rust ~1178. Non concluant à cause des mismatches ci-dessus.
+
 **Nature du reste (2917) : réorganisation structurelle, pas des fixes
 locaux.** La région match rows 231-542, puis à row 543 : jsoo fait un bloc
 Poseidon (permutation de sponge = absorb d'un champ), rust fait des Generic
