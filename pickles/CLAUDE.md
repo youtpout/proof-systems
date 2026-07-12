@@ -135,6 +135,29 @@ witness-gen (les `exists` n'émettent pas de contraintes), nous = snarky
 (tout émet) → mapper l'ordre des opérations qui ÉMETTENT des contraintes
 (checks on-curve, range, R1CS, sponge), pas les exists nus.
 
+**LOCALISATION PRÉCISE du reste (comptage Generic par fenêtre) :**
+- rows **0-231 : MATCH EXACT** (231 Generic des deux côtés) → tout
+  l'opening (forbidden, which_branch, choose_key, VK on-curve, feature
+  flags, 1er sponge) est aligné.
+- rows 231-543 : rust **+79** Generic (jsoo 24, rust 103).
+- rows 543-1024 : rust **−74** (jsoo 108, rust 34).
+- rows 1024-2048 : rust −34 ; 2048-4096 : rust +29 ; 4096-8192 : rust −14.
+- Net −14 ≈ le déficit de 13. Les +79/−74 se compensent en grande partie
+  → c'est un **décalage de PHASE** dans le corps du verify, pas des
+  contraintes manquantes : rust fait le travail Generic (x_hat / packing du
+  statement / décompositions de scalaires) PLUS TÔT que jsoo, qui fait
+  d'abord des absorbs Poseidon.
+- Mon ordre HAUT-NIVEAU de `incrementally_verify_proof` (incrementally_verify.rs)
+  matche déjà OCaml (absorb index_digest → sg_old → x_hat →
+  w_comm → squeeze beta/gamma → z_comm → alpha → t_comm → zeta). Donc la
+  divergence est un SOUS-ordre fin dans `x_hat` (`public_input_commitment`
+  / `statement_terms`, public_input.rs) et la phase IPA vs son scheduling.
+  Prochaine passe : comparer finement `public_input_commitment` +
+  `statement_terms` (rust) contre le bloc x_hat d'OCaml
+  (wrap_verifier.ml:879-950 : partition constant/non-constant,
+  `Add_with_correction`/`Cond_add`, `add_fast`, ordre des `lagrange`) —
+  c'est là que rust émet 79 Generic trop tôt.
+
 **Nature du reste (2917) : réorganisation structurelle, pas des fixes
 locaux.** La région match rows 231-542, puis à row 543 : jsoo fait un bloc
 Poseidon (permutation de sponge = absorb d'un champ), rust fait des Generic
