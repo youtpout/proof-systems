@@ -83,7 +83,7 @@ pub fn wrap_main<F, C, W>(
     unfinalized: &[PerUnfinalized<'_, F>],
     // `Wrap_verifier.mask (which_branch, step_widths)` (wrap_main.ml:165) —
     // computed by the caller right after `which_branch`, where OCaml emits it.
-    _actual_proofs_verified_mask: &[Boolean<F>],
+    actual_proofs_verified_mask: &[Boolean<F>],
     // Physical backend accumulators, padded independently of `unfinalized`.
     sg_olds: &[Point<F>],
     // the step proof + its statement (the verifier-index digest is computed
@@ -172,18 +172,21 @@ where
 
     // == commit to the step statement and fully verify the step proof ==
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
-    let inactive_sg_olds = sg_olds
-        .len()
-        .checked_sub(unfinalized.len())
-        .expect("more logical proofs than physical sg_olds");
-    let sg_old_mask: Vec<Boolean<F>> = (0..sg_olds.len())
-        .map(|i| {
-            if i >= inactive_sg_olds {
-                Boolean::true_()
-            } else {
-                Boolean::false_()
-            }
-        })
+    // The dynamic proofs-verified mask, aligned to the physical sg_old
+    // layout. `Util.ones_vector` marks the ACTIVE slots first
+    // ([true; active] ++ [false; inactive]) while our physical padding puts
+    // the dummy accumulators at the FRONT (`Vector.extend_front_exn`
+    // semantics, wrap_main.ml:185) — so the mask is reversed to pair
+    // dummy slots with `false` and real slots with `true`.
+    assert_eq!(
+        actual_proofs_verified_mask.len(),
+        sg_olds.len(),
+        "one mask bit per physical sg_old"
+    );
+    let sg_old_mask: Vec<Boolean<F>> = actual_proofs_verified_mask
+        .iter()
+        .rev()
+        .cloned()
         .collect();
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
@@ -542,7 +545,7 @@ mod tests {
                 sys,
                 loc!(),
                 std::slice::from_ref(&per_unf),
-                &[],
+                &[Boolean::true_()],
                 std::slice::from_ref(&per_unf.prev_step_acc),
                 &vk,
                 &elements,

@@ -30,7 +30,9 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::bulletproof::{bullet_reduce_terms, check_bulletproof_equation, combine_commitments};
+use crate::bulletproof::{
+    bullet_reduce_terms, check_bulletproof_equation, combine_commitments, CommitmentOpt,
+};
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
 use crate::plonk_curve_ops::ShiftedScalar;
@@ -378,28 +380,29 @@ where
     )?;
 
     // == IVC Step 15: combine the commitments by xi (Split_commitments.combine) ==
-    // without_degree_bound order (wrap_verifier.ml:1360-1388), base/no-lookup.
-    let mut commitments: Vec<Point<F>> = Vec::new();
+    // without_degree_bound order (wrap_verifier.ml:1360-1388), base/no-lookup:
+    // the sg_old accumulators enter as `Opt.Maybe (keep, sg)` with the
+    // dynamic proofs-verified mask (wrap_verifier.ml:1369-1370), everything
+    // else as `Opt.Just`.
+    let just = |p: &Point<F>| CommitmentOpt::Just(p.clone());
+    let mut commitments: Vec<CommitmentOpt<F>> = Vec::new();
     for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
-        if matches!(keep.to_field_var(), FieldVar::Constant(c) if c.is_zero()) {
-            continue;
-        }
-        commitments.push(sg.clone());
+        commitments.push(CommitmentOpt::Maybe(keep.clone(), sg.clone()));
     }
-    commitments.extend(x_hat.iter().cloned());
-    commitments.push(ft);
-    commitments.extend(messages.z_comm.iter().cloned());
-    commitments.push(vk.generic.clone());
-    commitments.push(vk.psm.clone());
-    commitments.push(vk.complete_add.clone());
-    commitments.push(vk.mul.clone());
-    commitments.push(vk.emul.clone());
-    commitments.push(vk.endomul_scalar.clone());
+    commitments.extend(x_hat.iter().map(just));
+    commitments.push(CommitmentOpt::Just(ft));
+    commitments.extend(messages.z_comm.iter().map(just));
+    commitments.push(just(&vk.generic));
+    commitments.push(just(&vk.psm));
+    commitments.push(just(&vk.complete_add));
+    commitments.push(just(&vk.mul));
+    commitments.push(just(&vk.emul));
+    commitments.push(just(&vk.endomul_scalar));
     for w in &messages.w_comm {
-        commitments.extend(w.iter().cloned());
+        commitments.extend(w.iter().map(just));
     }
-    commitments.extend(vk.coefficients.iter().cloned());
-    commitments.extend(vk.sigma_init.iter().cloned());
+    commitments.extend(vk.coefficients.iter().map(just));
+    commitments.extend(vk.sigma_init.iter().map(just));
 
     // OCaml `check_bulletproof` (wrap_verifier.ml:580-606) order: absorb cip
     // -> squeeze t -> u = group_map(t) -> combined_polynomial =

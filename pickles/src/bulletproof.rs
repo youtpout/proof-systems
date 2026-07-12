@@ -10,37 +10,87 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
+use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::scalar_challenge::{endo, endo_inv};
 
-/// Combines commitments by the polyscale challenge `xi`
-/// (`Split_commitments.combine`): returns `Σ_i xi_field^i · C_i`, computed by
-/// Horner's rule where each `xi·acc` is the endomorphism scalar multiplication
-/// `endo(acc, xi)`.
+/// One entry of the polyscale combination — pickles'
+/// `(Point.t array, Boolean.var) Opt.t` (wrap_verifier.ml:509). Points are
+/// single-chunk and always `Finite` in the base subset (the wrap verifier
+/// maps everything to `\`Finite` at wrap_verifier.ml:1413-1416).
+pub enum CommitmentOpt<F: PrimeField> {
+    /// Always present (`Opt.Just`).
+    Just(Point<F>),
+    /// Present iff the boolean is true (`Opt.Maybe` — the masked sg_old
+    /// accumulators, wrap_verifier.ml:1369-1370).
+    Maybe(Boolean<F>, Point<F>),
+    /// Absent (`Opt.Nothing` — unused optional gate commitments).
+    Nothing,
+}
+
+/// Combines commitments by the polyscale challenge `xi` — the faithful port
+/// of `Split_commitments.combine` (wrap_verifier.ml:496-566) over
+/// `Pcs_batch.combine_split_commitments` (pcs_batch.ml:18-40): the flat list
+/// is processed in REVERSE (the last entry seeds the accumulator, `Nothing`s
+/// are skipped), each `scale_and_add` step computes
+/// `if acc.non_zero then p + endo(acc, xi) else p`, then
+/// `if keep then that else acc.point`, and tracks
+/// `non_zero = keep ||| acc.non_zero`; the final `non_zero` is asserted true.
 ///
 /// `xi` is the 128-bit polyscale challenge (as squeezed); `endo_base` is the
 /// curve's base endomorphism coefficient (for the `EndoMul` gate).
 pub fn combine_commitments<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    commitments: &[Point<F>],
+    commitments: &[CommitmentOpt<F>],
     xi: &FieldVar<F>,
     endo_base: F,
 ) -> SnarkyResult<Point<F>> {
     use crate::common::SCALAR_CHALLENGE_BITS;
     use crate::plonk_curve_ops::add_fast;
 
-    let n = commitments.len();
-    assert!(n > 0, "combine_commitments: empty commitments");
-    // Horner from the highest-index commitment down:
-    // acc = C_{n-1}; for i = n-2..0 { acc = C_i + xi·acc }
-    let mut acc = commitments[n - 1].clone();
-    for c in commitments[..n - 1].iter().rev() {
-        let scaled = endo(sys, loc.clone(), &acc, xi, SCALAR_CHALLENGE_BITS, endo_base)?;
-        acc = add_fast(sys, loc.clone(), c, &scaled)?;
+    struct CurveOpt<F: PrimeField> {
+        point: Point<F>,
+        non_zero: Boolean<F>,
     }
-    Ok(acc)
+
+    let mut acc: Option<CurveOpt<F>> = None;
+    for entry in commitments.iter().rev() {
+        let (keep, p) = match entry {
+            CommitmentOpt::Nothing => continue,
+            CommitmentOpt::Just(p) => (Boolean::true_(), p),
+            CommitmentOpt::Maybe(keep, p) => (keep.clone(), p),
+        };
+        acc = Some(match acc {
+            // `init` (pcs_batch.ml:33): seed from the last non-Nothing entry.
+            None => CurveOpt {
+                non_zero: keep,
+                point: p.clone(),
+            },
+            // `scale_and_add` (wrap_verifier.ml:508-545).
+            Some(a) => {
+                let scaled = endo(sys, loc.clone(), &a.point, xi, SCALAR_CHALLENGE_BITS, endo_base)?;
+                let added = add_fast(sys, loc.clone(), p, &scaled)?;
+                // base = if acc.non_zero then p + xi·acc else p
+                let base_x = sys.if_(loc.clone(), a.non_zero.clone(), added.x, p.x.clone())?;
+                let base_y = sys.if_(loc.clone(), a.non_zero.clone(), added.y, p.y.clone())?;
+                // point = if keep then base else acc.point
+                let point_x = sys.if_(loc.clone(), keep.clone(), base_x, a.point.x.clone())?;
+                let point_y = sys.if_(loc.clone(), keep.clone(), base_y, a.point.y.clone())?;
+                let non_zero = keep.or(&a.non_zero, loc.clone(), sys);
+                CurveOpt {
+                    non_zero,
+                    point: Point::new(point_x, point_y),
+                }
+            }
+        });
+    }
+    let acc = acc.expect("combine_commitments: empty commitments");
+    // Boolean.Assert.is_true non_zero (wrap_verifier.ml:564)
+    acc.non_zero
+        .to_field_var()
+        .assert_equals(sys, loc, &FieldVar::constant(F::one()))?;
+    Ok(acc.point)
 }
 
 /// The bulletproof reduction term sum (pickles' `bullet_reduce`, EC part):
@@ -268,10 +318,10 @@ mod tests {
             let xi: FieldVar<Fp> = sys.compute(loc!(), |_| Fp::from(self.xi))?;
             let mut comms = vec![];
             for &(x, y) in &self.comms {
-                comms.push(Point::new(
+                comms.push(CommitmentOpt::Just(Point::new(
                     sys.compute(loc!(), move |_| x)?,
                     sys.compute(loc!(), move |_| y)?,
-                ));
+                )));
             }
             let endo_base = crate::endo::tick::base();
             let acc = combine_commitments(sys, loc!(), &comms, &xi, endo_base)?;

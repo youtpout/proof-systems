@@ -1470,12 +1470,48 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    ft_eval1 et public_evals — réordonner exige de changer AUSSI le
    packing out-of-circuit d'`evals_flat` (recorded data pairing
    positionnel), à faire en une passe dédiée.
-4. Le masque dynamique dans `verify` (les `(keep, sg)` d'OCaml :840) —
-   toujours bloqué par le port du type `Opt` dans la combinaison
-   (cf. fausse piste documentée plus haut : casse recorded si fait
-   naïvement).
-5. Une fois 1-4 faits : REPRENDRE LA MESURE (`rust-pickles-wrap-gates-diff.ts`
-   après rebuild napi) et re-trier les divergences restantes.
+4. Le masque dynamique dans `verify` — **FAIT**, et la fausse piste
+   historique est RÉSOLUE : le blocage était bien l'absence du port
+   `Opt` dans la combinaison. `Split_commitments.combine`
+   (wrap_verifier.ml:496-566 sur pcs_batch.ml:18-40) est maintenant
+   porté fidèlement dans `bulletproof.rs::combine_commitments` :
+   entrées `CommitmentOpt { Just, Maybe(keep, p), Nothing }`, liste
+   traitée en INVERSE (init = dernière entrée non-Nothing), chaque
+   `scale_and_add` = `if acc.non_zero then p + endo(acc, xi) else p`
+   puis `if keep then ... else acc.point`, suivi de
+   `non_zero = keep ||| acc.non_zero`, et `Boolean.Assert.is_true
+   non_zero` final. Les sg_old entrent en `Maybe(keep, sg)` avec le
+   masque DYNAMIQUE (`actual_proofs_verified_mask`, inversé pour
+   s'aligner sur le padding physique dummies-devant, sémantique
+   `extend_front`), le reste en `Just`. Le hack "skip si masque
+   constant-zéro" est SUPPRIMÉ. Côté step, le masque constant-true se
+   replie par constant-folding (`sys.if_` court-circuite les conditions
+   constantes) — comportement inchangé. Validé 101/101 + 9/9 recorded
+   (y compris N1/N2 où le masque dynamique est réellement variable).
+5. **PROCHAINE ÉTAPE — l'ordre interne des `evals` (dernier écart
+   structurel identifié avant "même code qu'OCaml")** : OCaml
+   `All_evals` witnesse `public_input` (les évaluations x_hat) D'ABORD,
+   puis les colonnes dans l'ordre du typ `Evals` (w[15],
+   coefficients[15], z, s[6], generic_selector, poseidon_selector,
+   complete_add_selector, mul_selector, emul_selector,
+   endomul_scalar_selector), et `ft_eval1` EN DERNIER (ordre hlist de
+   `{ evals = { public_input; evals }; ft_eval1 }`). Notre
+   `AbsorbEvalsVar`/`FinalizeEvals` lit `evals_flat` dans l'ordre z,
+   sélecteurs(6), w(15), coefficients(15), s(6), puis ft_eval1 et
+   public_evals. Réordonner exige de changer EN MÊME TEMPS : (a) l'ordre
+   de lecture dans api.rs (et recursive_step.rs qui a la même boucle
+   `next_pe`), (b) le PACKING out-of-circuit d'`evals_flat` (l'appariement
+   est positionnel — chercher où evals_flat est construit dans
+   recorded.rs/api.rs/recursive_step.rs et le réordonner à l'identique),
+   (c) vérifier qu'aucun mirror de test ne dépend de l'ancien ordre.
+   C'est LE dernier morceau pour que le code soit structurellement le
+   même qu'OCaml ; après ça : reprendre la MESURE
+   (`rust-pickles-wrap-gates-diff.ts` après rebuild napi) et re-trier
+   les divergences restantes.
+6. (Fidélité additionnelle, non bloquante) Le partage du sponge d'index
+   côté step (OCaml n'absorbe le VK qu'une fois — cf. note du point 2)
+   exigerait d'aligner `wrap_vk_pts` sur le VK vérifié dans
+   `recursive_step.rs`.
 
 ### Méthode de validation pendant la réécriture
 
