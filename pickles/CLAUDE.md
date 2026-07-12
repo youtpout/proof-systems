@@ -718,3 +718,85 @@ vérifier avant tout nouveau patch** (prochaine étape, PAS encore faite) :
    avec labels de fichier — actuellement seul le côté rust a des labels
    file:line utilisables ; jsoo n'a pas toujours de `File "..."` sur ces
    lignes `impls.ml` génériques, à vérifier).
+
+**MISE EN GARDE MÉTHODO — le texte `SNARKY_LOG_CONSTRAINTS` n'est PAS fiable
+pour compter les occurrences dans une fenêtre.** Vérifié empiriquement :
+un compteur runtime (`eprintln!` direct dans la boucle `forbidden`,
+retiré après usage) montre que le corps `{ for slot in stmt[0..5] {...} }`
+s'exécute **4 fois** au total pendant un run complet (`forbidden.len()=2`,
+`eqs.len()=2` à chaque fois, stable) — mais le texte log attribue **15**
+occurrences du label `api.rs:419` (`any`) à une seule fenêtre de 33 lignes
+qui semblait correspondre à un seul dump (`^0:` unique), alors que la
+théorie (5 slots × 1 `any()` par slot) n'en prédit que 5. Cet écart montre
+que **plusieurs exécutions du circuit sont concaténées dans le même bloc
+`^0:` numéroté** (compilation + génération de witness + éventuels passes
+bootstrap du "two-pass" dump, cf. `prove_base_case_two_pass`), invalidant
+tout comptage de MULTIPLICITÉ tiré du texte log au sein d'une fenêtre —
+seule l'IDENTIFICATION de la PREMIÈRE ligne d'un segment (`dump_row =
+log_row + 40`) reste fiable, pas le nombre d'occurrences dans la fenêtre.
+**Utiliser les dumps JSON (`wrap-circuit-{jsoo,rust}.json`) pour tout
+comptage — jamais le texte log.**
+
+## RÉSULTAT CLEF — le déficit Generic (556 vs 569) NE VIT PAS avant row 543
+
+Comptage FIABLE (JSON dumps, pas le texte log) du nombre de gates `Generic`
+par fenêtre de rows, jsoo vs rust :
+```
+0-40: 40=40   40-75: 35=35   75-100: 25=25   100-180: 80=80
+180-231: 51=51   231-300: 5=5   300-543: 19=19   (TOUS EXACTS)
+543-700: jsoo=5   rust=90   (rust +85)
+700-1024: jsoo=103 rust=24  (rust -79, net range 543-1024 : rust +6)
+```
+**Row 40 (et tout le bloc `forbidden`/`choose_key`/VK on-curve/1er sponge,
+rows 0-542) a un DÉCALAGE DE TYPE/COEFFS/WIRING (ordre d'encodage différent,
+cf. position `m` vs `c` documentée plus haut) MAIS UN COMPTE GENERIC
+IDENTIQUE aux deux côtés.** Autrement dit : même si on résolvait
+parfaitement la divergence de row 40, ça ne fermerait PAS le déficit
+Generic 556→569 (13 net) — seulement une partie du compteur cosmétique
+"divergent rows" (2869). **Ne plus prioriser row 40 pour fermer le
+compteur Generic.**
+
+**LOCALISATION PRÉCISE ET MÉCANISME du vrai déficit — row 594-657.**
+Comparaison type-par-type (JSON dumps) : jsoo et rust matchent EXACTEMENT
+jusqu'à row 595 (un point on-curve check partagé, labels rust
+`checked_mul`/`on-curve x^2`/`on-curve check` — le premier point `lr`/
+`openings`). **À row 596, jsoo bascule vers `CompleteAdd`/`VarBaseMul`**
+(début du fold bulletproof, scalar-mult du premier round IPA) **alors que
+rust CONTINUE À FAIRE DES ON-CURVE CHECKS PURS jusqu'à row 657** (64 rows
+consécutives, ~43 points vérifiés on-curve d'affilée, tous avec le même
+label `checked_mul/on-curve x^2 + on-curve check/on-curve check`) avant de
+passer à autre chose (`equals_1` à row 658).
+
+**Mécanisme identifié** : notre `openings.lr` est construit par une boucle
+UNIQUE `for &(l,r) in &w.lr { lr.push((mkpt(sys,l)?, mkpt(sys,r)?)); }`
+(api.rs:654-657) qui witnesse+checke on-curve TOUS les points lr (jusqu'à
+`ROUNDS` paires) d'un coup, PUIS le fold bulletproof
+(`bulletproof.rs::bullet_reduce_terms`, appelé plus tard depuis `verify`,
+PARTAGÉ step/wrap) itère sur ce vecteur déjà complet pour plier
+séquentiellement (`endo`/`endo_inv`/`add_fast` par paire). **OCaml
+interleave au contraire check-on-curve-de-la-paire PUIS fold-de-la-paire,
+round par round** (check l, check r, fold immédiatement dans l'accumulateur,
+passer au round suivant) — d'où son passage à `VarBaseMul` dès row 596
+alors que nous groupons tous les checks avant de plier.
+
+**Risque du fix — `bullet_reduce_terms` est appelé depuis `verify`
+(step_verifier.rs), PARTAGÉ avec le step (FULL MATCH).** `lr`/
+`prechallenges` de `bullet_reduce_terms` (Point<F>, déjà witnessé) sont
+DÉCOUPLÉS du calcul des `prechallenges` eux-mêmes (`bullet_reduce_challenges`,
+opère sur un TYPE DIFFÉRENT `PointVar<F>`, probablement en amont dans
+`oracles.rs`) — donc les prechallenges ne dépendent PAS de l'ordre de
+witnessing des points `Point<F>` finaux, ce qui rend l'interleaving
+FAISABLE EN THÉORIE (fusionner la boucle `mkpt` de api.rs avec le fold de
+`bullet_reduce_terms`, en passant des points DÉJÀ pliés à `verify` au lieu
+d'un vecteur `lr` brut). **MAIS `verify`/`bullet_reduce_terms` sont
+partagés avec le step** → il faut soit (a) faire cet interleaving
+UNIQUEMENT côté wrap (dupliquer un chemin `bullet_reduce_terms_wrap` ou
+passer un point déjà-plié en paramètre de `verify` au lieu du vecteur brut,
+sans toucher au chemin step), soit (b) vérifier que réordonner
+`bullet_reduce_terms` lui-même reste neutre pour le step (peu probable vu
+son FULL MATCH actuel, donc option (a) plus sûre). **NE PAS toucher
+`bullet_reduce_terms`/`verify` sans dupliquer le chemin ou vérifier
+`rust-pickles-step-gates-diff.ts` reste FULL MATCH après coup.** C'est le
+prochain chantier concret et prioritaire (plus prometteur que row 40, car
+il touche potentiellement les 13 Generic ET une bonne partie des ~2500
+rows encore divergentes dans 543-4096).
