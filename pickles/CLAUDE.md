@@ -92,6 +92,23 @@ répétés sur les 28 points sélectionnés).
    uniquement pour le wrap, à la position IVC Step 2 — en gardant le step
    intact — puis re-mesurer, et traiter la piste 3 en parallèle.
 
+**Nature du reste (2917) : réorganisation structurelle, pas des fixes
+locaux.** La région match rows 231-542, puis à row 543 : jsoo fait un bloc
+Poseidon (permutation de sponge = absorb d'un champ), rust fait des Generic
+de décomposition scalaire (coeffs avec `05` = endo). Symptôme général :
+rust et OCaml atteignent des compteurs de gates IDENTIQUES (EndoMul 2464,
+EndoMulScalar 184, Poseidon 1001 — tous exacts) mais via des ORDRES de
+contraintes différents dans la région verify/sponge/scalar. Ex : le
+`prev_proof_state` dummy exists + les assert_16_bits sur challenges dummy
+d'OCaml sont émis AILLEURS chez nous et atteignent les mêmes totaux.
+→ Conséquence : atteindre l'iso au niveau row demande un REFACTOR qui
+reproduit la séquence exacte d'OCaml dans le corps de verify (absorb-order
+du Fr-sponge, décomposition des scalar challenges, position du digest),
+pas des retouches locales. 7+ expériences ciblées ont échoué ou été neutres.
+C'est une passe dédiée, à faire en miroir strict de `wrap_verifier.ml`
+`incrementally_verify_proof` + `finalize`, avec re-mesure à chaque
+sous-étape, et en isolant le chemin wrap du step (verify partagé).
+
 **Ordre OCaml complet du wrap (via le flux jsoo, à suivre exactement) :**
 which_branch(2 R1CS) → proofs_verified_mask Pseudo.choose(R1CS:170) →
 domain_log2/branch_data(Equal:181) → **choose_key VK (56 Equal:204)** →
