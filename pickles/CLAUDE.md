@@ -800,3 +800,32 @@ son FULL MATCH actuel, donc option (a) plus sûre). **NE PAS toucher
 prochain chantier concret et prioritaire (plus prometteur que row 40, car
 il touche potentiellement les 13 Generic ET une bonne partie des ~2500
 rows encore divergentes dans 543-4096).
+
+**APPROFONDISSEMENT (même session) — l'interleaving est PLUS dur que
+prévu : PAS une simple fusion de boucles.** Tracé le call-graph exact :
+`openings.lr` (déjà on-curve-checké dans api.rs via `mkpt`) est consommé
+DANS `incrementally_verify.rs::incrementally_verify_proof` (= le `verify`
+partagé step/wrap, step_verifier.rs:50) à DEUX endroits :
+1. `ipa_challenges_transcript` (ligne ~279) — dérive les `prechallenges`
+   en absorbant L/R dans le sponge round par round (nécessite l'état du
+   sponge déjà avancé par tout le protocole précédent : beta/gamma/alpha/
+   zeta/fork) ;
+2. `bullet_reduce_terms` (ligne ~293) — plie `lr` avec ces `prechallenges`.
+
+**Les `prechallenges` ne peuvent PAS être calculés avant d'entrer dans
+`verify`** (ils dépendent de l'état du sponge partagé, construit
+progressivement PENDANT `verify`). Donc on ne peut pas simplement
+pré-plier `lr` en dehors de `verify` et ne passer qu'un point déjà réduit —
+il faudrait déplacer le CHECK on-curve LUI-MÊME à l'intérieur de la boucle
+`ipa_challenges_transcript`/`bullet_reduce_terms`, DANS le fichier
+partagé step/wrap. Ce n'est donc PAS un simple réordonnancement côté
+api.rs (wrap-only) mais une modification du cœur `verify` partagé,
+paramétrée pour ne changer que le chemin wrap (ex. un flag / une variante
+`check_lr_inline: bool`, ou dupliquer `bullet_reduce_terms` en
+`bullet_reduce_terms_with_check` appelé uniquement par le wrap). **Risque
+réel de casser le step FULL MATCH si mal isolé — TOUJOURS vérifier
+`rust-pickles-step-gates-diff.ts` reste FULL MATCH après toute modif de
+`incrementally_verify.rs`/`bulletproof.rs`, en plus de `recorded`
+(N0/N1/N2).** Pas tenté cette session (trop risqué pour un essai non
+vérifié en profondeur) — c'est la tâche prioritaire pour la prochaine
+session, avec ce chemin de fichiers déjà identifié précisément.
