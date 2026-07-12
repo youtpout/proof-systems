@@ -45,15 +45,28 @@ Acquis récents :
   constantes fait 556→**500** et aggrave la divergence 3203→3402. Garder
   `mkpt` pour la VK.
 
-**Piste restante — interleaving pré-Poseidon.** Rust émet **312 Generic
-avant le 1er Poseidon**, jsoo seulement **231** (81 de plus), alors que rust
-a 13 Generic de MOINS au total. Cause probable : rust witnesse TOUS les
-points (`mkpt` on-curve : vk + messages + openings + sg_olds) AVANT le
-premier sponge d'index ; jsoo absorbe la VK dans le sponge (Poseidon row 231)
-PUIS witnesse les messages/openings. Il faut réordonner le corps du wrap pour
-émettre le sponge `absorb verifier index` juste après avoir construit `vk`,
-avant de witnesser `messages`/`openings`/`sg_olds`. Vérifier que ça ne casse
-pas le witness (le sponge doit absorber les mêmes valeurs dans le même ordre).
+**Interleaving pré-Poseidon — FAIT en partie** (commit `6abbec7b88`) : le
+sponge `vk_digest` (`absorb verifier index`) est désormais émis juste après
+la sélection de la VK, avant les points de payload. Divergence 3203→**2917**
+(type 1926, coeffs 561), Generic inchangé 556. Premier Poseidon : rust **179**
+vs jsoo **231** (était 312) — on est passé de trop tard à un peu trop tôt.
+
+**Reste — les 52 Generic entre VK et sponge (base case padding).** jsoo a 52
+Generic de plus que rust avant le 1er Poseidon. En lisant `wrap_main.ml`
+(≈301-360), OCaml, APRÈS `assert_consistent` (feature flags) et AVANT le
+sponge d'index, exists :
+- `prev_step_accs` : `Vector.wrap_typ Inner_curve.typ Max_proofs_verified.n`
+  = **2 points paddés dummy, checkés on-curve** (même en N0) ;
+- `old_bp_chals` : vecteurs de challenges ;
+- `new_bulletproof_challenges` : `evals` + `wrap_domain_indices`.
+Rust en base case a `unfinalized: vec![]` → il SAUTE ces exists (les
+`prev_step_acc`/`old_bulletproof_challenges` vivent dans `PerUnfinalized`,
+vide en N0). C'est le même gap « dummy unfinalized padding » que côté
+28-Equal : OCaml pad toujours à `Max_proofs_verified=2`. Prochain pas :
+witnesser 2 `prev_step_accs` dummy (on-curve) + `old_bp_chals` + `evals`
+AVANT le sponge d'index, sans lancer de finalize (should_finalize=false),
+en surveillant que EndoMul/Poseidon/EndoMulScalar (compteurs EXACTS) ne
+bougent pas — seuls des Generic doivent s'ajouter.
 
 ## Handoff historique — parité VK o1js
 
