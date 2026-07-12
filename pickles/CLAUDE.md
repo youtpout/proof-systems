@@ -68,22 +68,29 @@ répétés sur les 28 points sélectionnés).
 2. **VK `choose_key`** : FAIT (`618542d6a2`), gate-neutre.
 3. `prev_proof_state exists` (wrap_main.ml:191) : exists 2 unfinalized
    dummy (Type2 + assert_16_bits). Rust le saute en base.
-4. **BLOCAGE PRINCIPAL — architecture du digest d'index (Poseidon).**
-   OCaml n'a PAS de digest d'index séparé : `incrementally_verify_proof`
-   (wrap_main.ml:482-503) reçoit `~verification_key:step_plonk_index
-   ~sponge` et ABSORBE la VK dans le sponge Fiat-Shamir de vérification
-   (1er Poseidon OCaml à :503, via sponge_inputs.ml). Rust calcule un
-   `vk_digest` avec un `PoseidonSponge::new()` SÉPARÉ (api.rs:604) puis
-   l'utilise dans `hash_messages_for_next_step_proof`. Même compte Poseidon
-   (1001) mais structure/position différentes → le bloc Poseidon rust
-   (row ~179) ne mappe sur aucun Poseidon OCaml au même endroit, et
-   déplacer ce sponge ne fait que réarranger la structure RUST (l'optimum
-   2917 de `6abbec7b88` est en partie coïncident). **Le fix profond : faire
-   absorber la VK par le sponge de vérification comme OCaml, supprimer le
-   `vk_digest` séparé.** C'est là que se cachent les 13 Generic + le gros
-   du type=1926. Refactor conséquent — étudier `incrementally_verify_proof`
-   rust (wrap_main.rs) vs OCaml wrap_verifier, et l'usage de `vk_digest`
-   dans `hash_messages_for_next_step_proof`.
+4. **BLOCAGE PRINCIPAL — POSITION du digest d'index (Poseidon).**
+   CORRECTION : l'architecture MATCHE. OCaml calcule bien un `index_digest`
+   via un sponge SÉPARÉ (`Sponge.create` puis squeeze,
+   wrap_verifier.ml:850-866, label "absorb verifier index"), exactement
+   comme notre `vk_digest` (api.rs). La différence est UNIQUEMENT la
+   POSITION : OCaml le calcule DANS `incrementally_verify_proof` à IVC
+   Step 2 (wrap_verifier.ml:877 `absorb sponge Field index_digest`), donc
+   APRÈS que `messages`/`openings_proof` soient déjà témoins (leurs exists
+   sont AVANT l'appel verify, wrap_main.ml:440-476), et juste avant
+   `absorb sg_old`. Rust calcule `vk_digest` dans api.rs et le passe en
+   paramètre à `verify`.
+   ⚠️ EMPIRIQUE DÉROUTANT : l'optimum de gate-parity (2917, `6abbec7b88`,
+   sponge AVANT messages) NE coïncide PAS avec la position OCaml (après
+   messages/openings, au début du corps de verify). Reculer vers la
+   position OCaml donne 3203 (pire). Cela indique que le reste n'est pas un
+   seul déplacement propre mais une COMBINAISON : position du digest +
+   `prev_proof_state` dummy exists (piste 3) + pairing double-generic. 
+   ⚠️ `verify` (step_verifier.rs:50) est PARTAGÉ avec le step (FULL MATCH) :
+   le modifier pour calculer le digest en interne risque de casser la
+   parité step. Il faut isoler le chemin wrap. Prochaine passe : calculer
+   `vk_digest` au DÉBUT du corps de `verify` (depuis `vk`, déjà passé),
+   uniquement pour le wrap, à la position IVC Step 2 — en gardant le step
+   intact — puis re-mesurer, et traiter la piste 3 en parallèle.
 
 **Ordre OCaml complet du wrap (via le flux jsoo, à suivre exactement) :**
 which_branch(2 R1CS) → proofs_verified_mask Pseudo.choose(R1CS:170) →
