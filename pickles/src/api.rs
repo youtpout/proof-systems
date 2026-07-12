@@ -595,6 +595,35 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         for (point, &expected) in vk.sigma_last.iter().zip(&w.sigma_last) {
             assert_vk_point(sys, point, expected)?;
         }
+        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
+        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
+        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
+        // OCaml emits this index sponge right after selecting the VK, BEFORE
+        // witnessing the proof payload points, so the first Poseidon lands
+        // before the message/opening on-curve checks (jsoo wrap row ~231).
+        let vk_digest: FieldVar<Fq> = {
+            let mut index_sponge = crate::sponge::PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk
+                .sigma_init
+                .iter()
+                .chain(vk.sigma_last.iter())
+                .chain(vk.coefficients.iter())
+                .chain([
+                    &vk.generic,
+                    &vk.psm,
+                    &vk.complete_add,
+                    &vk.mul,
+                    &vk.emul,
+                    &vk.endomul_scalar,
+                ])
+            {
+                coords.push(pt.x.clone());
+                coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc!(), &coords);
+            index_sponge.squeeze(sys, loc!())
+        };
         // OCaml's wrap rule receives the proof through Snarky `Typ`s`; keep
         // proof payload points witnessed (and checked on curve), unlike the
         // constant verifier-index commitments above.
@@ -629,32 +658,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             z2: t1(z2_repr),
             challenge_polynomial_commitment: mkpt(sys, w.sg)?,
             h_generator: h.clone(),
-        };
-        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
-        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
-        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
-        let vk_digest: FieldVar<Fq> = {
-            let mut index_sponge = crate::sponge::PoseidonSponge::new();
-            let mut coords = Vec::with_capacity(56);
-            for pt in vk
-                .sigma_init
-                .iter()
-                .chain(vk.sigma_last.iter())
-                .chain(vk.coefficients.iter())
-                .chain([
-                    &vk.generic,
-                    &vk.psm,
-                    &vk.complete_add,
-                    &vk.mul,
-                    &vk.emul,
-                    &vk.endomul_scalar,
-                ])
-            {
-                coords.push(pt.x.clone());
-                coords.push(pt.y.clone());
-            }
-            index_sponge.absorb(sys, loc!(), &coords);
-            index_sponge.squeeze(sys, loc!())
         };
         let advice = Advice {
             combined_inner_product: t1(cip),
