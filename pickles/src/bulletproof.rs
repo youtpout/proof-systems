@@ -70,7 +70,12 @@ pub fn combine_commitments<F: PrimeField>(
             // `scale_and_add` (wrap_verifier.ml:508-545).
             Some(a) => {
                 let scaled = endo(sys, loc.clone(), &a.point, xi, SCALAR_CHALLENGE_BITS, endo_base)?;
-                let added = add_fast(sys, loc.clone(), p, &scaled)?;
+                let added = add_fast(
+                    sys,
+                    Cow::Owned(format!("{loc} | combine_commitments add")),
+                    p,
+                    &scaled,
+                )?;
                 // base = if acc.non_zero then p + xi·acc else p
                 let base_x = sys.if_(loc.clone(), a.non_zero.clone(), added.x, p.x.clone())?;
                 let base_y = sys.if_(loc.clone(), a.non_zero.clone(), added.y, p.y.clone())?;
@@ -261,19 +266,44 @@ pub fn check_bulletproof_equation<F: PrimeField>(
 
     // q = combined_polynomial + cip·u + lr_prod
     let uc = cip.scale(sys, loc.clone(), u, num_bits)?;
-    let p_prime = add_fast(sys, loc.clone(), combined_polynomial, &uc)?;
-    let q = add_fast(sys, loc.clone(), &p_prime, lr_prod)?;
+    let p_prime = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof p_prime add")),
+        combined_polynomial,
+        &uc,
+    )?;
+    let q = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof q add")),
+        &p_prime,
+        lr_prod,
+    )?;
 
     // lhs = endo(q, c) + delta
     let cq = endo(sys, loc.clone(), &q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
-    let lhs = add_fast(sys, loc.clone(), &cq, delta)?;
+    let lhs = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof lhs add")),
+        &cq,
+        delta,
+    )?;
 
     // rhs = z1·(challenge_polynomial_commitment + b·u) + z2·H
     let b_u = b.scale(sys, loc.clone(), u, num_bits)?;
-    let g_plus_b_u = add_fast(sys, loc.clone(), challenge_polynomial_commitment, &b_u)?;
+    let g_plus_b_u = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof g_plus_b_u add")),
+        challenge_polynomial_commitment,
+        &b_u,
+    )?;
     let z1_g_plus_b_u = z1.scale(sys, loc.clone(), &g_plus_b_u, num_bits)?;
     let z2_h = z2.scale(sys, loc.clone(), h_generator, num_bits)?;
-    let rhs = add_fast(sys, loc.clone(), &z1_g_plus_b_u, &z2_h)?;
+    let rhs = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof rhs add")),
+        &z1_g_plus_b_u,
+        &z2_h,
+    )?;
 
     // equal_g lhs rhs = Boolean.all [lhs.x == rhs.x; lhs.y == rhs.y]
     let x_eq = lhs.x.equal(sys, loc.clone(), &rhs.x)?;

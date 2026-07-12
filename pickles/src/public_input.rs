@@ -159,7 +159,12 @@ pub fn public_input_commitment<F: PrimeField>(
     for t in terms {
         match t {
             Term::Cond { bit, lagrange } => {
-                let added = add_fast(sys, loc.clone(), lagrange, &acc)?;
+                let added = add_fast(
+                    sys,
+                    Cow::Owned(format!("{loc} | public_input conditional add")),
+                    lagrange,
+                    &acc,
+                )?;
                 acc = Point::select(sys, loc.clone(), bit, &added, &acc)?;
             }
             Term::Packed {

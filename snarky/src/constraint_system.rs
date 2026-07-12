@@ -534,6 +534,10 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         self.flush_generic_before_custom = value;
     }
 
+    pub fn flush_generic_before_custom(&self) -> bool {
+        self.flush_generic_before_custom
+    }
+
     /// Returns the number of public inputs.
     ///
     /// # Panics
@@ -621,6 +625,14 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             coeffs,
         }) = self.pending_generic_gate.take()
         {
+            if std::env::var("SNARKY_LOG_PENDING_GENERIC").is_ok() {
+                println!(
+                    "PENDING flush row={} label={} loc={}",
+                    self.next_row,
+                    labels.join(" | "),
+                    loc
+                );
+            }
             self.add_row(
                 &labels,
                 &loc,
@@ -841,6 +853,15 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         o: Option<V>,
         mut coeffs: Vec<Field>,
     ) {
+        if std::env::var("SNARKY_LOG_PENDING_GENERIC").is_ok() {
+            println!(
+                "PENDING add row={} occupied={} label={} loc={}",
+                self.next_row,
+                self.pending_generic_gate.is_some(),
+                labels.join(" | "),
+                loc
+            );
+        }
         if !self.generic_gate_optimization {
             assert!(coeffs.len() <= GENERIC_COEFFS);
             self.add_row(labels, loc, vec![l, r, o], GateType::Generic, coeffs);

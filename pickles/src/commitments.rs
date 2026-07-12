@@ -67,9 +67,19 @@ pub fn ft_comm<F: PrimeField>(
     let chunked_t = reduce_chunks(sys, loc.clone(), t_comm, zeta_to_srs_length, num_bits)?;
 
     // ft_comm = f_comm + chunked_t - zeta_to_domain_size · chunked_t
-    let sum = add_fast(sys, loc.clone(), &f_comm, &chunked_t)?;
+    let sum = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | ft_comm sum add")),
+        &f_comm,
+        &chunked_t,
+    )?;
     let t_scaled = zeta_to_domain_size.scale(sys, loc.clone(), &chunked_t, num_bits)?;
-    add_fast(sys, loc, &sum, &t_scaled.negate())
+    add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | ft_comm final add")),
+        &sum,
+        &t_scaled.negate(),
+    )
 }
 
 #[cfg(test)]

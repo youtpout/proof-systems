@@ -1571,3 +1571,54 @@ aucune divergence de type avant row 699. Le diff total passe de 4080 à
 **3173**, avec Rust Generic 603 contre OCaml 569 (anciennement 614/569).
 Validation : 101/101 lib, 9/9 recorded et step **FULL MATCH**. La prochaine
 cible structurelle est la rupture du train OptSponge à partir de row 699.
+
+### Troisième cible : rupture row 699 — correction et essais réfutés
+
+Instrumentation conservée : `SNARKY_LOG_PENDING_GENERIC=1` journalise la
+création, la fusion et le flush de chaque demi-gate Generic avec `next_row`,
+label et localisation. Elle est inactive par défaut. Des localisations de
+site distinctes sont également conservées dans `ft_comm`, les additions de
+l'équation bulletproof, `combine_commitments` et l'addition conditionnelle
+du public input, afin que les futures traces ne reposent plus sur le seul
+label global `wrap_main: verify step proof`.
+
+Essais effectués avant le diagnostic final (tous revertés lorsqu'ils étaient
+sans effet ou régressifs) :
+
+1. suppression conditionnelle de l'assertion finale `non_zero` de
+   `combine_commitments` lorsqu'un `CommitmentOpt::Just` existe : aucun gate
+   modifié ; l'assertion était déjà réduite ;
+2. unification directe du dernier `n_acc` de `scale_fast_unpack` avec le
+   scalaire dans la dernière row `VarBaseMul` : aucun gate modifié ;
+3. alimentation de `cached_constants` depuis les branches R1CS qui imposent
+   `Var × Constant = Constant` : aucun gate modifié ;
+4. publication différée dans `cached_constants` pendant les custom gates :
+   17/17 tests Snarky verts, mais gate diff strictement inchangé ;
+5. matérialisation explicite des coordonnées constantes avant/après
+   `CompleteAdd`, testée globalement puis localement sur `ft_comm` et
+   `combine_commitments` : la variante globale alignait 699 mais inversait
+   595/596 ; les variantes locales candidates étaient des no-op ;
+6. replay différé des Generic autour du doublement initial de `scale_fast` :
+   régression 3173 → 3175 avec nouvelles divergences 595/596 ;
+7. variant `EcAddCompleteDeferred` porté dans `KimchiConstraint` puis utilisé
+   dans `combine_commitments` : aucun effet, ce qui a prouvé que l'attribution
+   du site était fausse ;
+8. suspension du flush autour de l'addition conditionnelle directement dans
+   `public_input_commitment` : aucun effet, car l'addition réelle est interne
+   à `scale_fast2`.
+
+Diagnostic définitif via la trace : la row interne 659 (wrap 699) est la
+matérialisation Generic de `h_minus_g = h + (-g)` dans `scale_fast2`, juste
+après les 51 rows `VarBaseMul` et juste avant `Point::select`. Le correctif
+conservé suspend `flush_generic_before_custom` uniquement pendant cet
+`add_fast`, puis restaure la politique avant les `if_`. Résultat : les
+divergences de type rows **699–700 disparaissent**, le total passe de 3173 à
+**3171**, sans nouvelle divergence plus tôt ; la première divergence de type
+est désormais row **704**. Histogramme inchangé (Rust Generic 603, Poseidon
+1023, CompleteAdd 264, EndoMul 2528 ; OCaml 569/1001/258/2464), ce correctif
+aligne l'ordre plutôt que le nombre de gates.
+
+Validation : test ciblé `scale_fast2_prime`, 101/101 lib, 9/9 recorded et
+step **FULL MATCH**. Prochaine cible : utiliser les labels et
+`SNARKY_LOG_PENDING_GENERIC` conservés pour attribuer les divergences
+704–711, puis le premier train OptSponge 711+.

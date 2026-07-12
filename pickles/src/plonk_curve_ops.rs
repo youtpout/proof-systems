@@ -396,7 +396,23 @@ pub fn scale_fast2<F: PrimeField>(
     }
 
     // if s_odd { h } else { h - g }
-    let h_minus_g = add_fast(sys, loc.clone(), &h, &g.negate())?;
+    let previous_flush = sys
+        .system
+        .as_ref()
+        .map(|system| system.flush_generic_before_custom());
+    if let Some(system) = &mut sys.system {
+        system.set_flush_generic_before_custom(false);
+    }
+    let h_minus_g_result = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | scale_fast2 h_minus_g add")),
+        &h,
+        &g.negate(),
+    );
+    if let (Some(previous_flush), Some(system)) = (previous_flush, &mut sys.system) {
+        system.set_flush_generic_before_custom(previous_flush);
+    }
+    let h_minus_g = h_minus_g_result?;
     Point::select(sys, loc, s_odd, &h, &h_minus_g)
 }
 
