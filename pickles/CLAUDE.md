@@ -1321,3 +1321,30 @@ Toutes les 3 variantes ont été testées avec build+9/9 recorded+mesure
 gate-diff complète avant d'être revertées ; le repo est resté systématiquement
 propre entre chaque essai. État final : 2756 divergent rows, 555/569
 Generic, step FULL MATCH, 9/9 recorded — confirmé stable.
+
+## Essai `h` constant — testé, REVERT (contre-intuitif)
+
+Vérifié dans `wrap_verifier.ml:618` et `:965` : `Generators.h` (le point
+de blinding SRS) est TOUJOURS `Inner_curve.constant (Lazy.force
+Generators.h)` côté OCaml — jamais witnessé, jamais checké on-curve.
+Notre code faisait `let h = mkpt(sys, w.h)?` (witness + check on-curve,
+3 gates). Changé en `let h = cpt(w.h)` (constant, zéro gate) — **9/9
+recorded toujours OK** (donc mathématiquement h a bien la même valeur,
+aucun problème de correction), **mais divergence 2756 → 3507** (bien
+pire), Generic 555→554. Reverté. La lecture OCaml était juste, mais le
+retrait du check on-curve de `h` désaligne visiblement le pairing
+double-generic en aval de façon plus large que le gain local — même
+mécanisme de cascade déjà vu plusieurs fois cette session (un changement
+individuellement fidèle à OCaml peut régresser le score global si le
+reste du circuit n'est pas ajusté en même temps). **Ne pas retenter
+isolément** — si retenté, le faire en même temps qu'un ajustement du
+pairing dans la région immédiatement après (rows ~620-660).
+
+**Bilan de cette dernière série d'essais (4 au total ce tour)** : TOUS
+individuellement fidèles à une lecture précise d'OCaml, TOUS testés avec
+build+9/9 recorded+mesure complète, TOUS régressent (3090, 3090, 3090,
+3507) par rapport au 2756 actuel. Ceci renforce fortement la conclusion
+déjà documentée : le circuit rust est actuellement dans un minimum local
+robuste où des corrections PARTIELLES (même correctes individuellement)
+ne suffisent pas — il faut soit LE ticket complet (plusieurs changements
+fidèles appliqués ENSEMBLE), soit accepter cet état comme palier stable.
