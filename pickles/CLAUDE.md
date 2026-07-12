@@ -1550,3 +1550,24 @@ et le total de rows divergentes de 4199 à 4080. Les quatre Generic retirées
 en plus des 64 checks viennent du repacking des contraintes. La prochaine
 cible localisée est donc le reliquat exact de 11 rows avant la première
 Poseidon, puis le train OptSponge (+22 Poseidon Rust).
+
+### Deuxième cible : préambule du transcript wrap — FAIT
+
+La capture HL croisée a isolé deux différences après les `sg_old`. Rust
+appelait `check_other_field_packed` sur les représentants `z1` et `z2` de
+l'ouverture ; OCaml passe directement de `exists Bulletproof.wrap_typ` aux
+69 contraintes on-curve de `Messages.wrap_typ`. Ces deux blocs forbidden
+(2 × 6 contraintes HL) ont donc été supprimés, comme les checks de points
+d'ouverture du jalon précédent.
+
+Le bloc de cohérence des features différait aussi : OCaml émet 10 R1CS + 2
+Equal, Rust 8 R1CS + 14 Equal au niveau HL, mais les Equal identitaires sont
+compactées en deux rows par le backend. Les assertions `assert_consistent`
+sont conservées et les deux résultats de `Boolean.any` (`table_width_at_least_1`
+et `lookups_per_row_4`) reçoivent désormais le check booléen qu'émet OCaml.
+
+Résultat après rebuild NAPI : première Poseidon **row 231 des deux côtés** ;
+aucune divergence de type avant row 699. Le diff total passe de 4080 à
+**3173**, avec Rust Generic 603 contre OCaml 569 (anciennement 614/569).
+Validation : 101/101 lib, 9/9 recorded et step **FULL MATCH**. La prochaine
+cible structurelle est la rupture du train OptSponge à partir de row 699.

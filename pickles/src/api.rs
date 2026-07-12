@@ -27,7 +27,7 @@ use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use serde::{Deserialize, Serialize};
-use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
+use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult, SnarkyType};
 
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
@@ -548,20 +548,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 }
             }
         }
-        let check_other_field_packed = |sys: &mut RunState<Fq>,
-                                        value: &FieldVar<Fq>|
-         -> SnarkyResult<()> {
-            let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
-            let mut eqs = Vec::with_capacity(forbidden.len());
-            for forbidden_value in forbidden {
-                eqs.push(value.equal(sys, loc!(), &FieldVar::constant(forbidden_value))?);
-            }
-            let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
-            let any = Boolean::any(&eq_refs, sys, loc!())?;
-            any.not()
-                .to_field_var()
-                .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))
-        };
         // OCaml 40-slot tail: 8 feature-flag booleans + the optional joint
         // combiner (flag boolean + scalar). o1js compiles with Maybe flags,
         // so they are public boolean slots; our programs use none of them.
@@ -669,6 +655,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sys,
                 loc!(),
             )?;
+            table_width_at_least_1.check(sys, loc!())?;
             // OCaml `Features.to_full` also derives lookups_per_row_4 and
             // lookups_per_row_3 (forced by the sponge's `uses_lookups`), in
             // this order — omitting them shifted the subsequent gate pairing.
@@ -677,6 +664,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sys,
                 loc!(),
             )?;
+            lookups_per_row_4.check(sys, loc!())?;
             let _lookups_per_row_3 = lookups_per_row_4.or(&lookup, loc!(), sys);
 
             let false_ = Boolean::<Fq>::false_().to_field_var();
@@ -822,8 +810,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
             let z1_repr = w1(sys, w.z1_repr)?;
             let z2_repr = w1(sys, w.z2_repr)?;
-            check_other_field_packed(sys, &z1_repr)?;
-            check_other_field_packed(sys, &z2_repr)?;
             let openings = OpeningProof {
                 lr,
                 delta: mkpt_opening(sys, w.delta)?,
