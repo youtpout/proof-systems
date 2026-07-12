@@ -553,20 +553,39 @@ des constantes). Comparaison coeff-à-coeff (outil labels) :
   matérialisé en variable + Equal, contrairement à OCaml qui matérialise
   systématiquement via `cached_constants` dès qu'une constante entre dans
   N'IMPORTE quelle contrainte (pas seulement `scale`).
-- **Ce n'est donc PAS un bug de formule snarky** (les deux formules
-  `equal_constraints`/`Boolean::and` sont correctes et déjà vérifiées
-  ailleurs — step FULL MATCH), mais un **écart de couverture du mécanisme de
-  matérialisation des constantes** : OCaml l'applique à toute contrainte
-  basique (R1CS/Equal/Square), notre port ne l'a branché que sur
-  `reduce_lincom`. Etendre `cached_constants`-style materialization à
-  `assert_r1cs`/`assert_eq`/`assert_square` (quand un opérande est
-  `FieldVar::Constant`) est la prochaine piste concrète — mais c'est un
-  changement AU NIVEAU SNARKY (pas pickles), donc à tester avec précaution
-  sur tout le corpus (step FULL MATCH doit rester intact) avant de le
-  généraliser. Prochaine étape : identifier PRÉCISÉMENT quel opérande
-  (`z`, `z_inv`, ou `r`/`one_minus_r`) est Constant côté rust à la row 40
-  (probablement un des flags de `feature_flags[]` qui est structurellement
-  toujours 0 ou 1 dans ce test minimal et se replie en Constant lors du
-  calcul de `Boolean::and`/`not`), puis matérialiser CE point précis (pas
-  un changement générique dans runner.rs, plus risqué) avant d'envisager la
-  généralisation.
+- **Ce n'est donc PAS un bug de formule snarky** — mais MÉCANISME TROUVÉ,
+  précisément localisé dans `cvar.rs::mul` (ligne 159-188) :
+  ```rust
+  (FieldVar::Constant(x), FieldVar::Constant(y)) => FieldVar::Constant(*x * y),
+  (FieldVar::Constant(cst), cvar) | (cvar, FieldVar::Constant(cst)) => cvar.scale(*cst),
+  (_, _) => { ... cs.assert_r1cs(...) ... }  // seul ce cas émet une contrainte
+  ```
+  Quand un des deux opérandes de `.mul()` est un `FieldVar::Constant`, rust
+  optimise en `.scale()` **sans émettre AUCUNE contrainte** (juste une
+  combinaison linéaire algébrique, repliée dans l'appelant). C'est ce chemin
+  que prend `Boolean::and` (`boolean.rs:86`, `self.0.mul(&other.0, …)`) dès
+  qu'un des deux booléens est `Boolean::false_()` = `FieldVar::zero()` — un
+  `Constant`. Le bloc `assert_consistent` (api.rs:493-553) construit
+  `table_width_at_least_1`/`lookups_per_row_4`/etc. via des chaînes de
+  `Boolean::and`/`or`/`any` sur les 8 `feature_flags`, qui sont ici TOUS
+  witnessés à `false` (circuit minimal, pas de lookup/range-check/xor/rot) —
+  donc de nombreux `.mul()` internes tombent sur le cas
+  `(Constant(0), var)`/`(var, Constant(0))` et **disparaissent silencieusement**
+  côté rust, alors qu'OCaml (dont le `Snark.Run`/`Cvar` matérialise les
+  constantes plus tôt, cf. `cached_constants`/`reduce_to_v` déjà documenté
+  plus haut pour x_hat/500-1500) émet un R1CS réel à chaque `and`/`or`, quel
+  que soit le statut constant d'un opérande. C'est la cause du bloc
+  `equals_1`/`equals_2` divergent en row 40-73 : pas un bug de formule, un
+  écart de **stratégie d'optimisation** (constant-folding précoce côté rust
+  vs matérialisation systématique côté OCaml).
+  ⚠️ **Ne PAS "corriger" `cvar::mul` en général** (retirer l'optimisation
+  casserait probablement d'autres compteurs de gates ailleurs, potentiellement
+  en mieux ou en pire — c'est une piste à tester isolément, pas un patch
+  aveugle). Prochaine étape concrète et à faible risque : dans le bloc
+  `assert_consistent` d'api.rs (493-553) UNIQUEMENT, remplacer les opérandes
+  `Boolean::false_()`/les flags connus constants par des variables
+  witnessées explicitement (comme fait pour `vk_digest`/`messages` cette
+  session) avant de les passer à `Boolean::and`/`or`/`any`, pour forcer
+  l'émission des mêmes R1CS qu'OCaml sans toucher `cvar.rs`. Mesurer avec
+  le tool de labels après ce changement isolé ; si concluant, envisager
+  seulement alors un changement plus général dans `cvar::mul`/`cached_constants`.
