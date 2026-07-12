@@ -829,3 +829,73 @@ réel de casser le step FULL MATCH si mal isolé — TOUJOURS vérifier
 (N0/N1/N2).** Pas tenté cette session (trop risqué pour un essai non
 vérifié en profondeur) — c'est la tâche prioritaire pour la prochaine
 session, avec ce chemin de fichiers déjà identifié précisément.
+
+## Essai FAIT et REVERTÉ — `bullet_reduce_interleaved` (session suivante, même jour)
+
+**Implémenté intégralement** (compile, mathématiquement correct, testé) :
+- `bulletproof.rs::bullet_reduce_interleaved` — nouvelle fonction qui fusionne
+  `ipa_challenges_transcript` + `bullet_reduce_terms` en UNE boucle par round
+  (check L/R on-curve → absorb L,R → squeeze prechallenge → fold immédiat),
+  au lieu de deux passes séparées.
+- `incrementally_verify_proof`/`step_verifier::verify`/`verify_one`/
+  `step_main` : nouveau paramètre `on_curve_coeffs: (F,F)` fileté à travers
+  toute la chaîne jusqu'à `wrap_main.rs`/`step_main.rs` (les 2 call sites
+  réels, `(F::from(0),F::from(5))` pour Pasta).
+- `api.rs` : `lr` witnessé SANS check on-curve upfront (`mkpt_unchecked`),
+  le check se fait maintenant dans `bullet_reduce_interleaved`.
+
+**Risque `verify_one`/step vérifié RÉEL et CONFIRMÉ, pas hypothétique** :
+`recursive_per_proof_input` (recursive_step.rs) → `circuit()` →
+`step_main::<Fp,PallasParameters>` → `verify_one` → `verify` →
+`incrementally_verify_proof` EST le chemin live de `recorded_n1_cycle`/
+`recorded_n2_cycle` (pas mort comme je le pensais initialement — trouvé
+via l'erreur de compilation sur l'arité de `verify_one`, PAS par grep
+naïf qui ratait l'appel `::<PREV_ROUNDS, WRAP_ROUNDS>`). Découverte
+positive en chemin : le `mkpt` de `recursive_per_proof_input` pour
+`lr`/`messages`/`openings` NE FAISAIT DÉJÀ AUCUN check on-curve (gap
+préexistant, hors scope, non traité) — donc mon changement n'a RIEN
+régressé côté step sur ce point précis.
+
+**Résultat des tests** :
+- `cargo test -p pickles --release --test recorded` : **9/9 PASS**
+  (N0/N1/N2 tous verify correctement — la maths de l'interleaving est
+  saine, le fold donne bien le même résultat qu'avant).
+- `rust-pickles-step-gates-diff.ts` : **STEP GATES: FULL MATCH** inchangé
+  (le chemin `recursive_per_proof_input`/`verify_one` n'est PAS exercé
+  par le test de parité de gates step lui-même, qui ne couvre que le
+  circuit minimal ; seul `recorded_n1/n2` l'exerce, et ces tests passent
+  fonctionnellement mais leur PARITÉ DE GATES n'a pas de test dédié —
+  donc `verify_one` a pu changer de structure sans qu'aucun test actuel
+  ne le détecte).
+- `rust-pickles-wrap-gates-diff.ts` : **RÉGRESSION** — divergence
+  **2869 → 3524**, Generic **556 → 541** (s'éloigne de la cible 569 au
+  lieu de s'en rapprocher). Reverté proprement (`git checkout` sur les 6
+  fichiers touchés), rebuild napi, ré-confirmé 2869/556 restauré, 9/9
+  recorded re-vérifié sur l'état reverté.
+
+**Pourquoi ça a régressé malgré une implémentation fidèle à OCaml en
+apparence** : l'interleaving change l'ORDRE D'ABSORPTION DANS LE SPONGE
+lui-même n'a PAS changé (toujours absorb L puis R par round, comme avant)
+— mais le fait de check on-curve JUSTE AVANT d'absorber, plutôt qu'en
+amont, change quels FieldVar sont déjà "seal"és/réduits au moment de
+l'absorption, ce qui modifie le PAIRING double-generic en aval de façon
+plus large que prévu (3524 diverge sur BEAUCOUP plus de rows que 2869,
+type=2755 contre ~1900 avant). Root-cause probable : le point de départ
+(row 596 dans l'AVANT) n'était peut-être pas le SEUL endroit où rust
+batch les checks — en changeant seulement `lr`, on a désynchronisé son
+alignement avec d'autres séquences (VK, messages, sg_olds) qui, elles,
+restent batchées à l'ancienne — la fenêtre 231-543 qui était PARFAITEMENT
+alignée avant (voir plus haut, comptage Generic exact par fenêtre)
+casse probablement aussi avec ce changement (non re-mesuré en détail
+avant de revert, faute de temps).
+
+**Leçon pour la suite** : ne pas interleaver `lr` seul. Si on retente,
+il faut soit (a) interleaver TOUT le bloc consommateur de points
+(messages/sg_olds/lr/VK on-curve) de façon cohérente avec jsoo dans le
+MÊME mouvement, soit (b) re-mesurer avec le comptage par fenêtre
+(technique de cette session, cf. "RÉSULTAT CLEF" plus haut) AVANT de
+conclure, pour voir PRÉCISÉMENT quelle fenêtre a régressé et pourquoi,
+plutôt que revert dès la première mesure globale défavorable — on a
+peut-être raté un gain partiel (ex. la fenêtre 543-700 pourrait s'être
+améliorée même si le total a empiré). Prochaine tentative : mesurer par
+fenêtre AVANT de décider revert/keep, pas seulement le total.
