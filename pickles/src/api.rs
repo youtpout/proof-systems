@@ -1199,6 +1199,9 @@ pub fn prove_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
 pub struct WrapCircuitDump {
     pub public_input_size: usize,
     pub gates: Vec<kimchi::circuits::gate::CircuitGate<Fq>>,
+    /// Debug-only: per-gate emission labels aligned 1:1 with `gates`.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 /// [`prove_base_case`], additionally returning the compiled wrap circuit's
@@ -1487,6 +1490,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     let wrap_dump = WrapCircuitDump {
         public_input_size: wrap_pi.index.cs.public,
         gates: wrap_pi.index.cs.gates.to_vec(),
+        labels: wrap_pi.gate_labels().to_vec(),
     };
     let (wrap_proof, _) = wrap_pi
         .prove::<PallasBase, PallasScalar>(stmt_arr, (), true)

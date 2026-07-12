@@ -63,6 +63,12 @@ impl<Circuit> ProverIndexWrapper<Circuit>
 where
     Circuit: SnarkyCircuit,
 {
+    /// Debug-only: per-gate emission labels aligned 1:1 with the compiled
+    /// gates (and hence with `self.index.cs.gates`), for parity tooling.
+    pub fn gate_labels(&self) -> &[String] {
+        &self.compiled_circuit.gate_labels
+    }
+
     /// Produces an assembly-like encoding of the circuit.
     pub fn asm(&self) -> String {
         kimchi::circuits::gate::Circuit::new(
@@ -316,6 +322,9 @@ where
 
     /// The gates obtained after compilation.
     pub gates: Vec<CircuitGate<ScalarField<Circuit::Curve>>>,
+    /// Debug-only: per-gate emission labels, aligned 1:1 with [`Self::gates`]
+    /// (for parity tooling / dumps). Padding gates get an empty label.
+    pub gate_labels: Vec<String>,
     phantom: PhantomData<Circuit>,
 }
 
@@ -342,6 +351,11 @@ fn compile<Circuit: SnarkyCircuit>(circuit: Circuit) -> SnarkyResult<CompiledCir
 
     let gates = sys.wire_output_and_compile(return_var).unwrap();
     let gates = gates.to_vec();
+    let gate_labels = sys
+        .system
+        .as_ref()
+        .map(|s| s.gate_labels.clone())
+        .unwrap_or_default();
 
     // return compiled circuit
     let compiled_circuit = CompiledCircuit {
@@ -349,6 +363,7 @@ fn compile<Circuit: SnarkyCircuit>(circuit: Circuit) -> SnarkyResult<CompiledCir
         sys,
         public_input_size,
         gates,
+        gate_labels,
         phantom: PhantomData,
     };
     Ok(compiled_circuit)
@@ -443,6 +458,7 @@ pub trait SnarkyCircuit: Sized {
             let target_gate_count =
                 target_domain_size - usize::try_from(ZK_ROWS_BY_DEFAULT).unwrap();
             if compiled_circuit.gates.len() < target_gate_count {
+                let pad = target_gate_count - compiled_circuit.gates.len();
                 compiled_circuit.gates.extend(
                     (compiled_circuit.gates.len()..target_gate_count).map(|row| {
                         CircuitGate::zero(std::array::from_fn(|column| Wire {
@@ -451,6 +467,9 @@ pub trait SnarkyCircuit: Sized {
                         }))
                     }),
                 );
+                compiled_circuit
+                    .gate_labels
+                    .extend(std::iter::repeat_n(String::from("pad"), pad));
             }
         }
 

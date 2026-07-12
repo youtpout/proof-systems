@@ -74,6 +74,9 @@ struct GateSpec<Row, Field> {
     kind: GateType,
     wired_to: Vec<Position<Row>>,
     coeffs: Vec<Field>,
+    /// Debug-only: the emission label(s) for this gate, for parity tooling
+    /// (attached per finalized row so a dump aligns labels to rows exactly).
+    label: String,
 }
 
 impl<Row, Field> GateSpec<Row, Field> {
@@ -83,6 +86,7 @@ impl<Row, Field> GateSpec<Row, Field> {
             kind,
             wired_to,
             coeffs,
+            label,
         } = self;
         GateSpec {
             kind,
@@ -91,6 +95,7 @@ impl<Row, Field> GateSpec<Row, Field> {
                 .map(|Position { row, col }| Position { row: f(row), col })
                 .collect(),
             coeffs,
+            label,
         }
     }
 }
@@ -101,6 +106,7 @@ impl<Field: PrimeField> GateSpec<usize, Field> {
             kind,
             wired_to,
             coeffs,
+            label: _,
         } = self;
         let wires: Vec<_> = wired_to
             .into_iter()
@@ -335,6 +341,10 @@ where
     /** Queue (of size 1) of generic gate. */
     pending_generic_gate: Option<PendingGate<Field, V>>,
 
+    /// Debug-only: per-row emission labels, populated at [`Self::finalize`],
+    /// aligned 1:1 with the finalized gates (for parity tooling / dumps).
+    pub gate_labels: Vec<String>,
+
     /** V.t's corresponding to constant values. We reuse them so we don't need to
        use a fresh generic constraint each time to create a constant.
     */
@@ -508,6 +518,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             next_internal_var: 0,
             internal_vars: HashMap::new(),
             gates: Circuit::Unfinalized(Vec::new()),
+            gate_labels: Vec::new(),
             rows: Vec::new(),
             next_row: 0,
             equivalence_classes: HashMap::new(),
@@ -594,6 +605,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     kind,
                     wired_to: Vec::new(),
                     coeffs,
+                    label: labels.join(", "),
                 });
             }
         }
@@ -665,6 +677,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 kind: GateType::Generic,
                 wired_to: Vec::new(),
                 coeffs: pub_selectors.clone(),
+                label: "public_input".to_string(),
             });
         }
 
@@ -677,6 +690,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 kind,
                 wired_to: _,
                 coeffs,
+                label,
             } = gate;
             GateSpec {
                 kind,
@@ -684,6 +698,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     .map(|col| permutation(Position { row, col }))
                     .collect(),
                 coeffs,
+                label,
             }
         };
 
@@ -708,14 +723,17 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
 
         /* convert all the gates into our Gates.t Rust vector type */
         let mut rust_gates = vec![];
+        let mut gate_labels = vec![];
         let mut add_gates = |gates: Vec<_>| {
             for gate in gates {
                 let g = to_absolute_row(gate);
+                gate_labels.push(g.label.clone());
                 rust_gates.push(g.to_rust_gate());
             }
         };
         add_gates(public_gates);
         add_gates(gates);
+        self.gate_labels = gate_labels;
 
         let digest = {
             use o1_utils::hasher::CryptoDigest as _;
