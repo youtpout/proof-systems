@@ -42,16 +42,39 @@ Acquis récents :
 TOUT retrait empire la divergence ET éloigne le compte. Il faut AJOUTER les
 bons generics au bon endroit, pas retirer.
 
-**Outil de mapping labels ↔ rows du dump** (utile pour cibler) :
+**OUTIL CLÉ — labels des DEUX côtés via `SNARKY_LOG_CONSTRAINTS=1`.**
 `SNARKY_LOG_CONSTRAINTS=1 ./run src/tests/rust-pickles-wrap-gates-diff.ts
-> log.txt`. Il y a 2 builds wrap ; le DERNIER (chercher le 2e `^0:` avec
-`api.rs:416 equals_1`) est le dump. **`dump_row = log_row + 40`** (les 40
-premières rows du dump = public input). Labels rust vus : forbidden
-(api.rs:416/419/422), which_branch (430/449), feature flags (472/480/510/
-514/522), VK on-curve (366), assert_vk_point (578/581), sponge (604).
-Le bloc divergent dump 73-178 = which_branch + flags + VK on-curve +
-assert_vk_point. MANQUE : les labels jsoo (nécessite d'instrumenter le
-build OCaml jsoo avec son propre SNARKY_LOG_CONSTRAINTS pour comparer).
+> log.txt` émet :
+- côté RUST : `<row>: gen1:[api.rs:LIGNE] - [label]` (le build jsoo bundle
+  aussi notre napi). 2 builds wrap ; le DERNIER (2e `^0:` avec
+  `api.rs:416 equals_1`) est le dump. **`dump_row = log_row + 40`**.
+- côté JSOO/OCaml : `CONSTRAINT <Type>(... @ File "…/wrap_main.ml", line N
+  | <labels>)` — le flux de contraintes OCaml AVEC fichiers/lignes ! C'est
+  la référence directe. Séquence d'ouverture du wrap OCaml sauvegardée dans
+  `pickles/ocaml-wrap-constraint-sequence.txt` (run-length, ligne innermost).
+
+**Séquence d'ouverture OCaml (wrap_main.ml) désormais connue :**
+`2×R1CS:155` (which_branch One_hot_vector.of_index) → `1×R1CS:170`
+(actual_proofs_verified_mask = `Pseudo.choose(step_widths)`) → `1×Equal:181`
+(domain_log2 `Pseudo.choose` + branch_data assert) → `56×Equal:204`
+(**`choose_key`** : sélection des 28 points VK depuis les clés CONSTANTES,
+= `sum which_branch_i · key_i`, 56 coords sealed) → on-curve (Square/R1CS
+répétés sur les 28 points sélectionnés).
+
+**Différences rust identifiées (à corriger, direction = AJOUTER/aligner) :**
+1. `domain_log2` : rust utilise `w.step_domain_log2` CONSTANT (api.rs:441) ;
+   OCaml le calcule via `Pseudo.choose` (émet contrainte). Rust manque cette
+   contrainte.
+2. **VK : rust fait `mkpt` (witness+on-curve) puis `assert_vk_point`
+   (56 Equal) ; OCaml fait `choose_key` (56 Equal de SÉLECTION depuis
+   constantes) PUIS on-curve sur les points sélectionnés.** Structure et
+   ordre différents → c'est probablement la source principale du delta de
+   coeffs 73-178 ET du gap de 13. Réécrire le bloc VK en `choose_key` :
+   pour chaque coord, `point_coord = which_branch0 · const` (scale booléen),
+   sealed, puis on-curve — au lieu de witness+assert.
+3. `prev_proof_state exists` (wrap_main.ml:191, entre branch_data et
+   choose_key) : exists 2 unfinalized dummy (Type2 + assert_16_bits). Rust
+   le saute en base (`unfinalized: vec![]`).
 
 **Fausses pistes (vérifiées empiriquement, NE PAS refaire) :**
 - VK points en constantes (`cpt` au lieu de `mkpt`) : 556→**500**, div
