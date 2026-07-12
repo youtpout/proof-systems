@@ -26,7 +26,9 @@ use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::finalize::{finalize_deferred, FinalizeParams, FinalizeWitness};
 use crate::hash_messages::hash_messages_for_next_wrap_proof;
-use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm, XHatInput};
+use crate::incrementally_verify::{
+    Advice, IndexDigest, Messages, OpeningProof, VerificationKeyComm, XHatInput,
+};
 pub use crate::public_input::StatementElement as StepStatementElement;
 use crate::scalar_challenge::scalar_to_field;
 use crate::step_verifier::{verify, Claimed};
@@ -81,8 +83,8 @@ pub fn wrap_main<F, C>(
     unfinalized: &[PerUnfinalized<'_, F>],
     // Physical backend accumulators, padded independently of `unfinalized`.
     sg_olds: &[Point<F>],
-    // the step proof + its statement
-    vk_digest: &FieldVar<F>,
+    // the step proof + its statement (the verifier-index digest is computed
+    // inside `incrementally_verify_proof` from `vk`, as in OCaml)
     vk: &VerificationKeyComm<F>,
     step_statement_elements: &[StepStatementElement<F>],
     lagranges: &[(Point<F>, Point<F>)],
@@ -185,7 +187,7 @@ where
     let success = verify::<F, C>(
         sys,
         verify_loc.clone(),
-        vk_digest,
+        IndexDigest::ComputeFromVk,
         vk,
         sg_olds,
         &sg_old_mask,
@@ -317,7 +319,6 @@ mod tests {
         prev_acc: (Fq, Fq),
         hash_dummies: Vec<Fq>, // 15 constants
         // step proof (dlog-tracked points as coordinates)
-        vk_digest: Fq,
         vk28: Vec<(Fq, Fq)>, // generic,psm,cadd,mul,emul,endosc + 15 coeff + 6 sig_init + 1 sig_last
         w_comm: Vec<(Fq, Fq)>,
         z_comm: (Fq, Fq),
@@ -464,7 +465,6 @@ mod tests {
             };
 
             // ---- step proof pieces ----
-            let _vk_digest = w1(sys, self.vk_digest)?;
             let vkpts = self
                 .vk28
                 .iter()
@@ -610,7 +610,21 @@ mod tests {
             (0..2).map(|_| (track(&mut rng), track(&mut rng))).collect();
         let delta = track(&mut rng);
         let cpc = track(&mut rng);
-        let vk_digest = Fq::rand(&mut rng);
+        // The circuit derives the verifier-index digest from the 28 VK points
+        // (fresh index sponge over the 56 coordinates, in
+        // `index_to_field_elements` order); mirror that here.
+        let vk_digest = {
+            let mut isp = RefSponge::new(Pallas::sponge_params());
+            // sigma_init (vk28[21..27]), sigma_last (vk28[27]),
+            // coefficients (vk28[6..21]), then the 6 selector commitments
+            // (vk28[0..6]).
+            for idx in (21..28).chain(6..21).chain(0..6) {
+                let (x, y) = co(&vk28[idx]);
+                isp.absorb(&[x]);
+                isp.absorb(&[y]);
+            }
+            isp.squeeze()
+        };
 
         // ---- free deferred scalars ----
         let xi = u128::rand(&mut rng);
@@ -766,7 +780,6 @@ mod tests {
             old_chals,
             prev_acc: co(&prev_acc),
             hash_dummies,
-            vk_digest,
             vk28: vk28.iter().map(co).collect(),
             w_comm: w_comm.iter().map(co).collect(),
             z_comm: co(&z_comm),

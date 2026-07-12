@@ -132,10 +132,30 @@ fn to_pvs<F: PrimeField>(ps: &[Point<F>]) -> Vec<PointVar<F>> {
     ps.iter().map(to_pv).collect()
 }
 
+/// How `incrementally_verify_proof` obtains the verifier-index digest it
+/// absorbs at IVC Step 1. The two OCaml sides differ:
+/// - the wrap verifier builds a *fresh* index sponge over the step VK's
+///   commitments and squeezes it (`wrap_verifier.ml:850-866`,
+///   "absorb verifier index");
+/// - the step verifier squeezes a *copy* of `sponge_after_index`, the sponge
+///   already fed with the wrap VK for the accumulator hash
+///   (`step_verifier.ml:533-537`).
+pub enum IndexDigest<'a, F: PrimeField> {
+    /// Wrap side: hash the VK commitments in-circuit
+    /// (`index_to_field_elements` order: sigma_comm, coefficients_comm,
+    /// generic, psm, complete_add, mul, emul, endomul_scalar).
+    ComputeFromVk,
+    /// Step side: squeeze a copy of the caller's `sponge_after_index`.
+    SpongeAfterIndex(&'a PoseidonSponge<F>),
+    /// Transitional: an already-computed digest variable (to be removed once
+    /// the step path migrates to `SpongeAfterIndex`).
+    Precomputed(&'a FieldVar<F>),
+}
+
 /// Assembles `incrementally_verify_proof` for the base step/wrap circuit.
 ///
-/// `vk_digest` is the base-field digest of the verifier index (`index.digest`,
-/// computed by the caller); `sg_old` are the previous proofs' challenge-
+/// `index_digest` selects how the verifier-index digest is derived (see
+/// [`IndexDigest`]); `sg_old` are the previous proofs' challenge-
 /// polynomial commitments (absorbed as `PC`); `x_hat` is the (blinded) public-
 /// input commitment chunks; `xi` is the polyscale challenge (raw 128-bit).
 ///
@@ -152,7 +172,7 @@ fn to_pvs<F: PrimeField>(ps: &[Point<F>]) -> Vec<PointVar<F>> {
 pub fn incrementally_verify_proof<F, C>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    vk_digest: &FieldVar<F>,
+    index_digest: IndexDigest<'_, F>,
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
     sg_old_mask: &[Boolean<F>],
@@ -173,8 +193,41 @@ where
     assert_eq!(sg_old.len(), sg_old_mask.len(), "one mask bit per sg_old");
     let mut sponge = PoseidonSponge::new();
 
-    // == IVC Steps 1-2: absorb the verifier-index digest, then sg_old (PC) ==
-    sponge.absorb(sys, loc.clone(), std::slice::from_ref(vk_digest));
+    // == IVC Step 1: derive and absorb the verifier-index digest ==
+    // (OCaml "absorb verifier index": the digest is computed HERE, inside
+    // incrementally_verify_proof, not by the caller.)
+    let vk_digest: FieldVar<F> = match index_digest {
+        IndexDigest::ComputeFromVk => {
+            let mut index_sponge = PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk
+                .sigma_init
+                .iter()
+                .chain(vk.sigma_last.iter())
+                .chain(vk.coefficients.iter())
+                .chain([
+                    &vk.generic,
+                    &vk.psm,
+                    &vk.complete_add,
+                    &vk.mul,
+                    &vk.emul,
+                    &vk.endomul_scalar,
+                ])
+            {
+                coords.push(pt.x.clone());
+                coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc.clone(), &coords);
+            index_sponge.squeeze(sys, loc.clone())
+        }
+        IndexDigest::SpongeAfterIndex(after_index) => {
+            let mut index_sponge = after_index.clone();
+            index_sponge.squeeze(sys, loc.clone())
+        }
+        IndexDigest::Precomputed(digest) => digest.clone(),
+    };
+    // == IVC Step 2: absorb the digest, then sg_old (PC) ==
+    sponge.absorb(sys, loc.clone(), std::slice::from_ref(&vk_digest));
     for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
         let keep = keep.to_field_var();
         let x = sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
@@ -518,7 +571,7 @@ mod tests {
             let res = incrementally_verify_proof::<Fp, PallasParameters>(
                 sys,
                 loc!(),
-                &vk_digest,
+                IndexDigest::Precomputed(&vk_digest),
                 &vk,
                 &sg_old,
                 &vec![Boolean::true_(); sg_old.len()],
@@ -784,7 +837,7 @@ mod tests {
             let res = incrementally_verify_proof::<Fp, PallasParameters>(
                 sys,
                 loc!(),
-                &vk_digest,
+                IndexDigest::Precomputed(&vk_digest),
                 &vk,
                 &[],
                 &[],

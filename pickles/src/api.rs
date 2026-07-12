@@ -633,18 +633,9 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             t_comm: w.t_comm.iter().map(|&p| mkpt(sys, p))
                 .collect::<SnarkyResult<Vec<_>>>()?,
         };
-        // OCaml computes `Verifier_index.digest` inside
-        // `incrementally_verify_proof`, after all proof witnesses have been
-        // allocated and immediately before transcript absorption.
-        let vk_digest: FieldVar<Fq> = {
-            let mut index_sponge = crate::sponge::PoseidonSponge::new();
-            let mut coords = Vec::with_capacity(56);
-            for pt in vk.sigma_init.iter().chain(vk.sigma_last.iter()).chain(vk.coefficients.iter()).chain([&vk.generic, &vk.psm, &vk.complete_add, &vk.mul, &vk.emul, &vk.endomul_scalar]) {
-                coords.push(pt.x.clone()); coords.push(pt.y.clone());
-            }
-            index_sponge.absorb(sys, loc!(), &coords);
-            index_sponge.squeeze(sys, loc!())
-        };
+        // The verifier-index digest is now computed inside
+        // `incrementally_verify_proof` (`IndexDigest::ComputeFromVk`), exactly
+        // as OCaml's "absorb verifier index" — no caller-side digest here.
         let advice = Advice {
             combined_inner_product: t1(cip),
             b: t1(b),
@@ -787,7 +778,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             loc!(),
             &unfinalized,
             &sg_olds,
-            &vk_digest,
             &vk,
             &elements,
             &lagranges,

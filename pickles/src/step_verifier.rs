@@ -22,8 +22,8 @@ use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::{
     incrementally_verify::{
-        incrementally_verify_proof, Advice, IncrementalResult, Messages, OpeningProof,
-        VerificationKeyComm, XHatInput,
+        incrementally_verify_proof, Advice, IncrementalResult, IndexDigest, Messages,
+        OpeningProof, VerificationKeyComm, XHatInput,
     },
     public_input::Term,
 };
@@ -50,7 +50,7 @@ pub struct Claimed<F: PrimeField> {
 pub fn verify<F, C>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    vk_digest: &FieldVar<F>,
+    index_digest: IndexDigest<'_, F>,
     vk: &VerificationKeyComm<F>,
     sg_old: &[Point<F>],
     sg_old_mask: &[Boolean<F>],
@@ -79,7 +79,7 @@ where
     } = incrementally_verify_proof::<F, C>(
         sys,
         loc.clone(),
-        vk_digest,
+        index_digest,
         vk,
         sg_old,
         sg_old_mask,
@@ -353,7 +353,7 @@ where
     let verified = verify::<F, C>(
         sys,
         loc.clone(),
-        vk_digest,
+        IndexDigest::Precomputed(vk_digest),
         vk,
         prev_challenge_polynomial_commitments,
         &sg_old_mask,
@@ -568,7 +568,7 @@ mod tests {
             let success = verify::<Fp, PallasParameters>(
                 sys,
                 loc!(),
-                &vk_digest,
+                IndexDigest::Precomputed(&vk_digest),
                 &vk,
                 &sg_old,
                 &vec![Boolean::true_(); sg_old.len()],
