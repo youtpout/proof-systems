@@ -1372,3 +1372,81 @@ essayée sérieusement ; les combinaisons partielles ad hoc ont maintenant
 toutes échoué (5 essais distincts cette session : lr-interleaved seul,
 openings-avant-messages seul, vk_digest-tard seul, h-constant seul, et
 la combinaison des 3 derniers).
+
+## BRANCHE `wrap-iso-rewrite` — réécriture iso-OCaml du wrap (2026-07-12+)
+
+**Décision utilisateur** : nouvelle branche dédiée à rendre le corps du
+circuit wrap STRUCTURELLEMENT IDENTIQUE à `wrap_main.ml`/`wrap_verifier.ml`,
+**sans se soucier des régressions de gate-parity pendant la transition**.
+Critères : ça compile, `--lib` (101) et `recorded` (9/9, N0/N1/N2) passent
+à chaque commit. La mesure/optimisation de la sortie (`rust-pickles-wrap-
+gates-diff.ts`) ne reprendra QUE lorsque le code sera devenu le miroir
+d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
+
+### Fait sur cette branche (chaque étape = 1 commit, tests verts)
+
+1. `d5b43a0bd6` (utilisateur) — witness schedule : sg_olds → openings
+   (lr/z1/z2/delta/sg) → messages → digest (déplacé après les witnesses).
+2. `029dd5bc8c` — **digest d'index calculé DANS `incrementally_verify_proof`**
+   (enum `IndexDigest { ComputeFromVk, SpongeAfterIndex, Precomputed }`,
+   miroir de wrap_verifier.ml:850-866 / step_verifier.ml:533-537). Le
+   paramètre `vk_digest` de `wrap_main` est SUPPRIMÉ ; le chemin step garde
+   transitoirement `Precomputed` (à migrer vers `SpongeAfterIndex`). Le
+   test lib `wrap_main_assembles_with_satisfying_ipa` recalcule le digest
+   depuis les 28 points (mirror out-of-circuit) au lieu d'un random.
+3. `7961133e6e` — réordonnancement du corps api.rs vers l'ordre wrap_main.ml :
+   éléments du prev_statement witnessés après branch_data (:191),
+   `expand_feature_flags`+`assert_consistent` déplacés APRÈS `choose_key`
+   (:249-299), boucle unfinalized (old_bp_chals/evals) après `prev_step_accs`
+   (:306-421), `h = Generators.h` en CONSTANTE de circuit (plus witnessé
+   ni checké on-curve, wrap_verifier.ml:618/:965).
+4. `e1812a075f` — **`openings_proof`/`messages` witnessés DANS `wrap_main`**
+   via une closure `witness_proof: FnOnce(&mut RunState<F>) ->
+   (OpeningProof, Messages)`, appelée après le bloc finalize/hash-prev —
+   position d'émission exacte de wrap_main.ml:440-477. L'ordre de
+   contraintes DANS le exists (on-curve lr, forbidden z1, forbidden z2,
+   on-curve delta, on-curve sg ; puis w_comm/z_comm/t_comm) matche déjà
+   l'ordre des checks du typ OCaml.
+5. `9b7ccfcb36` — `actual_proofs_verified_mask` (`Util.ones_vector` sur
+   `Pseudo.choose`) émis à la position :165 (juste après which_branch,
+   avant domain_log2) dans api.rs et passé en paramètre ; boucle
+   finalize+hash-prev SCINDÉE en deux passes (:361-421 puis :423-427,
+   identique en N0/N1, différent en N2).
+
+### Restant pour l'iso complet (ordre de priorité)
+
+1. **OptSponge comme sponge principal du wrap** : OCaml crée le transcript
+   avec `Wrap_verifier.Opt.create sponge_params` (wrap_main.ml:479), tous
+   les absorbs passent par `Opt.absorb (Boolean.true_, x)`, et la
+   conversion opt→plain a lieu à IVC Step 13 (wrap_verifier.ml:1294-1304)
+   avant le fork/digest. Notre `incrementally_verify_proof` utilise un
+   `PoseidonSponge` simple. Le crate a déjà `opt_sponge.rs` (porté,
+   testé) ; un essai antérieur a montré qu'avec flags constants true il se
+   REPLIE en absorbs simples (gate-neutre) — le switch est donc pure
+   fidélité structurelle : paramétrer le sponge de
+   `incrementally_verify_proof` (wrap = OptSponge, step = plain), avec la
+   conversion Step-13. Attention : `Opt.challenge`/`scalar_challenge`
+   (wrap_verifier.ml:627-633) squeezent l'OPT sponge directement pendant
+   les étapes 7-12 ; seul le Step 13 convertit.
+2. Migrer le chemin step de `IndexDigest::Precomputed` vers
+   `SpongeAfterIndex` (step_verifier.ml:533-537 : copy + squeeze de
+   `sponge_after_index`, déjà disponible dans `PerProofInput`). Vérifier
+   que le squeeze du sponge-après-index == `vi.digest()` kimchi (sinon les
+   recorded N1/N2 casseront — c'est le test).
+3. Granularité fine des `exists` du prev_statement : OCaml witnesse les
+   valeurs déférées des unfinalized à :191 mais les `evals`/old_bp_chals à
+   :361+ ; notre boucle fait tout en un bloc à la position :306-421 (ok
+   pour N0/N1, à scinder pour l'iso N2 parfaite).
+4. Le masque dynamique dans `verify` (les `(keep, sg)` d'OCaml :840) —
+   toujours bloqué par le port du type `Opt` dans la combinaison
+   (cf. fausse piste documentée plus haut : casse recorded si fait
+   naïvement).
+5. Une fois 1-4 faits : REPRENDRE LA MESURE (`rust-pickles-wrap-gates-diff.ts`
+   après rebuild napi) et re-trier les divergences restantes.
+
+### Méthode de validation pendant la réécriture
+
+À chaque commit : `cargo build -p pickles --release` +
+`cargo test -p pickles --release --lib` (101) +
+`cargo test -p pickles --release --test recorded` (9/9). PAS de mesure de
+gate-diff pendant cette phase (choix explicite utilisateur).
