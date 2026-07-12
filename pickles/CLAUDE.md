@@ -38,12 +38,31 @@ Acquis récents :
   = OCaml `Utils.equal_constraints` ; `which_branch` (`equal(0)`+assert) =
   `One_hot_vector.of_index` length 1.
 
-**Fausses pistes (vérifiées, NE PAS refaire) :**
-- VK points en constantes (`cpt` au lieu de `mkpt`) : le commentaire
-  api.rs:556-560 prétend qu'OCaml utilise `Inner_curve.constant` sans check
-  on-curve — **FAUX empiriquement** : jsoo A ces on-curve checks. Passer en
-  constantes fait 556→**500** et aggrave la divergence 3203→3402. Garder
-  `mkpt` pour la VK.
+**Direction du gap : rust MANQUE des generics (jsoo 569 > rust 556).**
+TOUT retrait empire la divergence ET éloigne le compte. Il faut AJOUTER les
+bons generics au bon endroit, pas retirer.
+
+**Outil de mapping labels ↔ rows du dump** (utile pour cibler) :
+`SNARKY_LOG_CONSTRAINTS=1 ./run src/tests/rust-pickles-wrap-gates-diff.ts
+> log.txt`. Il y a 2 builds wrap ; le DERNIER (chercher le 2e `^0:` avec
+`api.rs:416 equals_1`) est le dump. **`dump_row = log_row + 40`** (les 40
+premières rows du dump = public input). Labels rust vus : forbidden
+(api.rs:416/419/422), which_branch (430/449), feature flags (472/480/510/
+514/522), VK on-curve (366), assert_vk_point (578/581), sponge (604).
+Le bloc divergent dump 73-178 = which_branch + flags + VK on-curve +
+assert_vk_point. MANQUE : les labels jsoo (nécessite d'instrumenter le
+build OCaml jsoo avec son propre SNARKY_LOG_CONSTRAINTS pour comparer).
+
+**Fausses pistes (vérifiées empiriquement, NE PAS refaire) :**
+- VK points en constantes (`cpt` au lieu de `mkpt`) : 556→**500**, div
+  3203→3402. jsoo A les on-curve checks VK. Garder `mkpt`.
+- `sg_olds` witnessé AVANT le sponge : div 2917→**3203**. Pas les
+  `prev_step_accs`.
+- Witnesser 2 points dummy on-curve (valeurs sg_olds) avant le sponge :
+  556→560 mais div 2917→**3225**. Les dummies naïfs ne matchent pas.
+- Retirer `assert_vk_point` (croyant qu'OCaml contraint la VK via le seul
+  digest) : 556→**528**, div 2917→**3387**. jsoo contraint bien la VK
+  par-point. Garder les asserts.
 
 **Interleaving pré-Poseidon — FAIT en partie** (commit `6abbec7b88`) : le
 sponge `vk_digest` (`absorb verifier index`) est désormais émis juste après
