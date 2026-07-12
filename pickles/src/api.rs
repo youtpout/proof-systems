@@ -449,6 +449,42 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             loc!(),
             &expected_branch_data,
         )?;
+        // OCaml `exists prev_statement` (wrap_main.ml:191): the previous step
+        // statement's public-input elements are witnessed here, before
+        // `choose_key`.
+        let expanded_step_statement_len: usize = w
+            .step_statement
+            .iter()
+            .map(|slot| match slot {
+                WrapStepStatementSlot::Field(_) => 2,
+                WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
+            })
+            .sum();
+        assert_eq!(
+            expanded_step_statement_len,
+            w.step_statement_lagranges.len(),
+            "one Lagrange slot per expanded step statement element"
+        );
+        let mut elements = Vec::with_capacity(w.step_statement.len());
+        for slot in &w.step_statement {
+            match *slot {
+                WrapStepStatementSlot::Field(value) => {
+                    let var = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Split(var));
+                }
+                WrapStepStatementSlot::Packed { value, num_bits } => {
+                    let var = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Packed {
+                        value: var,
+                        num_bits,
+                    });
+                }
+                WrapStepStatementSlot::Bool(value) => {
+                    let bit = sys.compute(loc!(), move |_| value)?;
+                    elements.push(StepStatementElement::Bool(bit));
+                }
+            }
+        }
         let check_other_field_packed = |sys: &mut RunState<Fq>,
                                         value: &FieldVar<Fq>|
          -> SnarkyResult<()> {
@@ -483,6 +519,55 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             stmt[22 + ROUNDS].clone(),
         )?;
 
+        // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
+        // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
+        // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,
+        // sealed to a var (the 56 `Equal` at wrap_main.ml:204). The selected
+        // points are THEN checked on-curve (the following Square/R1CS block),
+        // with no separate per-point equality assert. Reproduce that exactly:
+        // all selections first, then all on-curve checks.
+        let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
+            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
+            let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
+            Ok(Point::new(x, y))
+        };
+        let choose_pts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
+            let mut out = vec![];
+            for &p in ps {
+                out.push(choose_pt(sys, p)?);
+            }
+            Ok(out)
+        };
+        let vk = VerificationKeyComm {
+            generic: choose_pt(sys, w.generic)?,
+            psm: choose_pt(sys, w.psm)?,
+            complete_add: choose_pt(sys, w.complete_add)?,
+            mul: choose_pt(sys, w.mul)?,
+            emul: choose_pt(sys, w.emul)?,
+            endomul_scalar: choose_pt(sys, w.endomul_scalar)?,
+            coefficients: choose_pts(sys, &w.coefficients)?,
+            sigma_init: choose_pts(sys, &w.sigma_init)?,
+            sigma_last: choose_pts(sys, &w.sigma_last)?,
+        };
+        for point in vk
+            .sigma_init
+            .iter()
+            .chain(vk.sigma_last.iter())
+            .chain(vk.coefficients.iter())
+            .chain([
+                &vk.generic,
+                &vk.psm,
+                &vk.complete_add,
+                &vk.mul,
+                &vk.emul,
+                &vk.endomul_scalar,
+            ])
+        {
+            point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
+        }
+        // OCaml `expand_feature_flags` + `assert_consistent`
+        // (wrap_main.ml:249-299) runs AFTER `choose_key`, destructuring the
+        // selected step_plonk_index.
         // OCaml also checks that the statement feature flags are consistent
         // with the optional verifier-index commitments. Our current native
         // verifier index only carries the always-present commitments, so all
@@ -553,105 +638,12 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
         }
 
-        // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
-        // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
-        // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,
-        // sealed to a var (the 56 `Equal` at wrap_main.ml:204). The selected
-        // points are THEN checked on-curve (the following Square/R1CS block),
-        // with no separate per-point equality assert. Reproduce that exactly:
-        // all selections first, then all on-curve checks.
-        let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
-            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
-            let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
-            Ok(Point::new(x, y))
-        };
-        let choose_pts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
-            let mut out = vec![];
-            for &p in ps {
-                out.push(choose_pt(sys, p)?);
-            }
-            Ok(out)
-        };
-        let vk = VerificationKeyComm {
-            generic: choose_pt(sys, w.generic)?,
-            psm: choose_pt(sys, w.psm)?,
-            complete_add: choose_pt(sys, w.complete_add)?,
-            mul: choose_pt(sys, w.mul)?,
-            emul: choose_pt(sys, w.emul)?,
-            endomul_scalar: choose_pt(sys, w.endomul_scalar)?,
-            coefficients: choose_pts(sys, &w.coefficients)?,
-            sigma_init: choose_pts(sys, &w.sigma_init)?,
-            sigma_last: choose_pts(sys, &w.sigma_last)?,
-        };
-        for point in vk
-            .sigma_init
-            .iter()
-            .chain(vk.sigma_last.iter())
-            .chain(vk.coefficients.iter())
-            .chain([
-                &vk.generic,
-                &vk.psm,
-                &vk.complete_add,
-                &vk.mul,
-                &vk.emul,
-                &vk.endomul_scalar,
-            ])
-        {
-            point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
-        }
-        // OCaml witnesses the physical old accumulators and polynomial
-        // messages before consuming the verifier-index sponge. Openings are
-        // allocated later, after that transcript phase.
+        // OCaml witness order (wrap_main.ml): `prev_step_accs` (sg_olds), then
+        // `openings_proof` (:440), then `messages` (:470).
         let sg_olds = mkpts(sys, &w.sg_olds)?;
-        // The SRS h point is part of the verifier witness context consumed by
-        // the message/index transcript phase; only the opening proof proper
-        // (lr, delta and sg) is allocated afterwards.
-        let h = mkpt(sys, w.h)?;
-        // Openings are witnessed after the index sponge, unlike messages and
-        // physical old accumulators above.
-        let mut lr = vec![];
-        for &(l, r) in &w.lr {
-            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-        }
-        let t1 = ShiftedScalar::Type1;
-        let z1_repr = w1(sys, w.z1_repr)?;
-        let z2_repr = w1(sys, w.z2_repr)?;
-        check_other_field_packed(sys, &z1_repr)?;
-        check_other_field_packed(sys, &z2_repr)?;
-        let openings = OpeningProof {
-            lr,
-            delta: mkpt(sys, w.delta)?,
-            z1: t1(z1_repr),
-            z2: t1(z2_repr),
-            challenge_polynomial_commitment: mkpt(sys, w.sg)?,
-            h_generator: h.clone(),
-        };
-        let messages = Messages {
-            w_comm: w.w_comm.iter().map(|&p| Ok(vec![mkpt(sys, p)?]))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-            z_comm: vec![mkpt(sys, w.z_comm)?],
-            t_comm: w.t_comm.iter().map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-        };
-        // The verifier-index digest is now computed inside
-        // `incrementally_verify_proof` (`IndexDigest::ComputeFromVk`), exactly
-        // as OCaml's "absorb verifier index" — no caller-side digest here.
-        let advice = Advice {
-            combined_inner_product: t1(cip),
-            b: t1(b),
-            perm: t1(perm),
-            zeta_to_srs_length: t1(zsl),
-            zeta_to_domain_size: t1(zds),
-        };
-        let claimed = Claimed {
-            beta,
-            gamma,
-            alpha,
-            zeta,
-            sponge_digest_before_evaluations: sponge_digest,
-            bulletproof_challenges: bp,
-        };
-
+        // OCaml witnesses `old_bp_chals` and the deferred `evals` for each
+        // unfinalized proof right after `prev_step_accs` (wrap_main.ml:306-421),
+        // BEFORE `openings_proof` and `messages`.
         let mds: Vec<Vec<Fq>> = Pallas::sponge_params()
             .mds
             .iter()
@@ -733,39 +725,53 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             });
         }
 
-        let expanded_step_statement_len: usize = w
-            .step_statement
-            .iter()
-            .map(|slot| match slot {
-                WrapStepStatementSlot::Field(_) => 2,
-                WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
-            })
-            .sum();
-        assert_eq!(
-            expanded_step_statement_len,
-            w.step_statement_lagranges.len(),
-            "one Lagrange slot per expanded step statement element"
-        );
-        let mut elements = Vec::with_capacity(w.step_statement.len());
-        for slot in &w.step_statement {
-            match *slot {
-                WrapStepStatementSlot::Field(value) => {
-                    let var = sys.compute(loc!(), move |_| value)?;
-                    elements.push(StepStatementElement::Split(var));
-                }
-                WrapStepStatementSlot::Packed { value, num_bits } => {
-                    let var = sys.compute(loc!(), move |_| value)?;
-                    elements.push(StepStatementElement::Packed {
-                        value: var,
-                        num_bits,
-                    });
-                }
-                WrapStepStatementSlot::Bool(value) => {
-                    let bit = sys.compute(loc!(), move |_| value)?;
-                    elements.push(StepStatementElement::Bool(bit));
-                }
-            }
+        // `Generators.h` is `Inner_curve.constant (Lazy.force Generators.h)`
+        // in OCaml — a fixed SRS point embedded as a circuit constant, never
+        // witnessed or checked on-curve (wrap_verifier.ml:618, :965).
+        let h = cpt(w.h);
+        let mut lr = vec![];
+        for &(l, r) in &w.lr {
+            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
         }
+        let t1 = ShiftedScalar::Type1;
+        let z1_repr = w1(sys, w.z1_repr)?;
+        let z2_repr = w1(sys, w.z2_repr)?;
+        check_other_field_packed(sys, &z1_repr)?;
+        check_other_field_packed(sys, &z2_repr)?;
+        let openings = OpeningProof {
+            lr,
+            delta: mkpt(sys, w.delta)?,
+            z1: t1(z1_repr),
+            z2: t1(z2_repr),
+            challenge_polynomial_commitment: mkpt(sys, w.sg)?,
+            h_generator: h.clone(),
+        };
+        let messages = Messages {
+            w_comm: w.w_comm.iter().map(|&p| Ok(vec![mkpt(sys, p)?]))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            z_comm: vec![mkpt(sys, w.z_comm)?],
+            t_comm: w.t_comm.iter().map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        // The verifier-index digest is now computed inside
+        // `incrementally_verify_proof` (`IndexDigest::ComputeFromVk`), exactly
+        // as OCaml's "absorb verifier index" — no caller-side digest here.
+        let advice = Advice {
+            combined_inner_product: t1(cip),
+            b: t1(b),
+            perm: t1(perm),
+            zeta_to_srs_length: t1(zsl),
+            zeta_to_domain_size: t1(zds),
+        };
+        let claimed = Claimed {
+            beta,
+            gamma,
+            alpha,
+            zeta,
+            sponge_digest_before_evaluations: sponge_digest,
+            bulletproof_challenges: bp,
+        };
+
         let lagranges: Vec<(Point<Fq>, Point<Fq>)> = w
             .step_statement_lagranges
             .iter()
