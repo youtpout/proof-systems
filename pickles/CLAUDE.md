@@ -20,7 +20,42 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## Handoff actuel — parité VK o1js
+## Handoff WRAP — parité gates (état courant)
+
+**Generic 556/569 (13 net), tous les autres gate types EXACTS, step FULL
+MATCH, recorded 9/9 (N0/N1/N2).** Toujours tester N0/N1/N2 après tout
+changement wrap (`cargo test -p pickles --release --test recorded`), puis
+mesurer avec `o1js/src/tests/rust-pickles-wrap-gates-diff.ts` (nécessite de
+reconstruire le napi : `cd o1js && PROOF_SYSTEMS_ROOT=~/Projects/proof-systems
+PATH=$PWD/node_modules/.bin:$PATH bash scripts/build/native/build.sh`).
+
+Acquis récents :
+- **forbidden `Other_field.check` en ordre INVERSE** (commit `8aa1d16c4e`) :
+  OCaml applique le check aux slots fq `[cip;b;zsl;zds;perm]` de l'arrière
+  vers l'avant (perm→row40 … cip→row66). Boucle `stmt[0..5].iter().rev()`.
+  → rows 0-4 iso, divergence 3207→3203. Première divergence désormais row 5.
+- Confirmations de fidélité (code déjà conforme) : `cvar::equal_constraints`
+  = OCaml `Utils.equal_constraints` ; `which_branch` (`equal(0)`+assert) =
+  `One_hot_vector.of_index` length 1.
+
+**Fausses pistes (vérifiées, NE PAS refaire) :**
+- VK points en constantes (`cpt` au lieu de `mkpt`) : le commentaire
+  api.rs:556-560 prétend qu'OCaml utilise `Inner_curve.constant` sans check
+  on-curve — **FAUX empiriquement** : jsoo A ces on-curve checks. Passer en
+  constantes fait 556→**500** et aggrave la divergence 3203→3402. Garder
+  `mkpt` pour la VK.
+
+**Piste restante — interleaving pré-Poseidon.** Rust émet **312 Generic
+avant le 1er Poseidon**, jsoo seulement **231** (81 de plus), alors que rust
+a 13 Generic de MOINS au total. Cause probable : rust witnesse TOUS les
+points (`mkpt` on-curve : vk + messages + openings + sg_olds) AVANT le
+premier sponge d'index ; jsoo absorbe la VK dans le sponge (Poseidon row 231)
+PUIS witnesse les messages/openings. Il faut réordonner le corps du wrap pour
+émettre le sponge `absorb verifier index` juste après avoir construit `vk`,
+avant de witnesser `messages`/`openings`/`sg_olds`. Vérifier que ça ne casse
+pas le witness (le sponge doit absorber les mêmes valeurs dans le même ordre).
+
+## Handoff historique — parité VK o1js
 
 Dernier jalon : commit `9aba71a8f5` (`Port o1js Pickles dummy constraints`).
 Le préambule `dummy_constraints()` injecté par le binding OCaml d'o1js est
