@@ -92,7 +92,25 @@ répétés sur les 28 points sélectionnés).
    uniquement pour le wrap, à la position IVC Step 2 — en gardant le step
    intact — puis re-mesurer, et traiter la piste 3 en parallèle.
 
-**RÉFÉRENCE RUST COMPLÈTE : openmina (`~/Projects/mina-rust`).**
+**⚠️ DÉCISIF — openmina n'est PAS le template du base case o1js.**
+Vérifié empiriquement : le flux de contraintes o1js du wrap (via
+`SNARKY_LOG_CONSTRAINTS`) contient **ZÉRO** occurrence de `finalize` /
+`unfinalized` / `finalize_other_proof`. Le base-case wrap o1js n'a **aucun
+unfinalized proof** à finaliser → notre `unfinalized: vec![]` est CORRECT.
+En revanche openmina (mina) pad TOUJOURS à `Max_proofs_verified=2` et
+finalise 2 dummies (`wrap.rs:2880 finalize_other_proof`). Les deux circuits
+DIFFÈRENT sur le base case. C'est pourquoi tous les reorders guidés par
+openmina régressent (3844/3203) : ils poussent vers la structure mina.
+→ **NE PAS réécrire le corps wrap en miroir openmina.** openmina reste utile
+pour l'ordre CENTRAL partagé (sponge/IPA dans `incrementally_verify_proof`,
+`choose_key`) mais PAS pour le squelette base-case. La référence pour le
+base case o1js = le flux jsoo `SNARKY_LOG_CONSTRAINTS` (fichiers émetteurs :
+wrap_verifier.ml 1249, wrap_main.ml 950 [lignes 155/204/471/480/503],
+scalar_challenge.ml 420, sponge_inputs.ml 298). Le reste (2917) est un
+alignement FIN d'ordre dans la région verify (scalar_challenge/sponge/IPA),
+pas un changement structurel — à traiter contre le log jsoo o1js.
+
+**RÉFÉRENCE RUST (partielle) : openmina (`~/Projects/mina-rust`).**
 `crates/ledger/src/proofs/{wrap,step,verification,unfinalized,opt_sponge}.rs`
 est un port Pickles Rust COMPLET et fonctionnel (interop réseau Mina) → son
 ordre d'opérations EST celui d'OCaml. `wrap_main` (wrap.rs:2791) donne
