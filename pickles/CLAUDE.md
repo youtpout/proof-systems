@@ -92,6 +92,31 @@ répétés sur les 28 points sélectionnés).
    uniquement pour le wrap, à la position IVC Step 2 — en gardant le step
    intact — puis re-mesurer, et traiter la piste 3 en parallèle.
 
+**RÉFÉRENCE RUST COMPLÈTE : openmina (`~/Projects/mina-rust`).**
+`crates/ledger/src/proofs/{wrap,step,verification,unfinalized,opt_sponge}.rs`
+est un port Pickles Rust COMPLET et fonctionnel (interop réseau Mina) → son
+ordre d'opérations EST celui d'OCaml. `wrap_main` (wrap.rs:2791) donne
+l'ordre exact : which_branch → masks/domain → `exists_prev_statement`
+(witnesse les unfinalized, sans check) → `choose_key` VK →
+`prev_step_accs`(=sg_olds) → `old_bp_chals` → `evals`+**`finalize_other_proof`
+par unfinalized** → hash prev → `openings_proof` → `messages` →
+`incrementally_verify_proof` (qui calcule le `index_digest` en INTERNE via un
+sponge séparé, wrap.rs:2289, puis absorb digest → sg_old → x_hat).
+
+⚠️ LEÇON (testé cette session) : les moves PARTIELS vers l'ordre openmina
+RÉGRESSENT tous depuis le 2917 (optimum LOCAL de la structure actuelle) :
+- digest calculé dans `incrementally_verify_proof` (position openmina) au
+  lieu d'api.rs → **3844** (pire) ;
+- `vk_digest` déplacé après messages en api.rs → **3203** ;
+- sg_olds/openings/messages réordonnés seuls → **3203**.
+→ Atteindre < 2917 exige une RÉÉCRITURE COMPLÈTE du corps wrap (api.rs +
+wrap_main.rs) en miroir ligne-à-ligne d'openmina `wrap_main`, PAS des moves
+incrémentaux. Utiliser openmina comme template, réécrire d'un bloc, puis
+vérifier recorded 9/9 + wrap-diff. Attention au modèle : openmina =
+witness-gen (les `exists` n'émettent pas de contraintes), nous = snarky
+(tout émet) → mapper l'ordre des opérations qui ÉMETTENT des contraintes
+(checks on-curve, range, R1CS, sponge), pas les exists nus.
+
 **Nature du reste (2917) : réorganisation structurelle, pas des fixes
 locaux.** La région match rows 231-542, puis à row 543 : jsoo fait un bloc
 Poseidon (permutation de sponge = absorb d'un champ), rust fait des Generic
