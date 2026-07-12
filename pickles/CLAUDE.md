@@ -1530,3 +1530,23 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
 `cargo test -p pickles --release --lib` (101) +
 `cargo test -p pickles --release --test recorded` (9/9). PAS de mesure de
 gate-diff pendant cette phase (choix explicite utilisateur).
+
+### Première cible du diff wrap : typ des ouvertures — FAIT
+
+L'instrumentation OCaml tranche l'ambiguïté sur les points témoignés avant
+le digest de VK. Entre l'entrée de `wrap_main` et la première Poseidon,
+`exists Bulletproof.wrap_typ` (ligne 440) n'émet aucune contrainte de courbe,
+alors que `Messages.wrap_typ` (ligne 471) émet exactement 46 `Square` et 23
+`R1CS`, soit le check des 23 points de messages. Rust utilisait `mkpt`, donc
+`assert_on_curve`, pour les 30 points LR, `delta` et `sg` des ouvertures : 32
+points et 64 rows Generic superflues. Un constructeur `mkpt_opening` séparé
+témoigne uniquement ces points sans check ; les messages et tous les autres
+points restent sur le typ vérifié.
+
+Validation complète : `cargo check`, 101/101 tests lib, 9/9 tests recorded,
+et step toujours **FULL MATCH** (512/512). Après rebuild NAPI, le wrap passe
+de Generic 682 à 614, la première Poseidon de la row 310 à 242 (OCaml : 231),
+et le total de rows divergentes de 4199 à 4080. Les quatre Generic retirées
+en plus des 64 checks viennent du repacking des contraintes. La prochaine
+cible localisée est donc le reliquat exact de 11 rows avant la première
+Poseidon, puis le train OptSponge (+22 Poseidon Rust).

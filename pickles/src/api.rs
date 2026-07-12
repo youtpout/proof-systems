@@ -366,6 +366,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
             Ok(point)
         };
+        // OCaml's `exists Bulletproof.wrap_typ` emits no curve constraints for
+        // opening points, unlike the following `Messages.wrap_typ`.  Keep a
+        // distinct unchecked witness constructor for that typ only.
+        let mkpt_opening = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
+            Ok(Point::new(
+                sys.compute(loc!(), move |_| p.0)?,
+                sys.compute(loc!(), move |_| p.1)?,
+            ))
+        };
         let mkpts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
             let mut out = vec![];
             for &p in ps {
@@ -809,7 +818,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         )> {
             let mut lr = vec![];
             for &(l, r) in &w.lr {
-                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+                lr.push((mkpt_opening(sys, l)?, mkpt_opening(sys, r)?));
             }
             let z1_repr = w1(sys, w.z1_repr)?;
             let z2_repr = w1(sys, w.z2_repr)?;
@@ -817,10 +826,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             check_other_field_packed(sys, &z2_repr)?;
             let openings = OpeningProof {
                 lr,
-                delta: mkpt(sys, w.delta)?,
+                delta: mkpt_opening(sys, w.delta)?,
                 z1: t1(z1_repr),
                 z2: t1(z2_repr),
-                challenge_polynomial_commitment: mkpt(sys, w.sg)?,
+                challenge_polynomial_commitment: mkpt_opening(sys, w.sg)?,
                 h_generator: h_for_openings.clone(),
             };
             let messages = Messages {
