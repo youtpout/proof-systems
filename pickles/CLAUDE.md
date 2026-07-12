@@ -1451,10 +1451,25 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    la forme iso-correcte atteignable ; le partage exact du sponge est
    une optimisation/fidélité de plus qui demanderait d'aligner
    `wrap_vk_pts` sur le VK vérifié.
-3. Granularité fine des `exists` du prev_statement : OCaml witnesse les
-   valeurs déférées des unfinalized à :191 mais les `evals`/old_bp_chals à
-   :361+ ; notre boucle fait tout en un bloc à la position :306-421 (ok
-   pour N0/N1, à scinder pour l'iso N2 parfaite).
+3. Granularité fine des `exists` du prev_statement — **FAIT** : la boucle
+   fusionnée d'api.rs est scindée en 4 phases aux positions OCaml exactes :
+   (a) valeurs déférées des unfinalized (struct local `UnfDeferred` :
+   alpha/beta/gamma/zeta/xi/cip/b/perm, bulletproof_challenges, sponge
+   digest, should_finalize) witnessées à :191 AVANT `choose_key`, juste
+   avant les éléments du prev_statement ; (b) `prev_step_accs` per-proof
+   (`unf_prev_step_accs`) à :301, juste après les sg_olds physiques ;
+   (c) `old_bp_chals` (les deux copies : finalize + hash d'accumulateur) à
+   :306 ; (d) `evals`/ft_eval1/public_evals à :341-349, le finalize
+   restant dans `wrap_main` (:409-419). Identique en N0 (0 unfinalized),
+   affecte l'ordre d'émission en N1/N2. Validé 101/101 + 9/9 recorded.
+   RESTE un détail d'ordre INTERNE aux evals non traité : OCaml
+   `All_evals` witnesse public_input d'abord, puis les colonnes dans
+   l'ordre du typ `Evals` (w[15], coefficients[15], z, s[6], puis les 6
+   sélecteurs), ft_eval1 en dernier ; notre `AbsorbEvalsVar` lit
+   evals_flat dans l'ordre z, sélecteurs, w, coefficients, s, puis
+   ft_eval1 et public_evals — réordonner exige de changer AUSSI le
+   packing out-of-circuit d'`evals_flat` (recorded data pairing
+   positionnel), à faire en une passe dédiée.
 4. Le masque dynamique dans `verify` (les `(keep, sg)` d'OCaml :840) —
    toujours bloqué par le port du type `Opt` dans la combinaison
    (cf. fausse piste documentée plus haut : casse recorded si fait

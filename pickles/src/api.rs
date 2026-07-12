@@ -467,6 +467,42 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             loc!(),
             &expected_branch_data,
         )?;
+        // OCaml `exists prev_proof_state` (wrap_main.ml:191, before
+        // `choose_key`): the per-unfinalized DEFERRED VALUES — plonk
+        // challenges, Type2 representatives, bulletproof challenges, sponge
+        // digest and should_finalize — are witnessed here. The evals and old
+        // bulletproof challenges come later (:306/:341), the finalize later
+        // still (inside wrap_main).
+        struct UnfDeferred {
+            alpha: FieldVar<Fq>,
+            beta: FieldVar<Fq>,
+            gamma: FieldVar<Fq>,
+            zeta: FieldVar<Fq>,
+            xi: FieldVar<Fq>,
+            cip_repr: FieldVar<Fq>,
+            b_repr: FieldVar<Fq>,
+            perm_repr: FieldVar<Fq>,
+            bulletproof_challenges: Vec<FieldVar<Fq>>,
+            sponge_digest_before_evaluations: FieldVar<Fq>,
+            should_finalize: Boolean<Fq>,
+        }
+        let mut unf_deferred = Vec::with_capacity(w.unfinalized.len());
+        for u in &w.unfinalized {
+            let should_finalize: Boolean<Fq> = sys.compute(loc!(), |_| u.should_finalize)?;
+            unf_deferred.push(UnfDeferred {
+                alpha: w1(sys, u.alpha)?,
+                beta: w1(sys, u.beta)?,
+                gamma: w1(sys, u.gamma)?,
+                zeta: w1(sys, u.zeta)?,
+                xi: w1(sys, u.xi)?,
+                cip_repr: w1(sys, u.cip_repr)?,
+                b_repr: w1(sys, u.b_repr)?,
+                perm_repr: w1(sys, u.perm_repr)?,
+                bulletproof_challenges: wvec(sys, &u.bulletproof_challenges)?,
+                sponge_digest_before_evaluations: w1(sys, u.sponge_digest_before_evaluations)?,
+                should_finalize,
+            });
+        }
         // OCaml `exists prev_statement` (wrap_main.ml:191): the previous step
         // statement's public-input elements are witnessed here, before
         // `choose_key`.
@@ -659,16 +695,42 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // OCaml witness order (wrap_main.ml): `prev_step_accs` (sg_olds), then
         // `openings_proof` (:440), then `messages` (:470).
         let sg_olds = mkpts(sys, &w.sg_olds)?;
-        // OCaml witnesses `old_bp_chals` and the deferred `evals` for each
-        // unfinalized proof right after `prev_step_accs` (wrap_main.ml:306-421),
-        // BEFORE `openings_proof` and `messages`.
+        // `prev_step_accs` (wrap_main.ml:301): the per-unfinalized previous
+        // step accumulators, witnessed right after the physical sg_olds.
+        let mut unf_prev_step_accs = Vec::with_capacity(w.unfinalized.len());
+        for u in &w.unfinalized {
+            unf_prev_step_accs.push(mkpt(sys, u.prev_step_acc)?);
+        }
+        // `old_bp_chals` (wrap_main.ml:306): the old bulletproof challenge
+        // vectors (both the finalize copy and the accumulator-hash copy).
+        let mut unf_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
+        for u in &w.unfinalized {
+            let old_bulletproof_challenges = u
+                .old_bulletproof_challenges
+                .iter()
+                .map(|chals| wvec(sys, chals))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            let hash_old_bulletproof_challenges = u
+                .hash_old_bulletproof_challenges
+                .iter()
+                .map(|chals| wvec(sys, chals))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            unf_old_bp_chals.push((old_bulletproof_challenges, hash_old_bulletproof_challenges));
+        }
+        // `evals` (wrap_main.ml:341-349): the deferred evaluations of each
+        // unfinalized proof, witnessed after the old challenges; the
+        // finalize itself runs inside `wrap_main`, as in OCaml (:409-419).
         let mds: Vec<Vec<Fq>> = Pallas::sponge_params()
             .mds
             .iter()
             .map(|r| r.to_vec())
             .collect();
         let mut unfinalized = Vec::with_capacity(w.unfinalized.len());
-        for u in &w.unfinalized {
+        for (u, (deferred, (old_bp, hash_old_bp))) in w
+            .unfinalized
+            .iter()
+            .zip(unf_deferred.into_iter().zip(unf_old_bp_chals.into_iter()))
+        {
             let mut fe = u.evals_flat.iter();
             let mut next_pe =
                 |sys: &mut RunState<Fq>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fq>> {
@@ -711,38 +773,26 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 mds: &mds,
                 shift: ShiftKind::Type2,
             };
-            let old_bulletproof_challenges = u
-                .old_bulletproof_challenges
-                .iter()
-                .map(|chals| wvec(sys, chals))
-                .collect::<SnarkyResult<Vec<_>>>()?;
-            let should_finalize: snarky::Boolean<Fq> =
-                sys.compute(loc!(), |_| u.should_finalize)?;
             unfinalized.push(PerUnfinalized {
                 finalize_params,
                 finalize_evals,
-                alpha: w1(sys, u.alpha)?,
-                beta: w1(sys, u.beta)?,
-                gamma: w1(sys, u.gamma)?,
-                zeta: w1(sys, u.zeta)?,
-                xi: w1(sys, u.xi)?,
-                cip_repr: w1(sys, u.cip_repr)?,
-                b_repr: w1(sys, u.b_repr)?,
-                perm_repr: w1(sys, u.perm_repr)?,
-                bulletproof_challenges: wvec(sys, &u.bulletproof_challenges)?,
-                sponge_digest_before_evaluations: w1(sys, u.sponge_digest_before_evaluations)?,
-                should_finalize,
-                old_bulletproof_challenges,
-                prev_step_acc: mkpt(sys, u.prev_step_acc)?,
+                alpha: deferred.alpha,
+                beta: deferred.beta,
+                gamma: deferred.gamma,
+                zeta: deferred.zeta,
+                xi: deferred.xi,
+                cip_repr: deferred.cip_repr,
+                b_repr: deferred.b_repr,
+                perm_repr: deferred.perm_repr,
+                bulletproof_challenges: deferred.bulletproof_challenges,
+                sponge_digest_before_evaluations: deferred.sponge_digest_before_evaluations,
+                should_finalize: deferred.should_finalize,
+                old_bulletproof_challenges: old_bp,
+                prev_step_acc: unf_prev_step_accs.remove(0),
                 hash_dummy_challenges: u.hash_dummy_challenges.clone(),
-                hash_old_bulletproof_challenges: u
-                    .hash_old_bulletproof_challenges
-                    .iter()
-                    .map(|chals| wvec(sys, chals))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
+                hash_old_bulletproof_challenges: hash_old_bp,
             });
         }
-
         // `Generators.h` is `Inner_curve.constant (Lazy.force Generators.h)`
         // in OCaml — a fixed SRS point embedded as a circuit constant, never
         // witnessed or checked on-curve (wrap_verifier.ml:618, :965).
