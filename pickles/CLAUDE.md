@@ -1428,21 +1428,29 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    transcript OptSponge à flags constants true produit les MÊMES valeurs
    que le sponge simple — soundness intacte, prouvé de bout en bout par
    les recorded).
-2. Migrer le chemin step de `IndexDigest::Precomputed` vers
-   `SpongeAfterIndex` — **TENTÉ ET REVERTÉ** : la migration naïve
-   (passer `p.sponge_after_index` à la place du digest witnessé) fait
-   passer 8/9 recorded mais CASSE `recorded_stable_n1_chain`
-   (UnsatisfiedEqualConstraint à recursive_step.rs:3467, digest de
-   transcript divergent). Diagnostic : dans la chaîne stable, notre
-   `PerProofInput.sponge_after_index` est construit sur un VK DIFFÉRENT
-   du wrap VK réellement vérifié (il sert au hash d'accumulateur du
-   next-step, pas forcément au proof en cours), alors qu'OCaml garantit
-   que les deux coïncident. Pré-requis avant de re-tenter : aligner la
-   construction de `sponge_after_index` dans `recursive_step.rs` (sites
-   ~3059 et ~3343) pour qu'elle porte sur le VK du wrap vérifié, puis
-   vérifier que `squeeze(sponge_after_index) == wvi.digest()` (ordre
-   `to_list()` = ordre kimchi digest : sigma(7), coefficients(15),
-   generic, psm, cadd, mul, emul, endosc — vérifié identique).
+2. Digest d'index du step calculé in-circuit — **FAIT** (via
+   `IndexDigest::ComputeFromVk` sur le chemin step aussi) : `verify_one`
+   ne prend plus de `vk_digest` witnessé ; le digest est dérivé
+   in-circuit des 28 points du VK VÉRIFIÉ (`p.vk`), ce qui est le même
+   calcul que le copy+squeeze OCaml de step_verifier.ml:533-537 (les
+   deux = sponge frais sur les 56 coordonnées du VK vérifié). Champ
+   `wrap_vk_digest`/`vk_digest` supprimé de `RecursiveStepData`,
+   `PerProofInput` et du test lib (dont le mirror recalcule le digest
+   depuis `ivp_vk` en ordre ComputeFromVk). Validé stable_n1_chain
+   inclus (9/9). NOTE : la variante `SpongeAfterIndex` (partage du
+   sponge entre le hash d'accumulateur et le digest, comme OCaml qui
+   n'absorbe le VK qu'UNE fois) reste NON utilisée — elle exigerait que
+   `PerProofInput.sponge_after_index` porte sur le VK vérifié, or notre
+   chaîne stable le construit sur le VK haché dans le statement
+   PRÉCÉDENT (recursive_step.rs `wrap_vk_pts =
+   previous_messages_vk_pts`), qui diffère au premier step stable. En
+   OCaml les deux coïncident par construction (le
+   messages_for_next_step_proof d'un proof contient le dlog_plonk_index
+   de son PROPRE système). Tant que notre modèle de données garde cette
+   distinction, ComputeFromVk (2 passes d'absorption au lieu d'1) est
+   la forme iso-correcte atteignable ; le partage exact du sponge est
+   une optimisation/fidélité de plus qui demanderait d'aligner
+   `wrap_vk_pts` sur le VK vérifié.
 3. Granularité fine des `exists` du prev_statement : OCaml witnesse les
    valeurs déférées des unfinalized à :191 mais les `evals`/old_bp_chals à
    :361+ ; notre boucle fait tout en un bloc à la position :306-421 (ok

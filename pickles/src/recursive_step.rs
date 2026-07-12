@@ -422,7 +422,6 @@ pub struct RecursiveStepData {
     /// bound by the messages digest (OCaml pads the former to width 2,
     /// `Wrap_hack.Checked.pad_challenges`).
     pub finalize_prev_challenges: Vec<Vec<Fp>>,
-    pub wrap_vk_digest: Fp,
     pub generic: (Fp, Fp),
     pub psm: (Fp, Fp),
     pub complete_add: (Fp, Fp),
@@ -1344,7 +1343,6 @@ fn prepare_recursive_step_from_parts<
         prev_challenge_polynomial_commitments,
         prev_challenges,
         finalize_prev_challenges,
-        wrap_vk_digest: wvi.digest::<PallasBase>(),
         generic: co(&wvi.generic_comm.chunks[0]),
         psm: co(&wvi.psm_comm.chunks[0]),
         complete_add: co(&wvi.complete_add_comm.chunks[0]),
@@ -3056,7 +3054,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .iter()
             .map(|chals| wvec(sys, chals))
             .collect::<SnarkyResult<Vec<_>>>()?,
-        vk_digest: w1(sys, d.wrap_vk_digest)?,
         vk,
         packed_lagranges: d
             .packed_lagranges
@@ -3340,7 +3337,6 @@ impl<
         };
         let prev_app_state = wvec(sys, &d.prev_app_state)?;
 
-        let wrap_vk_digest = w1(sys, d.wrap_vk_digest)?;
         let vk = VerificationKeyComm {
             generic: mkpt(sys, d.generic)?,
             psm: mkpt(sys, d.psm)?,
@@ -3443,7 +3439,6 @@ impl<
                 .iter()
                 .map(|chals| wvec(sys, chals))
                 .collect::<SnarkyResult<Vec<_>>>()?,
-            vk_digest: wrap_vk_digest,
             vk,
             packed_lagranges,
             flag_lagranges,

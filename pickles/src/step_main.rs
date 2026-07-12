@@ -51,7 +51,6 @@ pub struct PerProofInput<'a, F: PrimeField> {
     /// to width 2 by Mina) — used by the Fr-sponge replay, not the digest.
     pub finalize_prev_challenges: Vec<Vec<FieldVar<F>>>,
     // the wrap proof itself
-    pub vk_digest: FieldVar<F>,
     pub vk: VerificationKeyComm<F>,
     pub packed_lagranges: Vec<(Point<F>, Point<F>)>,
     pub flag_lagranges: Vec<Point<F>>,
@@ -111,7 +110,6 @@ where
             &p.prev_challenge_polynomial_commitments,
             &p.prev_challenges,
             &p.finalize_prev_challenges,
-            &p.vk_digest,
             &p.vk,
             &p.packed_lagranges,
             &p.flag_lagranges,

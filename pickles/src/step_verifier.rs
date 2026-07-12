@@ -263,8 +263,10 @@ pub fn verify_one<F, C>(
     prev_challenge_polynomial_commitments: &[Point<F>],
     prev_challenges: &[Vec<FieldVar<F>>],
     finalize_prev_challenges: &[Vec<FieldVar<F>>],
-    // wrap proof verification
-    vk_digest: &FieldVar<F>,
+    // wrap proof verification (the wrap VK digest is re-derived in-circuit
+    // from `vk` — OCaml's step_verifier.ml:533-537 squeezes the sponge over
+    // the verified wrap VK; a fresh index sponge over the same 56
+    // coordinates is the same computation)
     vk: &VerificationKeyComm<F>,
     packed_lagranges: &[(Point<F>, Point<F>)],
     flag_lagranges: &[Point<F>],
@@ -356,7 +358,7 @@ where
     let verified = verify::<F, C>(
         sys,
         loc.clone(),
-        IndexDigest::Precomputed(vk_digest),
+        IndexDigest::ComputeFromVk,
         false,
         vk,
         prev_challenge_polynomial_commitments,
@@ -735,7 +737,6 @@ mod tests {
         public_evals: [Vec<Fp>; 2],
         evals_flat: Vec<(Fp, Fp)>, // z, 6 selectors, 15 w, 15 coeff, 6 s = 43
         // wrap proof (random)
-        vk_digest: Fp,
         w_comm: Vec<Vec<(Fp, Fp)>>,
         z_comm: Vec<(Fp, Fp)>,
         t_comm: Vec<(Fp, Fp)>,
@@ -894,7 +895,6 @@ mod tests {
             };
 
             // ---- wrap proof pieces (random) ----
-            let vk_digest = w1(sys, self.vk_digest)?;
             let mut w_comm = vec![];
             for w in &self.w_comm {
                 w_comm.push(mkpts(sys, w)?);
@@ -966,7 +966,6 @@ mod tests {
                 prev_challenge_polynomial_commitments: prev_cpcs,
                 prev_challenges: prev_chals,
                 finalize_prev_challenges: vec![],
-                vk_digest,
                 vk,
                 packed_lagranges,
                 flag_lagranges,
@@ -1078,7 +1077,20 @@ mod tests {
         };
 
         // wrap proof pieces
-        let vk_digest = Fp::rand(&mut rng);
+        // ivp_vk layout: generic..endomul_scalar(6), coeff(15), sigma_init(6),
+        // sigma_last(1). The circuit derives the index digest in-circuit
+        // (IndexDigest::ComputeFromVk order: sigma_init, sigma_last,
+        // coefficients, then the 6 selector commitments) — mirror that here.
+        let ivp_vk: Vec<(Fp, Fp)> = (0..28).map(|_| pt(&mut rng)).collect();
+        let vk_digest = {
+            let mut isp = RefSponge::new(Vesta::sponge_params());
+            for idx in (21..28).chain(6..21).chain(0..6) {
+                let (x, y) = ivp_vk[idx];
+                isp.absorb(&[x]);
+                isp.absorb(&[y]);
+            }
+            isp.squeeze()
+        };
         let w_comm_pts: Vec<Pallas> = (0..15).map(|_| rand_pt(&mut rng)).collect();
         let z_comm_pt = rand_pt(&mut rng);
         let t_comm_pts: Vec<Pallas> = (0..7).map(|_| rand_pt(&mut rng)).collect();
@@ -1147,11 +1159,10 @@ mod tests {
             evals_flat: (0..1 + 6 + 2 * COLUMNS + PERMUTS - 1)
                 .map(|_| (Fp::rand(&mut rng), Fp::rand(&mut rng)))
                 .collect(),
-            vk_digest,
             w_comm: w_comm_pts.iter().map(|p| vec![(p.x, p.y)]).collect(),
             z_comm: vec![(z_comm_pt.x, z_comm_pt.y)],
             t_comm: t_comm_pts.iter().map(|p| (p.x, p.y)).collect(),
-            ivp_vk: (0..28).map(|_| pt(&mut rng)).collect(),
+            ivp_vk,
             lr: (0..2).map(|_| (pt(&mut rng), pt(&mut rng))).collect(),
             delta: pt(&mut rng),
             cpc: wrap_cpc,
