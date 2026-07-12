@@ -1176,3 +1176,59 @@ coefficient-par-coefficient les rows de troncature 128-bit des deux côtés
 dans CE round spécifique, avec le même niveau de rigueur (lecture directe
 d'OCaml) que pour combine_commitments, plutôt que deviner depuis les
 patterns.
+
+## Nouvelle piste précise — x_hat / public_input_commitment (non résolue)
+
+En cherchant la source du "résiduel" ci-dessus avec le label JSON
+(`rust.labels[row]`), le vrai premier point de divergence de TYPE (rows
+700-810, AVANT le bloc bulletproof, PAS après comme supposé) s'est révélé
+être `scale_fast` (label direct), juste après un `split_field: odd bit` —
+signature de `public_input.rs::public_input_commitment`'s traitement des
+`Term::Packed` (x_hat / IVC Step 3), PAS le bulletproof. Jsoo fait autre
+chose à cet endroit (pas de VarBaseMul visible dans cette fenêtre), donc
+le x_hat lui-même est probablement mal positionné/ordonné en gates, pas
+seulement le bulletproof plus loin.
+
+**Différence structurelle repérée en comparant `public_input_commitment`
+(public_input.rs:140-179) à `wrap_main.ml`'s x_hat (lignes 893-956)** :
+OCaml partitionne les termes du public input en `constant_part` (valeurs
+Field.Constant connues à la compilation — `lagrange`/`scaled_lagrange`
+pré-calculés, AUCUN gate) et `non_constant_part` (`Cond_add`/
+`Add_with_correction`, ce que nous traitons). L'accumulateur initial
+OCaml (`init`) est `correction` (somme des corrections `Add_with_correction`)
+PUIS on y ADDITIONNE les `constant_part` AVANT de plier les termes
+non-constants. **Notre `public_input_commitment` (public_input.rs:147-156)
+n'a pas de variante `Term::Constant` du tout** — si un slot du statement
+wrap est un `FieldVar::Constant` (ex. `branch_data`, ou un flag figé),
+OCaml le traite GRATUITEMENT (zéro gate, juste une addition de point
+constant précalculé) alors que nous le forcerions probablement à passer
+par le chemin `Packed`/`Cond` générique (coûteux, potentiellement avec un
+ordre différent). **Pas encore vérifié si le statement wrap a RÉELLEMENT
+des slots constants en pratique** (le step FULL MATCH suggère que non
+pour le cas minimal, mais le WRAP a des slots différents — feature flags,
+branch_data — à vérifier un par un contre `wrap_statement_terms`,
+step_verifier.rs).
+
+**Piste `constant_part` VÉRIFIÉE ET RÉFUTÉE** : le x_hat en row 700-810
+concerne en fait le statement du **STEP** (pas le wrap) — c'est
+`wrap_main.rs` construisant `step_statement_elements` (via
+`XHatInput::Statement` dans `incrementally_verify_proof`, appelé pour
+vérifier la preuve STEP depuis le circuit WRAP). Vérifié dans
+`api.rs:781-800` (`WrapStepStatementSlot::{Field,Packed,Bool}` →
+`StepStatementElement::{Split,Packed,Bool}`) : **CHAQUE élément passe par
+`sys.compute(...)`**, qui produit TOUJOURS un `FieldVar::Var` witnessé,
+JAMAIS un `FieldVar::Constant`. Donc `constant_part` est structurellement
+TOUJOURS vide côté rust pour ce statement — la piste "gérer les
+constantes" ne s'applique pas ici, confirmée par lecture directe du code
+(pas juste supposée). **Ne pas retenter cette piste sans nouvelle preuve.**
+
+**Où chercher ensuite (non fait)** : puisque ce n'est pas le
+constant/non-constant split, la divergence row 700-810 doit venir soit
+de l'ORDRE exact des termes dans `step_statement_elements` (le layout
+`WrapStepStatementSlot` construit dans `recorded.rs`/ailleurs — à
+comparer avec l'ordre exact de `Wrap.Statement.to_data`/spec OCaml pour
+le STEP statement, PAS le wrap statement, cette fois), soit d'un détail
+de `scale_fast2_prime`/`lagrange_with_correction` (le calcul de la
+correction Lagrange elle-même) qui diffère de
+`Ops.scale_fast2'`/`lagrange_with_correction` OCaml (lignes 382-430+ de
+wrap_verifier.ml, pas encore lues en détail cette session).
