@@ -599,6 +599,27 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         {
             point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
         }
+        // OCaml witnesses the physical old accumulators and polynomial
+        // messages before consuming the verifier-index sponge. Openings are
+        // allocated later, after that transcript phase.
+        let sg_olds = mkpts(sys, &w.sg_olds)?;
+        let messages = Messages {
+            w_comm: w
+                .w_comm
+                .iter()
+                .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            z_comm: vec![mkpt(sys, w.z_comm)?],
+            t_comm: w
+                .t_comm
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        // The SRS h point is part of the verifier witness context consumed by
+        // the message/index transcript phase; only the opening proof proper
+        // (lr, delta and sg) is allocated afterwards.
+        let h = mkpt(sys, w.h)?;
         // IVC step 1 (OCaml `absorb verifier index`): recompute the step
         // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
         // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
@@ -628,28 +649,12 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             index_sponge.absorb(sys, loc!(), &coords);
             index_sponge.squeeze(sys, loc!())
         };
-        // OCaml's wrap rule receives the proof through Snarky `Typ`s`; keep
-        // proof payload points witnessed (and checked on curve), unlike the
-        // constant verifier-index commitments above.
-        let messages = Messages {
-            w_comm: w
-                .w_comm
-                .iter()
-                .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-            z_comm: vec![mkpt(sys, w.z_comm)?],
-            t_comm: w
-                .t_comm
-                .iter()
-                .map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-        };
+        // Openings are witnessed after the index sponge, unlike messages and
+        // physical old accumulators above.
         let mut lr = vec![];
         for &(l, r) in &w.lr {
             lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
         }
-        let h = mkpt(sys, w.h)?;
-        let sg_olds = mkpts(sys, &w.sg_olds)?;
         let t1 = ShiftedScalar::Type1;
         let z1_repr = w1(sys, w.z1_repr)?;
         let z2_repr = w1(sys, w.z2_repr)?;
