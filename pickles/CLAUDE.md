@@ -1663,3 +1663,68 @@ d'absorptions OptSponge), et non ajouter un nouveau réglage de flush aveugle.
 
 Validation de ce jalon : 101/101 tests lib, 9/9 recorded, step **FULL MATCH**,
 wrap 8192/8192 rows et première divergence de type repoussée à 711.
+
+## Session nuit 2026-07-13 — deux fixes majeurs commis, état & pistes
+
+### Fix 1 (snarky, commit `reduce_lincom`) : ordre des termes par INDEX
+`reduce_lincom`/`canonicalize` triaient les termes par (coefficient, index)
+(`terms_list.sort()` sur des tuples `(coeff, idx)`) — OCaml ordonne par
+INDEX DE VARIABLE ASCENDANT uniquement (`Map.fold_right` sur la map indexée).
+Résultat : slots l/r échangés dans les réductions 2-termes dès que l'ordre
+des coefficients diffère de celui des index (observé dans les réductions
+add_in du train opt-sponge, rows 701-702 — réparées par le fix). Step
+FULL MATCH préservé, coeffs 610→573.
+
+### Fix 2 (MAJEUR, api.rs) : base case sans recursion challenges kimchi
+Preuve empirique par comptage des blocs endo (44 consécutifs jsoo vs 46
+rust dans le combine) : **jsoo base case = `Max_proofs_verified 0` →
+vecteur sg_old VIDE en circuit** (aucun absorb masqué-zéro, aucune entrée
+Maybe dans le combine). Notre pipeline créait le step proof de base avec
+2 `RecursionChallenge` dummy kimchi (`prove_with_recursion_mask(...,
+vec![dummy; 2], Some(&[false,false]))`) et absorbait 4 zéros masqués
+partout (oracles/wrap_witness/circuit — cohérent en interne mais PAS iso).
+Fix : `vec![], Some(&[])` partout, `physical_sg_olds` sans resize dummy.
+**Résultat : TOUS les gate types custom EXACTS** (Poseidon 1001, EndoMul
+2464, CompleteAdd 258, VarBaseMul 663, EndoMulScalar 184). Reste Generic
+585 vs 569 (+16). 9/9 recorded (N1/N2 inchangés : leur chemin sg_olds
+non-vide ne passait pas par le resize).
+
+### État de la mesure après les 2 fixes
+- divergent rows 3293 (le total a monté vs 3170 mais c'est du
+  RÉALIGNEMENT : les types customs sont désormais exacts, le pattern de
+  divergence est un simple DÉCALAGE de ±4 rows entre les blocs).
+- Première divergence de type : row 227. **Cause identifiée, non
+  corrigée** : jsoo a 4 rows Generic (8 demi-gates, coefficient `05` =
+  b de la courbe → ~2 points on-curve-checkés + 1 paire) juste AVANT son
+  index sponge (jsoo sponge à 231, rust à 227). Tout le reste est décalé
+  de -4 côté rust puis se resynchronise au train x_hat (~708).
+- Structures post-sponge IDENTIQUES : [split_field 2 rows][CompleteAdd]
+  [VarBaseMul ×51][CompleteAdd][if_/EC][CompleteAdd][opt-sponge train].
+
+### Pistes précises pour la suite (dans l'ordre)
+1. **Identifier les 2 points on-curve de jsoo 227-230** : les coeffs
+   contiennent `05` (b) → assert_on_curve de 2 points juste avant le
+   sponge d'index. Candidats : notre `witness_proof` (openings/messages)
+   est appelé AVANT verify → nos checks messages/openings seraient
+   ailleurs — REGARDER les labels rust rows 100-226 pour lister
+   exactement quels points rust checke pré-sponge, comparer au compte
+   jsoo (les 8 demi-gates jsoo en trop). NB : le compte TOTAL Generic
+   n'est qu'à +16 (32 halves) — donc rust N'ÉMET PAS certains checks que
+   jsoo a, ou les émet en moins ; chercher aussi où rust émet 16 rows de
+   PLUS au total (probablement les mêmes blocs déplacés + ~8 halves
+   d'écart réel).
+2. Le swap de constantes fd033/c0c2f0 autour des gates 704/707 (x_hat
+   packed add + blinding add) : matérialisation `cached_constants` de
+   coordonnées constantes dans un ordre différent — comparer l'ordre des
+   reduce des DEUX CompleteAdd (p1 d'abord chez nous ; OCaml pareil —
+   donc la différence vient de QUELLE constante est déjà en cache).
+3. Les [Zero,Generic] intercalés du sponge d'index (période 13) : les 2
+   demi-rows par permute = réductions des sommes duplex — alignées en
+   CONTENU mais décalées de 4 rows par le point 1.
+
+### Méthode validée cette nuit
+Comptage de BLOCS de gates customs (endo 32-rows, permutes 11-rows) par
+côté = signal fiable et rapide pour localiser les sur/sous-émissions
+structurelles ; le diff row-à-row ne sert qu'ensuite. Les fixes
+"contenu" (reduce_lincom) se voient dans la classe coeffs, les fixes
+"structure" (sg_old vide) dans les histogrammes.
