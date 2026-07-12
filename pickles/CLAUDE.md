@@ -1121,3 +1121,58 @@ soit accepter 2869 comme palier stable et documenté, et chercher un axe
 totalement différent (ex. le row-40 encodage, cosmétique mais peut-être
 plus vite gagnable pour réduire le compteur "divergent rows" même sans
 toucher Generic).
+
+## FIX RÉEL — combine_commitments réordonné (2026-07-13)
+
+**Correction confirmée et committée** (`d479fdc58c`), basée sur une lecture
+PRÉCISE d'OCaml (pas une déduction depuis les patterns de gates) :
+`check_bulletproof` (`wrap_verifier.ml:580-606`) absorbe `cip` et calcule
+`u = group_map(squeeze)` **AVANT** `Split_commitments.combine` (=
+`combine_commitments`). Notre code appelait `combine_commitments` AVANT
+ces deux étapes. Réordonné pour matcher exactement. **Résultat : 2869 →
+2756 divergent rows**, step toujours FULL MATCH, 9/9 recorded.
+
+**Correction de mon erreur précédente** : en relisant `bullet_reduce`
+(`wrap_verifier.ml:168-184`) directement, j'ai confirmé qu'il N'EST PAS
+interleaved — c'est exactement notre structure batch-puis-batch d'origine
+(`Array.map` sur tous les gammas pour les prechallenges, PUIS `Array.map2`
+séparé pour les termes/fold). Mon hypothèse d'interleaving de la session
+précédente (`bullet_reduce_interleaved`) était donc FAUSSE depuis le
+départ — heureusement reverté avant. **Ne plus retenter l'interleaving du
+bulletproof.**
+
+**Vérifié fidèles (pas de bug là) en relisant le source OCaml
+directement** : `Common.ft_comm` (`common.ml:195-214`, notre
+`commitments.rs::ft_comm` matche exactement l'ordre
+`f_comm=scale(sigma,perm)` → `chunked_t` → `sum+negate(scale(chunked_t,
+zeta_to_domain_size))`) ; `squeeze_scalar` (`constrain_low_bits:false`
+des deux côtés) ; l'ordre `sponge_before_evaluations = clone AVANT
+squeeze(digest)`.
+
+**Piste explorée et RÉFUTÉE** : l'hypothèse que `bullet_reduce`
+absorbe `(l,r)` en UN SEUL appel combiné (`absorb (PC::PC) gammas_i`)
+alors que notre `bullet_reduce_challenges` fait deux `absorb_commitment`
+séparés (l puis r) — semblait prometteuse mais **réfutée par lecture du
+code** : `absorb_commitment` boucle déjà élément-par-élément
+(`sponge.absorb(x); sponge.absorb(y)`), donc regrouper l et r dans un seul
+appel produirait la MÊME séquence d'absorbs élémentaires qu'actuellement.
+Ne pas retenter sans nouvelle preuve.
+
+**Résiduel non résolu — micro-décalage périodique dans
+`bullet_reduce_challenges`.** Après le fix combine_commitments, la région
+~row 880-1220 (la boucle d'absorption/squeeze des ~15-16 rounds
+bulletproof) montre un motif répétitif : chaque "round" (~13 rows) a une
+interruption `Zero`/`Generic` (le pattern `lowest_128_bits`/troncature de
+squeeze) à une position légèrement DIFFÉRENTE entre jsoo et rust (décalage
+de 1-3 rows par round, cumulé sur 15-16 rounds ≈ explique une bonne partie
+du déficit Generic résiduel, 555 vs 569 = -14, un chiffre qui correspond
+bien à "quelques rows manquantes par round × 15-16 rounds"). Outil
+utilisé pour cette localisation : **le label JSON intégré au dump rust
+(`rust.labels[row]`, index-aligné, PAS le texte `SNARKY_LOG_CONSTRAINTS`
+qui a un offset `log_row+40` qui n'est plus fiable après ce fix** (la
+correspondance a changé puisque la structure a changé — à recalibrer si
+réutilisé). Cause précise non identifiée — nécessiterait de comparer
+coefficient-par-coefficient les rows de troncature 128-bit des deux côtés
+dans CE round spécifique, avec le même niveau de rigueur (lecture directe
+d'OCaml) que pour combine_commitments, plutôt que deviner depuis les
+patterns.
