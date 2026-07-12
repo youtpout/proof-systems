@@ -61,20 +61,29 @@ bons generics au bon endroit, pas retirer.
 = `sum which_branch_i · key_i`, 56 coords sealed) → on-curve (Square/R1CS
 répétés sur les 28 points sélectionnés).
 
-**Différences rust identifiées (à corriger, direction = AJOUTER/aligner) :**
-1. `domain_log2` : rust utilise `w.step_domain_log2` CONSTANT (api.rs:441) ;
-   OCaml le calcule via `Pseudo.choose` (émet contrainte). Rust manque cette
-   contrainte.
-2. **VK : rust fait `mkpt` (witness+on-curve) puis `assert_vk_point`
-   (56 Equal) ; OCaml fait `choose_key` (56 Equal de SÉLECTION depuis
-   constantes) PUIS on-curve sur les points sélectionnés.** Structure et
-   ordre différents → c'est probablement la source principale du delta de
-   coeffs 73-178 ET du gap de 13. Réécrire le bloc VK en `choose_key` :
-   pour chaque coord, `point_coord = which_branch0 · const` (scale booléen),
-   sealed, puis on-curve — au lieu de witness+assert.
-3. `prev_proof_state exists` (wrap_main.ml:191, entre branch_data et
-   choose_key) : exists 2 unfinalized dummy (Type2 + assert_16_bits). Rust
-   le saute en base (`unfinalized: vec![]`).
+**Différences rust identifiées :**
+1. ~~`domain_log2` constant~~ : FAUX, rust fait déjà `branch0·const`
+   (api.rs:440) et `proofs_verified = branch0·len` (api.rs:430). L'ouverture
+   (which_branch/proofs/domain/branch_data) matche OCaml. Rien à faire.
+2. **VK `choose_key`** : FAIT (`618542d6a2`), gate-neutre.
+3. `prev_proof_state exists` (wrap_main.ml:191) : exists 2 unfinalized
+   dummy (Type2 + assert_16_bits). Rust le saute en base.
+4. **BLOCAGE PRINCIPAL — architecture du digest d'index (Poseidon).**
+   OCaml n'a PAS de digest d'index séparé : `incrementally_verify_proof`
+   (wrap_main.ml:482-503) reçoit `~verification_key:step_plonk_index
+   ~sponge` et ABSORBE la VK dans le sponge Fiat-Shamir de vérification
+   (1er Poseidon OCaml à :503, via sponge_inputs.ml). Rust calcule un
+   `vk_digest` avec un `PoseidonSponge::new()` SÉPARÉ (api.rs:604) puis
+   l'utilise dans `hash_messages_for_next_step_proof`. Même compte Poseidon
+   (1001) mais structure/position différentes → le bloc Poseidon rust
+   (row ~179) ne mappe sur aucun Poseidon OCaml au même endroit, et
+   déplacer ce sponge ne fait que réarranger la structure RUST (l'optimum
+   2917 de `6abbec7b88` est en partie coïncident). **Le fix profond : faire
+   absorber la VK par le sponge de vérification comme OCaml, supprimer le
+   `vk_digest` séparé.** C'est là que se cachent les 13 Generic + le gros
+   du type=1926. Refactor conséquent — étudier `incrementally_verify_proof`
+   rust (wrap_main.rs) vs OCaml wrap_verifier, et l'usage de `vk_digest`
+   dans `hash_messages_for_next_step_proof`.
 
 **Ordre OCaml complet du wrap (via le flux jsoo, à suivre exactement) :**
 which_branch(2 R1CS) → proofs_verified_mask Pseudo.choose(R1CS:170) →
