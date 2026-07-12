@@ -258,15 +258,15 @@ pub fn verify_one<F, C>(
     stmt: &WrapStatementVars<F>,
     // accumulator digest
     sponge_after_index: &crate::sponge::PoseidonSponge<F>,
+    share_index_sponge: bool,
     app_state: &[FieldVar<F>],
     messages_for_next_step_accumulators: &[Point<F>],
     prev_challenge_polynomial_commitments: &[Point<F>],
     prev_challenges: &[Vec<FieldVar<F>>],
     finalize_prev_challenges: &[Vec<FieldVar<F>>],
-    // wrap proof verification (the wrap VK digest is re-derived in-circuit
-    // from `vk` — OCaml's step_verifier.ml:533-537 squeezes the sponge over
-    // the verified wrap VK; a fresh index sponge over the same 56
-    // coordinates is the same computation)
+    // wrap proof verification. The same sponge that was initialized with the
+    // verified wrap VK for the accumulator hash is copied and squeezed for
+    // the verifier-index digest (step_verifier.ml:533-537).
     vk: &VerificationKeyComm<F>,
     packed_lagranges: &[(Point<F>, Point<F>)],
     flag_lagranges: &[Point<F>],
@@ -355,10 +355,15 @@ where
     // the wrap statement public input, then the full wrap-proof check
     let terms = wrap_statement_terms(stmt, &msgs_step_digest, packed_lagranges, flag_lagranges);
     let sg_old_mask = vec![Boolean::true_(); prev_challenge_polynomial_commitments.len()];
+    let index_digest = if share_index_sponge {
+        IndexDigest::SpongeAfterIndex(sponge_after_index)
+    } else {
+        IndexDigest::ComputeFromVk
+    };
     let verified = verify::<F, C>(
         sys,
         loc.clone(),
-        IndexDigest::ComputeFromVk,
+        index_digest,
         false,
         vk,
         prev_challenge_polynomial_commitments,
@@ -962,6 +967,7 @@ mod tests {
                 finalize_evals,
                 stmt,
                 sponge_after_index: after_index,
+                share_index_sponge: true,
                 prev_app_state: app_state.clone(),
                 messages_for_next_step_accumulators: prev_cpcs.clone(),
                 prev_challenge_polynomial_commitments: prev_cpcs,
@@ -1013,8 +1019,15 @@ mod tests {
             (p.x, p.y)
         };
 
-        // accumulator inputs
-        let vk28: Vec<(Fp, Fp)> = (0..PERMUTS + COLUMNS + 6).map(|_| pt(&mut rng)).collect();
+        // The accumulator hash and the incremental verifier share the same
+        // wrap VK. `ivp_vk` stores selectors, coefficients, sigmas; `vk28`
+        // is its canonical sigma, coefficients, selectors absorption order.
+        let ivp_vk: Vec<(Fp, Fp)> = (0..28).map(|_| pt(&mut rng)).collect();
+        let vk28: Vec<(Fp, Fp)> = (21..28)
+            .chain(6..21)
+            .chain(0..6)
+            .map(|i| ivp_vk[i])
+            .collect();
         let app_state: Vec<Fp> = (0..2).map(|_| Fp::rand(&mut rng)).collect();
         let prev_cpc = pt(&mut rng);
         let prev_chals: Vec<Fp> = (0..crate::common::TICK_ROUNDS)
@@ -1082,7 +1095,6 @@ mod tests {
         // sigma_last(1). The circuit derives the index digest in-circuit
         // (IndexDigest::ComputeFromVk order: sigma_init, sigma_last,
         // coefficients, then the 6 selector commitments) — mirror that here.
-        let ivp_vk: Vec<(Fp, Fp)> = (0..28).map(|_| pt(&mut rng)).collect();
         let vk_digest = {
             let mut isp = RefSponge::new(Vesta::sponge_params());
             for idx in (21..28).chain(6..21).chain(0..6) {

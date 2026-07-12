@@ -41,6 +41,9 @@ pub struct PerProofInput<'a, F: PrimeField> {
     pub stmt: WrapStatementVars<F>,
     // the previous accumulator hashed into the wrap statement
     pub sponge_after_index: crate::sponge::PoseidonSponge<F>,
+    /// Transitional cycles whose statement was produced with a different VK
+    /// recompute the verifier digest; stabilized cycles share this sponge.
+    pub share_index_sponge: bool,
     pub prev_app_state: Vec<FieldVar<F>>,
     /// Accumulators committed by `messages_for_next_step_proof`.
     pub messages_for_next_step_accumulators: Vec<Point<F>>,
@@ -105,6 +108,7 @@ where
             &p.finalize_evals,
             &p.stmt,
             &p.sponge_after_index,
+            p.share_index_sponge,
             &p.prev_app_state,
             &p.messages_for_next_step_accumulators,
             &p.prev_challenge_polynomial_commitments,

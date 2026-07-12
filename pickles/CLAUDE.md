@@ -1507,10 +1507,22 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    Le code est maintenant structurellement aligné sur les écarts identifiés ;
    prochaine étape : reprendre la mesure `rust-pickles-wrap-gates-diff.ts`
    après rebuild napi et re-trier les divergences résiduelles.
-6. (Fidélité additionnelle, non bloquante) Le partage du sponge d'index
-   côté step (OCaml n'absorbe le VK qu'une fois — cf. note du point 2)
-   exigerait d'aligner `wrap_vk_pts` sur le VK vérifié dans
-   `recursive_step.rs`.
+6. **Partage du sponge d'index côté step — FAIT** : `verify_one` utilise
+   désormais `IndexDigest::SpongeAfterIndex` dès que le statement précédent
+   et la VK du wrap vérifié coïncident. `RecursiveStepData` porte un booléen
+   de migration `share_index_sponge` : le premier passage après un changement
+   de circuit conserve `ComputeFromVk` pour pouvoir vérifier l'ancien
+   statement, puis tous les cycles stabilisés copient/squeezent le sponge
+   déjà initialisé avec les 28 engagements de la VK vérifiée — une seule
+   absorption du VK, comme `step_verifier.ml:533-537`.
+   `prove_next_recursive_cycle_with_real_vk` est maintenant réellement en
+   deux passes : bootstrap du prochain wrap, extraction de sa VK, puis
+   reconstruction du step+wrap final avec cette VK ; stabilité de l'index
+   assertée. La fixture `step_main` impose également que le sponge du message
+   et la VK vérifiée soient la même liste canonique.
+   Validé : cargo check, 101/101 lib, 9/9 recorded (stable N1 inclus) et
+   `rust-pickles-step-gates-diff.ts` **STEP GATES: FULL MATCH** (512/512,
+   histogrammes et rows exacts).
 
 ### Méthode de validation pendant la réécriture
 

@@ -412,6 +412,7 @@ pub struct RecursiveStepData {
     /// Dlog VK commitments used to recompute the `messages_for_next_step`
     /// digest already present in `stmt`.
     pub wrap_vk_pts: Vec<(Fp, Fp)>,
+    pub share_index_sponge: bool,
     /// Dlog VK commitments to hash into the next recursive step statement.
     pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub prev_app_state: Vec<Fp>,
@@ -1327,7 +1328,24 @@ fn prepare_recursive_step_from_parts<
     let (packed_lagranges, flag_lagranges) = wrap_x_hat_lagranges(&wlgr, PREV_ROUNDS);
 
     let co = |p: &Pallas| (p.x, p.y);
+    // The same-field reduced message and the incremental verifier must share
+    // the sponge initialized from the VK of the wrap proof verified here.
+    // Previously this field carried the VK hashed by the previous statement,
+    // which can differ during the first stable transition.
+    let mut verified_wrap_vk_pts = Vec::with_capacity(28);
+    verified_wrap_vk_pts.extend(wvi.sigma_comm.iter().map(|c| co(&c.chunks[0])));
+    verified_wrap_vk_pts.extend(wvi.coefficients_comm.iter().map(|c| co(&c.chunks[0])));
+    verified_wrap_vk_pts.extend([
+        co(&wvi.generic_comm.chunks[0]),
+        co(&wvi.psm_comm.chunks[0]),
+        co(&wvi.complete_add_comm.chunks[0]),
+        co(&wvi.mul_comm.chunks[0]),
+        co(&wvi.emul_comm.chunks[0]),
+        co(&wvi.endomul_scalar_comm.chunks[0]),
+    ]);
+    assert_eq!(verified_wrap_vk_pts.len(), 28);
     let wh = wvi.srs().h;
+    let share_index_sponge = previous_messages_vk_pts == verified_wrap_vk_pts;
     let data = RecursiveStepData {
         finalize_tokens: svi.linearization.constant_term.clone(),
         finalize_domain: svi.domain,
@@ -1338,7 +1356,12 @@ fn prepare_recursive_step_from_parts<
         public_evals: so.public_evals.clone(),
         evals_flat,
         stmt: wrap_statement.iter().map(|&v| embed_fq_to_fp(v)).collect(),
-        wrap_vk_pts: previous_messages_vk_pts,
+        wrap_vk_pts: if share_index_sponge {
+            verified_wrap_vk_pts
+        } else {
+            previous_messages_vk_pts
+        },
+        share_index_sponge,
         messages_for_next_step_vk_pts: next_messages_vk_pts.clone(),
         prev_app_state: prev_app_state.clone(),
         messages_for_next_step_accumulators,
@@ -2569,8 +2592,11 @@ pub fn prove_next_recursive_cycle_with_real_vk<
     NEXT_STEP_STMT_LEN,
     NEXT_WRAP_STMT_LEN,
 > {
-    let wrap_vk_pts = crate::api::wrap_verification_key_points(&previous.wrap.verifier);
-    prove_next_recursive_cycle::<
+    // Break the step↔wrap VK cycle exactly like the base-case two-pass build.
+    // The bootstrap determines the verification key of the wrap circuit that
+    // will be paired with this new step (not the key of `previous.wrap`).
+    let bootstrap_vk = crate::api::wrap_verification_key_points(&previous.wrap.verifier);
+    let bootstrap = prove_next_recursive_cycle::<
         CYCLE_PREV_ROUNDS,
         CYCLE_VERIFIED_WRAP_ROUNDS,
         PREV_STEP_PROOF_ROUNDS,
@@ -2580,7 +2606,25 @@ pub fn prove_next_recursive_cycle_with_real_vk<
         NEXT_STEP_STMT_LEN,
         NEXT_STEP_PROOF_ROUNDS,
         NEXT_WRAP_STMT_LEN,
-    >(previous, wrap_vk_pts, app_state)
+    >(previous, bootstrap_vk, app_state.clone());
+    let next_wrap_vk = crate::api::wrap_verification_key_points(&bootstrap.wrap.verifier);
+    let final_cycle = prove_next_recursive_cycle::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_WRAP_STMT_LEN,
+    >(previous, next_wrap_vk.clone(), app_state);
+    assert_eq!(
+        crate::api::wrap_verification_key_points(&final_cycle.wrap.verifier),
+        next_wrap_vk,
+        "recursive wrap verification key must stabilize across two-pass proving"
+    );
+    final_cycle
 }
 
 /// Repeats recursive step→wrap cycles once the compiled domains and statement
@@ -3036,6 +3080,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         finalize_evals,
         stmt,
         sponge_after_index: after_index,
+        share_index_sponge: d.share_index_sponge,
         prev_app_state,
         messages_for_next_step_accumulators: d
             .messages_for_next_step_accumulators
@@ -3422,6 +3467,7 @@ impl<
             finalize_evals,
             stmt,
             sponge_after_index: after_index,
+            share_index_sponge: d.share_index_sponge,
             prev_app_state,
             messages_for_next_step_accumulators: d
                 .messages_for_next_step_accumulators
