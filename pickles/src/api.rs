@@ -731,6 +731,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .iter()
             .zip(unf_deferred.into_iter().zip(unf_old_bp_chals.into_iter()))
         {
+            let public_evals = [
+                wvec(sys, &u.public_evals[0])?,
+                wvec(sys, &u.public_evals[1])?,
+            ];
             let mut fe = u.evals_flat.iter();
             let mut next_pe =
                 |sys: &mut RunState<Fq>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fq>> {
@@ -738,29 +742,26 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                     Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
                 };
             let evals = crate::fr_sponge::AbsorbEvalsVar {
-                z: next_pe(sys)?,
-                generic_selector: next_pe(sys)?,
-                poseidon_selector: next_pe(sys)?,
-                complete_add_selector: next_pe(sys)?,
-                mul_selector: next_pe(sys)?,
-                emul_selector: next_pe(sys)?,
-                endomul_scalar_selector: next_pe(sys)?,
                 w: (0..COLUMNS)
                     .map(|_| next_pe(sys))
                     .collect::<SnarkyResult<Vec<_>>>()?,
                 coefficients: (0..COLUMNS)
                     .map(|_| next_pe(sys))
                     .collect::<SnarkyResult<Vec<_>>>()?,
+                z: next_pe(sys)?,
                 s: (0..PERMUTS - 1)
                     .map(|_| next_pe(sys))
                     .collect::<SnarkyResult<Vec<_>>>()?,
+                generic_selector: next_pe(sys)?,
+                poseidon_selector: next_pe(sys)?,
+                complete_add_selector: next_pe(sys)?,
+                mul_selector: next_pe(sys)?,
+                emul_selector: next_pe(sys)?,
+                endomul_scalar_selector: next_pe(sys)?,
             };
             let finalize_evals = FinalizeEvals {
                 ft_eval1: w1(sys, u.ft_eval1)?,
-                public_evals: [
-                    wvec(sys, &u.public_evals[0])?,
-                    wvec(sys, &u.public_evals[1])?,
-                ],
+                public_evals,
                 evals,
             };
             let finalize_params = FinalizeParams {

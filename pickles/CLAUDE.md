@@ -1488,26 +1488,25 @@ d'OCaml — à ce moment-là seulement on comparera et corrigera la sortie.
    replie par constant-folding (`sys.if_` court-circuite les conditions
    constantes) — comportement inchangé. Validé 101/101 + 9/9 recorded
    (y compris N1/N2 où le masque dynamique est réellement variable).
-5. **PROCHAINE ÉTAPE — l'ordre interne des `evals` (dernier écart
-   structurel identifié avant "même code qu'OCaml")** : OCaml
+5. **Ordre interne des `evals` — FAIT** : OCaml
    `All_evals` witnesse `public_input` (les évaluations x_hat) D'ABORD,
    puis les colonnes dans l'ordre du typ `Evals` (w[15],
    coefficients[15], z, s[6], generic_selector, poseidon_selector,
    complete_add_selector, mul_selector, emul_selector,
    endomul_scalar_selector), et `ft_eval1` EN DERNIER (ordre hlist de
    `{ evals = { public_input; evals }; ft_eval1 }`). Notre
-   `AbsorbEvalsVar`/`FinalizeEvals` lit `evals_flat` dans l'ordre z,
-   sélecteurs(6), w(15), coefficients(15), s(6), puis ft_eval1 et
-   public_evals. Réordonner exige de changer EN MÊME TEMPS : (a) l'ordre
-   de lecture dans api.rs (et recursive_step.rs qui a la même boucle
-   `next_pe`), (b) le PACKING out-of-circuit d'`evals_flat` (l'appariement
-   est positionnel — chercher où evals_flat est construit dans
-   recorded.rs/api.rs/recursive_step.rs et le réordonner à l'identique),
-   (c) vérifier qu'aucun mirror de test ne dépend de l'ancien ordre.
-   C'est LE dernier morceau pour que le code soit structurellement le
-   même qu'OCaml ; après ça : reprendre la MESURE
-   (`rust-pickles-wrap-gates-diff.ts` après rebuild napi) et re-trier
-   les divergences restantes.
+   `AbsorbEvalsVar`/`FinalizeEvals` lisait auparavant `evals_flat` dans
+   l'ordre z, sélecteurs(6), w(15), coefficients(15), s(6), puis ft_eval1
+   et public_evals. Les deux flatteners (`Fp` et `Fq`) produisent maintenant
+   `w → coefficients → z → s → sélecteurs`; les quatre lecteurs in-circuit
+   (`api.rs`, les deux chemins `recursive_step.rs`, et les fixtures lib)
+   témoignent `public_input` d'abord, consomment ce nouvel ordre, puis
+   témoignent `ft_eval1` en dernier. L'appariement positionnel est donc
+   modifié atomiquement des deux côtés. Validé : cargo check, 101/101 lib
+   et 9/9 recorded (N0/N1/N2, stable N1 inclus).
+   Le code est maintenant structurellement aligné sur les écarts identifiés ;
+   prochaine étape : reprendre la mesure `rust-pickles-wrap-gates-diff.ts`
+   après rebuild napi et re-trier les divergences résiduelles.
 6. (Fidélité additionnelle, non bloquante) Le partage du sponge d'index
    côté step (OCaml n'absorbe le VK qu'une fois — cf. note du point 2)
    exigerait d'aligner `wrap_vk_pts` sur le VK vérifié dans

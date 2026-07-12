@@ -179,18 +179,19 @@ pub fn flatten_proof_evaluations(
     evals: &kimchi::proof::ProofEvaluations<kimchi::proof::PointEvaluations<Vec<Fp>>>,
 ) -> Vec<(Fp, Fp)> {
     let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta[0], p.zeta_omega[0]);
-    let mut out = vec![
-        pair(&evals.z),
+    let mut out = Vec::with_capacity(1 + 6 + 2 * COLUMNS + PERMUTS - 1);
+    out.extend(evals.w.iter().map(pair));
+    out.extend(evals.coefficients.iter().map(pair));
+    out.push(pair(&evals.z));
+    out.extend(evals.s.iter().map(pair));
+    out.extend([
         pair(&evals.generic_selector),
         pair(&evals.poseidon_selector),
         pair(&evals.complete_add_selector),
         pair(&evals.mul_selector),
         pair(&evals.emul_selector),
         pair(&evals.endomul_scalar_selector),
-    ];
-    out.extend(evals.w.iter().map(pair));
-    out.extend(evals.coefficients.iter().map(pair));
-    out.extend(evals.s.iter().map(pair));
+    ]);
     out
 }
 
@@ -198,18 +199,19 @@ pub fn flatten_wrap_proof_evaluations(
     evals: &kimchi::proof::ProofEvaluations<kimchi::proof::PointEvaluations<Vec<Fq>>>,
 ) -> Vec<(Fq, Fq)> {
     let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fq>>| (p.zeta[0], p.zeta_omega[0]);
-    let mut out = vec![
-        pair(&evals.z),
+    let mut out = Vec::with_capacity(1 + 6 + 2 * COLUMNS + PERMUTS - 1);
+    out.extend(evals.w.iter().map(pair));
+    out.extend(evals.coefficients.iter().map(pair));
+    out.push(pair(&evals.z));
+    out.extend(evals.s.iter().map(pair));
+    out.extend([
         pair(&evals.generic_selector),
         pair(&evals.poseidon_selector),
         pair(&evals.complete_add_selector),
         pair(&evals.mul_selector),
         pair(&evals.emul_selector),
         pair(&evals.endomul_scalar_selector),
-    ];
-    out.extend(evals.w.iter().map(pair));
-    out.extend(evals.coefficients.iter().map(pair));
-    out.extend(evals.s.iter().map(pair));
+    ]);
     out
 }
 
@@ -2868,35 +2870,36 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         mds,
         shift: ShiftKind::Type1,
     };
+    let public_evals = [
+        wvec(sys, &d.public_evals[0])?,
+        wvec(sys, &d.public_evals[1])?,
+    ];
     let mut fe = d.evals_flat.iter();
     let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
         let &(a, b) = fe.next().unwrap();
         Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
     };
     let evals = crate::fr_sponge::AbsorbEvalsVar {
-        z: next_pe(sys)?,
-        generic_selector: next_pe(sys)?,
-        poseidon_selector: next_pe(sys)?,
-        complete_add_selector: next_pe(sys)?,
-        mul_selector: next_pe(sys)?,
-        emul_selector: next_pe(sys)?,
-        endomul_scalar_selector: next_pe(sys)?,
         w: (0..COLUMNS)
             .map(|_| next_pe(sys))
             .collect::<SnarkyResult<Vec<_>>>()?,
         coefficients: (0..COLUMNS)
             .map(|_| next_pe(sys))
             .collect::<SnarkyResult<Vec<_>>>()?,
+        z: next_pe(sys)?,
         s: (0..PERMUTS - 1)
             .map(|_| next_pe(sys))
             .collect::<SnarkyResult<Vec<_>>>()?,
+        generic_selector: next_pe(sys)?,
+        poseidon_selector: next_pe(sys)?,
+        complete_add_selector: next_pe(sys)?,
+        mul_selector: next_pe(sys)?,
+        emul_selector: next_pe(sys)?,
+        endomul_scalar_selector: next_pe(sys)?,
     };
     let finalize_evals = FinalizeEvals {
         ft_eval1: w1(sys, d.ft_eval1)?,
-        public_evals: [
-            wvec(sys, &d.public_evals[0])?,
-            wvec(sys, &d.public_evals[1])?,
-        ],
+        public_evals,
         evals,
     };
 
@@ -3240,6 +3243,10 @@ impl<
             mds: &mds,
             shift: ShiftKind::Type1,
         };
+        let public_evals = [
+            wvec(sys, &d.public_evals[0])?,
+            wvec(sys, &d.public_evals[1])?,
+        ];
         let mut fe = d.evals_flat.iter();
         let mut next_pe =
             |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
@@ -3247,29 +3254,26 @@ impl<
                 Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
             };
         let evals = crate::fr_sponge::AbsorbEvalsVar {
-            z: next_pe(sys)?,
-            generic_selector: next_pe(sys)?,
-            poseidon_selector: next_pe(sys)?,
-            complete_add_selector: next_pe(sys)?,
-            mul_selector: next_pe(sys)?,
-            emul_selector: next_pe(sys)?,
-            endomul_scalar_selector: next_pe(sys)?,
             w: (0..COLUMNS)
                 .map(|_| next_pe(sys))
                 .collect::<SnarkyResult<Vec<_>>>()?,
             coefficients: (0..COLUMNS)
                 .map(|_| next_pe(sys))
                 .collect::<SnarkyResult<Vec<_>>>()?,
+            z: next_pe(sys)?,
             s: (0..PERMUTS - 1)
                 .map(|_| next_pe(sys))
                 .collect::<SnarkyResult<Vec<_>>>()?,
+            generic_selector: next_pe(sys)?,
+            poseidon_selector: next_pe(sys)?,
+            complete_add_selector: next_pe(sys)?,
+            mul_selector: next_pe(sys)?,
+            emul_selector: next_pe(sys)?,
+            endomul_scalar_selector: next_pe(sys)?,
         };
         let finalize_evals = FinalizeEvals {
             ft_eval1: w1(sys, d.ft_eval1)?,
-            public_evals: [
-                wvec(sys, &d.public_evals[0])?,
-                wvec(sys, &d.public_evals[1])?,
-            ],
+            public_evals,
             evals,
         };
 
