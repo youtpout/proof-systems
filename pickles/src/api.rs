@@ -1287,26 +1287,18 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         &[],
         &[],
     );
-    // Base-case step proofs carry two dummy accumulators
-    // (`Wrap_hack.pad_accumulator`): dummy step-side IPA challenges and
-    // their challenge-polynomial commitment over the full Tick SRS.
-    let dummy_recursion = {
-        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let (_, step_dummy) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
-        let sg = crate::dummy::compute_sg(svi.srs().as_ref(), &step_dummy.challenges_computed);
-        kimchi::proof::RecursionChallenge::new(
-            step_dummy.challenges_computed,
-            PolyComm { chunks: vec![sg] },
-        )
-    };
+    // OCaml base-case step proofs carry NO kimchi-level recursion
+    // challenges (`Max_proofs_verified = 0` for a 0-arity o1js rule): the
+    // accumulator padding of `Wrap_hack` lives only inside the message
+    // HASHES, never in the proof's `prev_challenges` — so the wrap circuit
+    // has an EMPTY sg_old vector (nothing absorbed, nothing combined).
     let (step_proof, _) = step_pi
         .prove_with_recursion_mask::<VestaBase, VestaScalar>(
             digest,
             (witness, wrap_vk_pts.clone()),
             true,
-            vec![dummy_recursion.clone(), dummy_recursion.clone()],
-            Some(&[false, false]),
+            vec![],
+            Some(&[]),
         )
         .unwrap();
 
@@ -1326,7 +1318,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
             svi,
             &public_comm,
             Some(&public_input),
-            Some(&[false, false]),
+            Some(&[]),
         )
         .unwrap();
     let oracles = &o.oracles;
@@ -1368,7 +1360,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         &public_comm,
         svi.digest::<VestaBase>(),
         &sg_old_points,
-        Some(&[false, false]),
+        None,
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,
@@ -1382,10 +1374,8 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         fr.absorb(&o.digest);
         let pcd = {
             let mut prev_sponge = VestaScalar::from(params);
-            for (keep, rc) in [false, false].iter().zip(&step_proof.prev_challenges) {
-                if *keep {
-                    prev_sponge.absorb_multiple(&rc.chals);
-                }
+            for rc in &step_proof.prev_challenges {
+                let _ = rc; // empty in the base case (no kimchi recursion)
             }
             prev_sponge.digest()
         };
@@ -1471,18 +1461,13 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     let correction = crate::public_input::lagrange_correction(&l0, 255);
     drop(lgr); // release the SRS cache guard so step_ver can move below
     let srs_h = svi.srs().h;
-    let physical_sg_olds: Vec<(Fq, Fq)> = {
-        let mut sg_olds: Vec<_> = step_proof
-            .prev_challenges
-            .iter()
-            .map(|rc| co(&rc.comm.chunks[0]))
-            .collect();
-        if sg_olds.is_empty() {
-            let dummy = co(&dummy_recursion.comm.chunks[0]);
-            sg_olds.resize(crate::common::MAX_PROOFS_VERIFIED, dummy);
-        }
-        sg_olds
-    };
+    // One in-circuit sg_old per REAL kimchi recursion challenge — empty in
+    // the base case, exactly as OCaml's `Max_proofs_verified = 0`.
+    let physical_sg_olds: Vec<(Fq, Fq)> = step_proof
+        .prev_challenges
+        .iter()
+        .map(|rc| co(&rc.comm.chunks[0]))
+        .collect();
     let wdata = WrapWitnessData {
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
