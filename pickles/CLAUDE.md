@@ -1622,3 +1622,44 @@ Validation : test ciblé `scale_fast2_prime`, 101/101 lib, 9/9 recorded et
 step **FULL MATCH**. Prochaine cible : utiliser les labels et
 `SNARKY_LOG_PENDING_GENERIC` conservés pour attribuer les divergences
 704–711, puis le premier train OptSponge 711+.
+
+### Quatrième cible : ordonnancement x_hat rows 704–710
+
+Les labels de site ajoutés à `public_input_commitment` et la trace
+`SNARKY_LOG_PENDING_GENERIC=1` attribuent précisément les deux ruptures :
+la row interne 664 est la dernière réduction de `public_input packed add`,
+et la row interne 667 celle de `public_input blinding add`. Avec la politique
+globale `flush_generic_before_custom`, Rust les émettait avant leur
+`CompleteAdd`, tandis qu'OCaml place le custom gate avant la demi-row Generic.
+
+Deux variantes incorrectes ont été mesurées puis revertées :
+
+1. suspendre le préflush autour des deux additions sans flusher ensuite
+   laisse la contrainte `packed` ouverte et la mélange aux gadgets suivants ;
+   le diff régresse de 3171 à 3468 ;
+2. ne suspendre que l'addition `packed`, toujours sans flush explicite,
+   produit la même cascade (3468), ce qui réfute l'hypothèse d'une simple
+   inversion locale sans frontière de flush.
+
+Le correctif conservé expose `flush_pending_generic()` dans le constraint
+system et applique la séquence exacte au fold x_hat : désactiver le préflush,
+émettre `CompleteAdd`, restaurer la politique, puis flusher immédiatement
+pour l'addition `packed`. Pour le blinding, la demi-row reste ouverte afin
+d'être fusionnée au premier `opt_sponge add_in`, conformément à la trace.
+Les divergences de type **704–705 et 707–708 sont supprimées**, sans nouvelle
+divergence antérieure ; le diff total passe de **3171 à 3170**. Les labels et
+l'instrumentation restent présents, inactifs sans variable d'environnement.
+
+La première divergence de type est maintenant la row **711** : OCaml démarre
+le premier Poseidon, Rust y flush encore une demi-row `opt_sponge add_in`.
+La trace Rust autour de la frontière est : packed pending row 664, custom
+row 664, flush row 665 ; blinding pending row 667, custom row 667 ; fusion
+avec opt_sponge rows 668–670, puis pending/flush row 671 (wrap row 711).
+Les coefficients montrent également que la première demi-contrainte Rust
+après le blinding vient de la réduction du `CompleteAdd`, alors que les trois
+rows OCaml 708–710 contiennent exactement six slots. La prochaine correction
+doit donc aligner la réduction du blinding/accumulateur (ou le nombre exact
+d'absorptions OptSponge), et non ajouter un nouveau réglage de flush aveugle.
+
+Validation de ce jalon : 101/101 tests lib, 9/9 recorded, step **FULL MATCH**,
+wrap 8192/8192 rows et première divergence de type repoussée à 711.

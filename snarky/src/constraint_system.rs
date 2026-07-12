@@ -538,6 +538,15 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         self.flush_generic_before_custom
     }
 
+    /// Emits a queued half-full Generic row immediately.
+    ///
+    /// Pickles uses this at a few custom-gate boundaries where the OCaml
+    /// backend schedules the custom gate before, rather than after, the
+    /// pending Generic constraint.
+    pub fn flush_pending_generic(&mut self) {
+        self.flush_pending_generic_gate();
+    }
+
     /// Returns the number of public inputs.
     ///
     /// # Panics
