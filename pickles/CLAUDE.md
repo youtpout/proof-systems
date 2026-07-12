@@ -899,3 +899,32 @@ plutôt que revert dès la première mesure globale défavorable — on a
 peut-être raté un gain partiel (ex. la fenêtre 543-700 pourrait s'être
 améliorée même si le total a empiré). Prochaine tentative : mesurer par
 fenêtre AVANT de décider revert/keep, pas seulement le total.
+
+**FAIT (re-tenté même session) — comptage par fenêtre AVANT de revert,
+confirme un signal mitigé, pas un simple raté.** Ré-appliqué l'identique
+changement (mêmes 6 fichiers) pour obtenir les dumps JSON avant de
+conclure. Comptage Generic par fenêtre, AVANT (2869, référence) vs APRÈS
+(3524, ce essai) :
+```
+fenêtre      avant(excès rust)   après(excès rust)
+543-700      jsoo=5  rust=90 (+85)   jsoo=5  rust=28 (+23)   ← AMÉLIORATION nette
+700-1024     jsoo=103 rust=24 (-79)  jsoo=103 rust=27 (-76)  ← quasi inchangé
+1024-2048    rust -34                rust -37                ← légère régression
+2048-4096    rust +29                rust +30                ← quasi inchangé
+4096-8192    rust -14                rust +32                ← RÉGRESSION nette (swing de 46)
+```
+**Conclusion ferme** : l'interleaving `lr` seul RÉSOUT bien une partie du
+problème qu'il ciblait (543-700 : +85→+23, la sur-émission qu'on avait
+identifiée est bien réduite aux 2/3) — la théorie du mécanisme était
+CORRECTE. Mais il introduit une régression NOUVELLE et plus grosse en
+aval (4096-8192, +46) qui n'a pas de lien évident avec `lr` — signe que
+le déplacement du point de fold change le competing timing d'un autre
+composant (le nombre total de rows utilisées avant un certain point
+déplace le domaine/curseur d'une passe ultérieure : ft_comm, finalize,
+ou l'évaluation z1/z2/Other_field qui vient juste après `openings` dans
+api.rs). Reverté à nouveau (6 fichiers, `git checkout`), re-confirmé
+2869/556 et 9/9 recorded sur l'état reverté. **Le prochain qui retente
+cette piste doit d'abord identifier CE QUI dans la région 4096-8192
+dépend du nombre de rows émises en amont** (probablement un `ft_comm`/
+`finalize` dont les positions de padding/domaine sont sensibles au
+compte total de Generic déjà émis) avant de retoucher `lr`.
