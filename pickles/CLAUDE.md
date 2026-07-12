@@ -1348,3 +1348,13 @@ déjà documentée : le circuit rust est actuellement dans un minimum local
 robuste où des corrections PARTIELLES (même correctes individuellement)
 ne suffisent pas — il faut soit LE ticket complet (plusieurs changements
 fidèles appliqués ENSEMBLE), soit accepter cet état comme palier stable.
+
+**Essai combiné (h-constant + openings-avant-messages + vk_digest tard,
+les 3 en même temps) — AUSSI reverté.** Résultat : 3507 (identique au
+h-constant seul). Ceci réfute l'hypothèse "il faut les combiner" pour
+CETTE combinaison précise — combiner ne suffit pas non plus ici. La
+piste "réécriture complète tout-en-un" reste la seule non encore
+essayée sérieusement ; les combinaisons partielles ad hoc ont maintenant
+toutes échoué (5 essais distincts cette session : lr-interleaved seul,
+openings-avant-messages seul, vk_digest-tard seul, h-constant seul, et
+la combinaison des 3 derniers).
