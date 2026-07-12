@@ -76,6 +76,26 @@ répétés sur les 28 points sélectionnés).
    choose_key) : exists 2 unfinalized dummy (Type2 + assert_16_bits). Rust
    le saute en base (`unfinalized: vec![]`).
 
+**Ordre OCaml complet du wrap (via le flux jsoo, à suivre exactement) :**
+which_branch(2 R1CS) → proofs_verified_mask Pseudo.choose(R1CS:170) →
+domain_log2/branch_data(Equal:181) → **choose_key VK (56 Equal:204)** →
+VK on-curve (28 pts Square/R1CS:155) → qq R1CS/Equal:155 → **messages/
+openings on-curve (bloc Square/R1CS:471)** → **1er Poseidon à
+wrap_main.ml:503** (sponge_inputs.ml). 
+⚠️ SUBTILITÉ ARCHITECTURE : le 1er Poseidon OCaml est à :503, APRÈS les
+on-curve messages/openings (:471) — PAS un sponge d'index précoce. Notre
+`vk_digest` (Poseidon rust row 179) ne mappe donc pas 1:1 sur un Poseidon
+OCaml à cette position ; OCaml calcule le digest d'index autrement (absorbé
+dans un sponge existant, pas un `PoseidonSponge::new()` séparé). Le gain de
+`6abbec7b88` (remonter le sponge) reste net (2917) mais l'alignement exact
+du sponge demande de réconcilier l'architecture digest OCaml (étudier
+wrap_main.ml:503 + `incrementally_verify_proof`). C'est probablement là que
+se cachent les 13 Generic + le gros du type=1926.
+
+**Changement fidèle committé (gate-neutre)** : `618542d6a2` réécrit la
+sélection VK en `choose_key` (branch0.scale+seal) comme OCaml. Divergence
+inchangée (2917) mais structure alignée — principe d'audit.
+
 **Fausses pistes (vérifiées empiriquement, NE PAS refaire) :**
 - VK points en constantes (`cpt` au lieu de `mkpt`) : 556→**500**, div
   3203→3402. jsoo A les on-curve checks VK. Garder `mkpt`.
