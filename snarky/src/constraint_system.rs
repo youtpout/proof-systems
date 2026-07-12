@@ -842,8 +842,8 @@ where
     let has_constant_term = c.is_some();
     let terms = accumulate_terms(terms);
     let mut terms_list: Vec<_> = terms.into_iter().map(|(key, data)| (data, key)).collect();
-    terms_list.sort();
-    terms_list.reverse();
+    // OCaml `canonicalize` orders by ascending variable index (no reverse).
+    terms_list.sort_by_key(|&(_, key)| key);
     let num_terms = terms_list.len();
     Some((terms_list, num_terms, has_constant_term))
 }
@@ -979,7 +979,13 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         let (constant, terms) = x.to_constant_and_terms();
         let terms = accumulate_terms(terms);
         let mut terms_list: Vec<_> = terms.into_iter().map(|(key, data)| (data, key)).collect();
-        terms_list.sort();
+        // OCaml (`plonk_constraint_system.ml reduce_lincom`) orders the terms
+        // by ASCENDING VARIABLE INDEX (`Map.fold_right` over the index-keyed
+        // map) — never by coefficient value. Sorting by the `(coeff, index)`
+        // tuple swapped the l/r slots whenever the coefficient order differed
+        // from the index order (observed in the wrap opt-sponge add_in
+        // reductions).
+        terms_list.sort_by_key(|&(_, key)| key);
         match (constant, terms_list.len()) {
             (Some(c), 0) => (c, ConstantOrVar::Constant),
             (None, 0) => (Field::zero(), ConstantOrVar::Constant),
