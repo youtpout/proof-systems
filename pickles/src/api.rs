@@ -729,29 +729,45 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // in OCaml — a fixed SRS point embedded as a circuit constant, never
         // witnessed or checked on-curve (wrap_verifier.ml:618, :965).
         let h = cpt(w.h);
-        let mut lr = vec![];
-        for &(l, r) in &w.lr {
-            lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-        }
         let t1 = ShiftedScalar::Type1;
-        let z1_repr = w1(sys, w.z1_repr)?;
-        let z2_repr = w1(sys, w.z2_repr)?;
-        check_other_field_packed(sys, &z1_repr)?;
-        check_other_field_packed(sys, &z2_repr)?;
-        let openings = OpeningProof {
-            lr,
-            delta: mkpt(sys, w.delta)?,
-            z1: t1(z1_repr),
-            z2: t1(z2_repr),
-            challenge_polynomial_commitment: mkpt(sys, w.sg)?,
-            h_generator: h.clone(),
-        };
-        let messages = Messages {
-            w_comm: w.w_comm.iter().map(|&p| Ok(vec![mkpt(sys, p)?]))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-            z_comm: vec![mkpt(sys, w.z_comm)?],
-            t_comm: w.t_comm.iter().map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?,
+        // `openings_proof` and `messages` are witnessed inside `wrap_main`
+        // (via this closure) so their `exists` constraints land after the
+        // finalize/hash-prev block, exactly as wrap_main.ml:440-477.
+        let h_for_openings = h.clone();
+        let witness_proof = |sys: &mut RunState<Fq>| -> SnarkyResult<(
+            OpeningProof<Fq>,
+            Messages<Fq>,
+        )> {
+            let mut lr = vec![];
+            for &(l, r) in &w.lr {
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+            }
+            let z1_repr = w1(sys, w.z1_repr)?;
+            let z2_repr = w1(sys, w.z2_repr)?;
+            check_other_field_packed(sys, &z1_repr)?;
+            check_other_field_packed(sys, &z2_repr)?;
+            let openings = OpeningProof {
+                lr,
+                delta: mkpt(sys, w.delta)?,
+                z1: t1(z1_repr),
+                z2: t1(z2_repr),
+                challenge_polynomial_commitment: mkpt(sys, w.sg)?,
+                h_generator: h_for_openings.clone(),
+            };
+            let messages = Messages {
+                w_comm: w
+                    .w_comm
+                    .iter()
+                    .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+                z_comm: vec![mkpt(sys, w.z_comm)?],
+                t_comm: w
+                    .t_comm
+                    .iter()
+                    .map(|&p| mkpt(sys, p))
+                    .collect::<SnarkyResult<Vec<_>>>()?,
+            };
+            Ok((openings, messages))
         };
         // The verifier-index digest is now computed inside
         // `incrementally_verify_proof` (`IndexDigest::ComputeFromVk`), exactly
@@ -779,7 +795,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
-        let _out = wrap_main::<Fq, VestaParameters>(
+        let _out = wrap_main::<Fq, VestaParameters, _>(
             sys,
             loc!(),
             &unfinalized,
@@ -788,8 +804,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             &elements,
             &lagranges,
             &h,
-            &messages,
-            &openings,
+            witness_proof,
             &advice,
             &xi,
             &claimed,

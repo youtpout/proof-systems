@@ -77,7 +77,7 @@ pub struct WrapMainOutput<F: PrimeField> {
 /// false); `messages_for_next_wrap_proof_digest` is this statement's digest,
 /// asserted against the recomputed hash of the *new* accumulator.
 #[allow(clippy::too_many_arguments)]
-pub fn wrap_main<F, C>(
+pub fn wrap_main<F, C, W>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     unfinalized: &[PerUnfinalized<'_, F>],
@@ -89,8 +89,10 @@ pub fn wrap_main<F, C>(
     step_statement_elements: &[StepStatementElement<F>],
     lagranges: &[(Point<F>, Point<F>)],
     h_generator: &Point<F>,
-    messages: &Messages<F>,
-    openings: &OpeningProof<F>,
+    // Witnesses `openings_proof` (wrap_main.ml:440) then `messages` (:470):
+    // called after the finalize/hash-prev block so the `exists` constraints
+    // land exactly where OCaml emits them.
+    witness_proof: W,
     advice: &Advice<F>,
     xi: &FieldVar<F>,
     claimed: &Claimed<F>,
@@ -106,6 +108,7 @@ pub fn wrap_main<F, C>(
 where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+    W: FnOnce(&mut RunState<F>) -> SnarkyResult<(OpeningProof<F>, Messages<F>)>,
 {
     // == finalize each unfinalized proof (Type2 claimed values) ==
     let mut new_bulletproof_challenges = Vec::with_capacity(unfinalized.len());
@@ -157,6 +160,10 @@ where
         new_bulletproof_challenges.push(fin.challenges);
     }
 
+    // OCaml `exists openings_proof` (:440) then `exists messages` (:470):
+    // witnessed here, after finalize/hash-prev, before the verifier.
+    let (openings, messages) = witness_proof(sys)?;
+
     // == commit to the step statement and fully verify the step proof ==
     let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
     let actual_proofs_verified: FieldVar<F> =
@@ -196,8 +203,8 @@ where
             lagranges,
             h_generator,
         },
-        messages,
-        openings,
+        &messages,
+        &openings,
         advice,
         xi,
         claimed,
@@ -481,32 +488,39 @@ mod tests {
                 sigma_init: vkpts[21..27].to_vec(),
                 sigma_last: vec![vkpts[27].clone()],
             };
-            let messages = Messages {
-                w_comm: self
-                    .w_comm
-                    .iter()
-                    .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
-                z_comm: vec![mkpt(sys, self.z_comm)?],
-                t_comm: self
-                    .t_comm
-                    .iter()
-                    .map(|&p| mkpt(sys, p))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
-            };
-            let mut lr = vec![];
-            for &(l, r) in &self.lr {
-                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-            }
             let h = cpt(self.h);
             let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
-            let openings = OpeningProof {
-                lr,
-                delta: mkpt(sys, self.delta)?,
-                z1: t1(mksc(sys, self.z1)?),
-                z2: t1(w1(sys, self.z2_repr)?),
-                challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
-                h_generator: h.clone(),
+            let h_for_openings = h.clone();
+            let witness_proof = |sys: &mut RunState<Fq>| -> SnarkyResult<(
+                OpeningProof<Fq>,
+                Messages<Fq>,
+            )> {
+                let mut lr = vec![];
+                for &(l, r) in &self.lr {
+                    lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+                }
+                let openings = OpeningProof {
+                    lr,
+                    delta: mkpt(sys, self.delta)?,
+                    z1: t1(mksc(sys, self.z1)?),
+                    z2: t1(w1(sys, self.z2_repr)?),
+                    challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
+                    h_generator: h_for_openings.clone(),
+                };
+                let messages = Messages {
+                    w_comm: self
+                        .w_comm
+                        .iter()
+                        .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                        .collect::<SnarkyResult<Vec<_>>>()?,
+                    z_comm: vec![mkpt(sys, self.z_comm)?],
+                    t_comm: self
+                        .t_comm
+                        .iter()
+                        .map(|&p| mkpt(sys, p))
+                        .collect::<SnarkyResult<Vec<_>>>()?,
+                };
+                Ok((openings, messages))
             };
             let advice = Advice {
                 combined_inner_product: t1(mksc(sys, self.cip)?),
@@ -528,7 +542,7 @@ mod tests {
 
             use groupmap::GroupMap;
             let params = groupmap::BWParameters::<VestaParameters>::setup();
-            let out = wrap_main::<Fq, VestaParameters>(
+            let out = wrap_main::<Fq, VestaParameters, _>(
                 sys,
                 loc!(),
                 std::slice::from_ref(&per_unf),
@@ -537,8 +551,7 @@ mod tests {
                 &elements,
                 &lagranges,
                 &h,
-                &messages,
-                &openings,
+                witness_proof,
                 &advice,
                 &xi,
                 &claimed,
