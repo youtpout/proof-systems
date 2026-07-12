@@ -29,6 +29,27 @@ mesurer avec `o1js/src/tests/rust-pickles-wrap-gates-diff.ts` (nécessite de
 reconstruire le napi : `cd o1js && PROOF_SYSTEMS_ROOT=~/Projects/proof-systems
 PATH=$PWD/node_modules/.bin:$PATH bash scripts/build/native/build.sh`).
 
+### Essais récents rejetés (ne pas réintroduire)
+
+- **Supprimer `actual_proofs_verified_mask`** dans `wrap_main.rs` : ce masque
+  paraît mort côté Rust, mais son retrait donne `Generic 550/569` et **2920**
+  lignes divergentes, contre 2869 pour l'état `ce01aa6d9f`. Il émet donc une
+  partie des contraintes attendues ; ne pas le supprimer.
+- **Utiliser ce masque dynamique dans `verify`** : l'OCaml le transmet bien au
+  vérificateur, mais le port Rust ne représente pas encore les accumulateurs
+  optionnels de la même façon. Les preuves recorded échouent alors sur
+  `wrap_main: verify step proof` (`equal_g = 0`). Masquer le transcript seul,
+  ou transcript + combinaison, est insuffisant : il faut porter le type
+  `Opt`/la combinaison OCaml d'un bloc.
+- **Dériver `first_zero` de `proofs_verified`** à la place du témoin : pour
+  N0, `branch0 * 0` se simplifie en constante et retire 6 Generic
+  (`550/569`). Rejeté tant que `Pseudo.choose` n'est pas reproduit sans cette
+  simplification.
+- **Différer les checks on-curve des openings** : la première divergence de
+  type est bien après les deux Generic 594--595, mais déplacer ces checks sans
+  porter tout le scheduling du vérificateur ne peut pas être validé ; essai
+  reverté avant commit.
+
 Acquis récents :
 - **forbidden `Other_field.check` en ordre INVERSE** (commit `8aa1d16c4e`) :
   OCaml applique le check aux slots fq `[cip;b;zsl;zds;perm]` de l'arrière
