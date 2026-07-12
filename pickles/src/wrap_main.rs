@@ -464,7 +464,7 @@ mod tests {
             };
 
             // ---- step proof pieces ----
-            let vk_digest = w1(sys, self.vk_digest)?;
+            let _vk_digest = w1(sys, self.vk_digest)?;
             let vkpts = self
                 .vk28
                 .iter()
@@ -533,7 +533,6 @@ mod tests {
                 loc!(),
                 std::slice::from_ref(&per_unf),
                 std::slice::from_ref(&per_unf.prev_step_acc),
-                &vk_digest,
                 &vk,
                 &elements,
                 &lagranges,

@@ -22,6 +22,20 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## Handoff WRAP — parité gates (état courant)
 
+### Branche expérimentale `wrap-iso-rewrite`
+
+La branche `wrap-iso-rewrite` porte une réécriture structurelle assumée du
+wrap. Elle ne doit pas être comparée aux mesures de parité de `pickle-rs`
+avant la fin du réordonnancement : les régressions transitoires du wrap sont
+attendues. Le step reste inchangé et FULL MATCH.
+
+Premier lot appliqué : l'API alloue désormais les `openings` avant les
+`messages`, puis calcule le digest de VK immédiatement avant l'entrée dans le
+transcript de vérification. Cela reproduit l'ordre de haut niveau de
+`wrap_main.ml`/`wrap_verifier.ml`; le déplacement des `prev_proof_state` et
+des `unfinalized` reste à effectuer comme bloc atomique avant de retester la
+parité wrap.
+
 **Generic 556/569 (13 net), tous les autres gate types EXACTS, step FULL
 MATCH, recorded 9/9 (N0/N1/N2).** Toujours tester N0/N1/N2 après tout
 changement wrap (`cargo test -p pickles --release --test recorded`), puis

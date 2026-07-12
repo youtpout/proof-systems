@@ -603,52 +603,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // messages before consuming the verifier-index sponge. Openings are
         // allocated later, after that transcript phase.
         let sg_olds = mkpts(sys, &w.sg_olds)?;
-        let messages = Messages {
-            w_comm: w
-                .w_comm
-                .iter()
-                .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-            z_comm: vec![mkpt(sys, w.z_comm)?],
-            t_comm: w
-                .t_comm
-                .iter()
-                .map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?,
-        };
         // The SRS h point is part of the verifier witness context consumed by
         // the message/index transcript phase; only the opening proof proper
         // (lr, delta and sg) is allocated afterwards.
         let h = mkpt(sys, w.h)?;
-        // IVC step 1 (OCaml `absorb verifier index`): recompute the step
-        // VK's Fiat-Shamir digest in-circuit from its 28 commitments, in
-        // kimchi's `VerifierIndex::digest` order — instead of witnessing it.
-        // OCaml emits this index sponge right after selecting the VK, BEFORE
-        // witnessing the proof payload points, so the first Poseidon lands
-        // before the message/opening on-curve checks (jsoo wrap row ~231).
-        let vk_digest: FieldVar<Fq> = {
-            let mut index_sponge = crate::sponge::PoseidonSponge::new();
-            let mut coords = Vec::with_capacity(56);
-            for pt in vk
-                .sigma_init
-                .iter()
-                .chain(vk.sigma_last.iter())
-                .chain(vk.coefficients.iter())
-                .chain([
-                    &vk.generic,
-                    &vk.psm,
-                    &vk.complete_add,
-                    &vk.mul,
-                    &vk.emul,
-                    &vk.endomul_scalar,
-                ])
-            {
-                coords.push(pt.x.clone());
-                coords.push(pt.y.clone());
-            }
-            index_sponge.absorb(sys, loc!(), &coords);
-            index_sponge.squeeze(sys, loc!())
-        };
         // Openings are witnessed after the index sponge, unlike messages and
         // physical old accumulators above.
         let mut lr = vec![];
@@ -667,6 +625,25 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             z2: t1(z2_repr),
             challenge_polynomial_commitment: mkpt(sys, w.sg)?,
             h_generator: h.clone(),
+        };
+        let messages = Messages {
+            w_comm: w.w_comm.iter().map(|&p| Ok(vec![mkpt(sys, p)?]))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+            z_comm: vec![mkpt(sys, w.z_comm)?],
+            t_comm: w.t_comm.iter().map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
+        // OCaml computes `Verifier_index.digest` inside
+        // `incrementally_verify_proof`, after all proof witnesses have been
+        // allocated and immediately before transcript absorption.
+        let vk_digest: FieldVar<Fq> = {
+            let mut index_sponge = crate::sponge::PoseidonSponge::new();
+            let mut coords = Vec::with_capacity(56);
+            for pt in vk.sigma_init.iter().chain(vk.sigma_last.iter()).chain(vk.coefficients.iter()).chain([&vk.generic, &vk.psm, &vk.complete_add, &vk.mul, &vk.emul, &vk.endomul_scalar]) {
+                coords.push(pt.x.clone()); coords.push(pt.y.clone());
+            }
+            index_sponge.absorb(sys, loc!(), &coords);
+            index_sponge.squeeze(sys, loc!())
         };
         let advice = Advice {
             combined_inner_product: t1(cip),

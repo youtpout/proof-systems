@@ -56,6 +56,7 @@ pub struct VerificationKeyComm<F: PrimeField> {
     pub sigma_last: Vec<Point<F>>,
 }
 
+
 /// The proof messages absorbed by the Fq-sponge (base subset): witness,
 /// permutation and quotient commitments, each given as its chunks.
 pub struct Messages<F: PrimeField> {
