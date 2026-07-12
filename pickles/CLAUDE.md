@@ -589,3 +589,30 @@ des constantes). Comparaison coeff-à-coeff (outil labels) :
   l'émission des mêmes R1CS qu'OCaml sans toucher `cvar.rs`. Mesurer avec
   le tool de labels après ce changement isolé ; si concluant, envisager
   seulement alors un changement plus général dans `cvar::mul`/`cached_constants`.
+
+**Essai fait et REVERTÉ — `lookup_pattern_range_check` en chaîne `.or()`.**
+Lecture directe d'OCaml (`~/Projects/mina/src/lib/crypto/kimchi_backend/common/plonk_types.ml:263-320`,
+`Features.to_full`) : `lookup_pattern_range_check = range_check0 ||| range_check1 ||| rot`
+est un chaînage `or_` PLAT (2×`.or()`), alors que `table_width_at_least_1`/
+`lookups_per_row_4` passent bien par le combinateur `any` (`~any:(fun x -> lazy
+(B.any …))`, donc bien `Boolean.any`). Notre api.rs (ligne ~507) utilisait
+`Boolean::any(&[range_check0,range_check1,rot])` (3 arguments) pour LES
+DEUX cas — hypothèse : `lookup_pattern_range_check` devrait utiliser
+`.or().or()` au lieu de `any`. **Testé, RÉGRESSE fortement** : Generic
+556→**555**, divergence 2869→**3844**. Reverté immédiatement (diff propre,
+retour confirmé à 2869). Donc soit l'hypothèse de lecture est incorrecte
+(peut-être que le vrai `Boolean.any` OCaml pour 3 args EST algébriquement
+équivalent à `sum.equal(zero)` et produit le même gate qu'un `or` chaîné one
+optimisé différemment côté kimchi — soit la divergence row-40 ne vient PAS
+de ce site précis du tout (l'attribution au bloc `assert_consistent` était
+une corrélation de position, pas une preuve directe — aucune capture
+`SNARKY_LOG_CONSTRAINTS` n'a authentifié que jsoo rows 40-73 EXECUTENT bien
+`Plonk_types.Features.to_full`/`assert_consistent`, seulement une
+coïncidence de comptage de rows). **Ne pas réessayer cette piste sans
+d'abord obtenir une capture jsoo authentifiant précisément quelle fonction
+OCaml émet les rows 40-73** (le log `SNARKY_LOG_CONSTRAINTS` capturé cette
+session, `/tmp/claude-1000/wraplog2.txt`, ne contenait pas de marqueurs
+`wrap_main.ml`/`assert_consistent` autour de cette région — l'instrumentation
+de labels actuelle ne couvre que le côté RUST, pas jsoo à ce niveau de
+détail ; il faudrait ajouter des labels OCaml explicites ou recouper avec
+les line numbers du fichier comme fait plus haut pour `choose_key`).
