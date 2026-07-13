@@ -123,7 +123,12 @@ where
     assert_eq!(lr.len(), prechallenges.len());
     assert!(!lr.is_empty(), "bullet_reduce_terms: no rounds");
 
-    let mut acc: Option<Point<F>> = None;
+    // OCaml first maps `term_and_challenge` over every (L, R) pair, producing
+    // all `endo_inv(L) + endo(R)` terms, and only then runs `Array.reduce` on
+    // that array.  Reducing eagerly inside this loop interleaves the running
+    // sum's CompleteAdd with the next round's EndoMul block, yielding the same
+    // point but a different gate order for every round after the first.
+    let mut terms = Vec::with_capacity(lr.len());
     for ((l, r), pre) in lr.iter().zip(prechallenges) {
         let left = endo_inv::<F, C>(
             sys,
@@ -135,13 +140,15 @@ where
             endo_scalar,
         )?;
         let right = endo(sys, loc.clone(), r, pre, SCALAR_CHALLENGE_BITS, endo_base)?;
-        let term = add_fast(sys, loc.clone(), &left, &right)?;
-        acc = Some(match acc {
-            None => term,
-            Some(a) => add_fast(sys, loc.clone(), &a, &term)?,
-        });
+        terms.push(add_fast(sys, loc.clone(), &left, &right)?);
     }
-    Ok(acc.unwrap())
+
+    let mut terms = terms.into_iter();
+    let mut acc = terms.next().expect("bullet_reduce_terms: no rounds");
+    for term in terms {
+        acc = add_fast(sys, loc.clone(), &acc, &term)?;
+    }
+    Ok(acc)
 }
 
 /// The sponge-driven prechallenge derivation of pickles' `bullet_reduce`
@@ -244,6 +251,81 @@ where
 /// through the endomorphism gadget ([`endo`]). The sponge-driven derivation of
 /// `u`, the prechallenges and `c` is handled by the caller.
 #[allow(clippy::too_many_arguments)]
+pub fn prepare_bulletproof_q<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    combined_polynomial: &Point<F>,
+    lr_prod: &Point<F>,
+    u: &Point<F>,
+    cip: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    num_bits: usize,
+) -> SnarkyResult<Point<F>> {
+    use crate::plonk_curve_ops::add_fast;
+
+    let uc = cip.scale(sys, loc.clone(), u, num_bits)?;
+    let p_prime = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof p_prime add")),
+        combined_polynomial,
+        &uc,
+    )?;
+    add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof q add")),
+        &p_prime,
+        lr_prod,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn check_bulletproof_equation_from_q<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    q: &Point<F>,
+    u: &Point<F>,
+    b: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    z1: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    z2: &crate::plonk_curve_ops::ShiftedScalar<F>,
+    c: &FieldVar<F>,
+    delta: &Point<F>,
+    challenge_polynomial_commitment: &Point<F>,
+    h_generator: &Point<F>,
+    endo_base: F,
+    num_bits: usize,
+) -> SnarkyResult<snarky::Boolean<F>> {
+    use crate::common::SCALAR_CHALLENGE_BITS;
+    use crate::plonk_curve_ops::add_fast;
+
+    let cq = endo(sys, loc.clone(), q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
+    let lhs = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof lhs add")),
+        &cq,
+        delta,
+    )?;
+
+    let b_u = b.scale(sys, loc.clone(), u, num_bits)?;
+    let g_plus_b_u = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof g_plus_b_u add")),
+        challenge_polynomial_commitment,
+        &b_u,
+    )?;
+    let z1_g_plus_b_u = z1.scale(sys, loc.clone(), &g_plus_b_u, num_bits)?;
+    let z2_h = z2.scale(sys, loc.clone(), h_generator, num_bits)?;
+    let rhs = add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | bulletproof rhs add")),
+        &z1_g_plus_b_u,
+        &z2_h,
+    )?;
+
+    let x_eq = lhs.x.equal(sys, loc.clone(), &rhs.x)?;
+    let y_eq = lhs.y.equal(sys, loc.clone(), &rhs.y)?;
+    snarky::Boolean::all(&[x_eq, y_eq], sys, loc)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn check_bulletproof_equation<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
@@ -261,54 +343,30 @@ pub fn check_bulletproof_equation<F: PrimeField>(
     endo_base: F,
     num_bits: usize,
 ) -> SnarkyResult<snarky::Boolean<F>> {
-    use crate::common::SCALAR_CHALLENGE_BITS;
-    use crate::plonk_curve_ops::add_fast;
-
-    // q = combined_polynomial + cip·u + lr_prod
-    let uc = cip.scale(sys, loc.clone(), u, num_bits)?;
-    let p_prime = add_fast(
+    let q = prepare_bulletproof_q(
         sys,
-        Cow::Owned(format!("{loc} | bulletproof p_prime add")),
+        loc.clone(),
         combined_polynomial,
-        &uc,
-    )?;
-    let q = add_fast(
-        sys,
-        Cow::Owned(format!("{loc} | bulletproof q add")),
-        &p_prime,
         lr_prod,
+        u,
+        cip,
+        num_bits,
     )?;
-
-    // lhs = endo(q, c) + delta
-    let cq = endo(sys, loc.clone(), &q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
-    let lhs = add_fast(
+    check_bulletproof_equation_from_q(
         sys,
-        Cow::Owned(format!("{loc} | bulletproof lhs add")),
-        &cq,
+        loc,
+        &q,
+        u,
+        b,
+        z1,
+        z2,
+        c,
         delta,
-    )?;
-
-    // rhs = z1·(challenge_polynomial_commitment + b·u) + z2·H
-    let b_u = b.scale(sys, loc.clone(), u, num_bits)?;
-    let g_plus_b_u = add_fast(
-        sys,
-        Cow::Owned(format!("{loc} | bulletproof g_plus_b_u add")),
         challenge_polynomial_commitment,
-        &b_u,
-    )?;
-    let z1_g_plus_b_u = z1.scale(sys, loc.clone(), &g_plus_b_u, num_bits)?;
-    let z2_h = z2.scale(sys, loc.clone(), h_generator, num_bits)?;
-    let rhs = add_fast(
-        sys,
-        Cow::Owned(format!("{loc} | bulletproof rhs add")),
-        &z1_g_plus_b_u,
-        &z2_h,
-    )?;
-
-    // equal_g lhs rhs = Boolean.all [lhs.x == rhs.x; lhs.y == rhs.y]
-    let x_eq = lhs.x.equal(sys, loc.clone(), &rhs.x)?;
-    let y_eq = lhs.y.equal(sys, loc.clone(), &rhs.y)?;
-    snarky::Boolean::all(&[x_eq, y_eq], sys, loc)
+        h_generator,
+        endo_base,
+        num_bits,
+    )
 }
 
 #[cfg(test)]

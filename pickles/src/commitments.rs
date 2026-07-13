@@ -66,6 +66,13 @@ pub fn ft_comm<F: PrimeField>(
     // chunked_t_comm = reduce_chunks(t_comm)
     let chunked_t = reduce_chunks(sys, loc.clone(), t_comm, zeta_to_srs_length, num_bits)?;
 
+    // OCaml evaluates the right-hand argument of
+    // `f_comm + chunked_t + negate (scale chunked_t zeta_to_domain_size)`
+    // before the two additions.  Preserve that order: `scale_fast` emits a
+    // long VarBaseMul block, so computing `sum` first moves one CompleteAdd
+    // across that block even though the resulting point is identical.
+    let t_scaled = zeta_to_domain_size.scale(sys, loc.clone(), &chunked_t, num_bits)?;
+
     // ft_comm = f_comm + chunked_t - zeta_to_domain_size · chunked_t
     let sum = add_fast(
         sys,
@@ -73,7 +80,6 @@ pub fn ft_comm<F: PrimeField>(
         &f_comm,
         &chunked_t,
     )?;
-    let t_scaled = zeta_to_domain_size.scale(sys, loc.clone(), &chunked_t, num_bits)?;
     add_fast(
         sys,
         Cow::Owned(format!("{loc} | ft_comm final add")),

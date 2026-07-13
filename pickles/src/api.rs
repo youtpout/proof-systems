@@ -16,7 +16,7 @@
 //! the finalize loop on the wrap side — the circuit pieces exist; the
 //! surrounding data plumbing lands with the recursive API.
 
-use ark_ff::{BigInteger, One, PrimeField};
+use ark_ff::{BigInteger, Field, One, PrimeField};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use kimchi::circuits::wires::{COLUMNS, PERMUTS};
 use kimchi::curve::KimchiCurve;
@@ -434,10 +434,27 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // branch data to a pure constant.
         let which_branch: FieldVar<Fq> = sys.compute(loc!(), |_| Fq::from(0u64))?;
         let branch0 = which_branch.equal(sys, loc!(), &FieldVar::constant(Fq::from(0u64)))?;
-        branch0
-            .to_field_var()
-            .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
-        let proofs_verified = branch0.to_field_var().mul(
+        // `One_hot_vector.of_index` finishes with `Boolean.Assert.any`.  Even
+        // for a single branch Snarky implements that assertion as
+        // `assert_non_zero(sum bits)`: witness the inverse and constrain
+        // `inverse * branch0 = 1`.  A linear `branch0 = 1` is logically
+        // equivalent, but does not emit OCaml's `Checked.inv` R1CS half and
+        // shifts the first verifier-index Poseidon train by one Generic row.
+        let branch0_field = branch0.to_field_var();
+        let branch0_for_witness = branch0_field.clone();
+        let branch0_inv: FieldVar<Fq> = sys.compute(loc!(), move |env| {
+            env.read_var(&branch0_for_witness)
+                .inverse()
+                .unwrap_or_else(|| Fq::from(0u64))
+        })?;
+        sys.assert_r1cs(
+            Some("one-hot any".into()),
+            loc!(),
+            branch0_inv,
+            branch0_field.clone(),
+            FieldVar::constant(Fq::from(1u64)),
+        )?;
+        let proofs_verified = branch0_field.mul(
             &FieldVar::constant(Fq::from(w.unfinalized.len() as u64)),
             Some("choose proofs_verified".into()),
             loc!(),

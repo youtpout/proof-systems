@@ -126,34 +126,6 @@ where
 /// separate 1-bit (conditional) public-input term.
 pub use crate::plonk_curve_ops::split_field;
 
-/// Matches the OCaml public-input fold's row scheduling: a pending half
-/// Generic row is emitted immediately after the CompleteAdd custom gate.
-fn add_fast_before_pending_generic<F: PrimeField>(
-    sys: &mut RunState<F>,
-    loc: Cow<'static, str>,
-    p1: &Point<F>,
-    p2: &Point<F>,
-    flush_after: bool,
-) -> SnarkyResult<Point<F>> {
-    let previous_flush = sys
-        .system
-        .as_ref()
-        .map(|system| system.flush_generic_before_custom());
-    if let Some(system) = &mut sys.system {
-        system.set_flush_generic_before_custom(false);
-    }
-    let result = add_fast(sys, loc, p1, p2);
-    if let Some(system) = &mut sys.system {
-        if let Some(previous_flush) = previous_flush {
-            system.set_flush_generic_before_custom(previous_flush);
-        }
-        if flush_after {
-            system.flush_pending_generic();
-        }
-    }
-    result
-}
-
 /// The in-circuit public-input commitment:
 /// `x_hat = -(Σ_i input_i · L_i) + H`.
 ///
@@ -207,24 +179,22 @@ pub fn public_input_commitment<F: PrimeField>(
                 ..
             } => {
                 let scaled = scale_fast2_prime(sys, loc.clone(), lagrange, value, *num_bits)?;
-                acc = add_fast_before_pending_generic(
+                acc = add_fast(
                     sys,
                     Cow::Owned(format!("{loc} | public_input packed add")),
                     &acc,
                     &scaled,
-                    true,
                 )?;
             }
         }
     }
 
     // x_hat = -(acc) + H (blinding)
-    add_fast_before_pending_generic(
+    add_fast(
         sys,
         Cow::Owned(format!("{loc} | public_input blinding add")),
         &acc.negate(),
         h,
-        false,
     )
 }
 

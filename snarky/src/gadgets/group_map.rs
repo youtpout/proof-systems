@@ -15,7 +15,11 @@ use ark_ec::short_weierstrass::SWCurveConfig;
 use ark_ff::PrimeField;
 use groupmap::BWParameters;
 
-use crate::{Boolean, FieldVar, RunState, SnarkyResult};
+use crate::{
+    constraint_system::BasicSnarkyConstraint,
+    runner::Constraint,
+    Boolean, FieldVar, RunState, SnarkyResult,
+};
 
 /// Finds the first quadratic non-residue of the field.
 fn non_residue<F: PrimeField>() -> F {
@@ -66,12 +70,16 @@ pub fn sqrt_exn<F: PrimeField>(
             .sqrt()
             .expect("sqrt_exn: not a square")
     })?;
-    sys.assert_r1cs(
+    // OCaml's `Field.Checked.sqrt` uses the dedicated Square constraint.
+    // Encoding the same equation as a generic R1CS is sound but changes both
+    // the Generic coefficients and how adjacent halves are packed.
+    sys.add_constraint(
+        Constraint::BasicSnarkyConstraint(BasicSnarkyConstraint::Square(
+            y.clone(),
+            x.clone(),
+        )),
         Some("sqrt_exn".into()),
         loc,
-        y.clone(),
-        y.clone(),
-        x.clone(),
     )?;
     Ok(y)
 }
@@ -164,9 +172,24 @@ where
     let (y2, b2) = sqrt_flagged(sys, loc.clone(), &y2_squared)?;
     let (y3, b3) = sqrt_flagged(sys, loc.clone(), &y3_squared)?;
 
-    Boolean::any(&[&b1, &b2, &b3], sys, loc.clone())?
-        .to_field_var()
-        .assert_equals(sys, loc.clone(), &FieldVar::constant(F::one()))?;
+    // `Boolean.Assert.any [b1; b2; b3]` is implemented by OCaml as
+    // `assert_non_zero (b1 + b2 + b3)`, i.e. one inverse R1CS.  Building a
+    // Boolean with `Boolean::any` first would use Field.equal (two R1CS) and
+    // only then assert the result, adding one superfluous nonlinear half.
+    let candidates_sum = &(&b1.to_field_var() + &b2.to_field_var()) + &b3.to_field_var();
+    let sum_for_witness = candidates_sum.clone();
+    let candidates_sum_inv: FieldVar<F> = sys.compute(loc.clone(), move |env| {
+        env.read_var(&sum_for_witness)
+            .inverse()
+            .unwrap_or_else(F::zero)
+    })?;
+    sys.assert_r1cs(
+        Some("group-map any".into()),
+        loc.clone(),
+        candidates_sum_inv,
+        candidates_sum,
+        FieldVar::constant(F::one()),
+    )?;
 
     let x1_is_first = b1.to_field_var();
     let x2_is_first = b1.not().and(&b2, sys, loc.clone()).to_field_var();

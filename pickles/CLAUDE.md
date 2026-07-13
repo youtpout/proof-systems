@@ -1856,3 +1856,52 @@ y²=x³+5, marker fiable d'un assert_on_curve) :
 3. Après ça, l'écart Generic devrait passer de +16 à ~0 : bilan
    +16 rust = -22 markers manquants (16 lr + 6 delta/sg... en halves)
    + les demi-rows de réalignement — re-mesurer après chaque sous-étape.
+
+## Session 2026-07-13 — histogramme et ordre des 8192 gates exacts
+
+Baseline de départ : Generic 571 contre 569, 2702 rows divergentes, première
+divergence de type row 230. Quatre corrections sémantiques, mesurées
+séparément, ont fermé toute la structure du circuit :
+
+1. `One_hot_vector.of_index` : la fin OCaml `Boolean.Assert.any` n'est pas
+   l'égalité linéaire `branch0 = 1`. Elle appelle `assert_non_zero`, témoigne
+   l'inverse de la somme et émet un R1CS `inv * branch0 = 1`. Le port de ce
+   vrai gadget a supprimé la demi-contrainte manquante avant le premier train
+   Poseidon. Diff 2702 → 2102, types exacts jusqu'à la row 1954.
+2. `Common.ft_comm` : l'expression OCaml calcule le `scale` de droite avant
+   les deux additions (ordre d'évaluation OCaml). Rust calculait la première
+   somme avant ce scale, déplaçant un CompleteAdd au travers d'un long bloc
+   VarBaseMul. Le calcul de `t_scaled` est maintenant antérieur à `sum`.
+   Diff 2102 → 1996.
+3. `group_map` : `Field.Checked.sqrt` utilise une contrainte `Square`, pas un
+   R1CS générique (trois occurrences). Son `Boolean.Assert.any` est aussi un
+   unique `assert_non_zero(b1+b2+b3)`, pas `Boolean::any`/`Field.equal` en deux
+   R1CS. Cette correction Snarky a fait passer Generic 571 → **569 exact**,
+   Zero 3051 → **3053 exact**, et le diff 1996 → 614.
+4. `bullet_reduce` : OCaml construit d'abord les 16 termes
+   `endo_inv(L_i)+endo(R_i)`, puis réduit le tableau ; Rust intercalait la
+   somme courante entre deux rounds. Le port en deux passes a ramené le diff
+   614 → 210. Enfin, OCaml calcule `p_prime`/`q` avant d'absorber delta et de
+   squeezer `c`; le découpage `prepare_bulletproof_q` puis
+   `check_bulletproof_equation_from_q` place ce bloc au bon endroit et ramène
+   le diff 210 → **153**.
+
+État actuel mesuré :
+
+- public input 40/40, domaine 8192/8192 ;
+- histogrammes exacts : Generic 569, Poseidon 1001, Zero 3053,
+  CompleteAdd 258, VarBaseMul 663, EndoMulScalar 184, EndoMul 2464 ;
+- **zéro divergence de type** sur les 8192 rows ;
+- 153 rows restantes : 93 coefficients, 60 wiring ;
+- segments coefficients : 40–44, 47–51, 54–58, 60–64, 67–71,
+  73–103, 168–172, 174–178, 594–595, 703, 705–706, 2058,
+  2081–2085, 2088–2090, 2096–2101, 5938–5943, 5956 ;
+- les divergences wiring isolées/répétées restent notamment aux rows
+  12, 53, 66, 167, 697–707, 1328, 2059–2102, puis une série périodique
+  dans les rounds bulletproof.
+
+Les trois tentatives ci-dessus ne sont pas des ajustements factices : les
+valeurs mathématiques sont inchangées, les tests unitaires group-map et
+bulletproof passent, et chaque modification a strictement réduit le diff.
+La prochaine phase est exclusivement la parité des lincoms et de l'ordre des
+variables témoins ; ne plus modifier le nombre ni l'ordre des types de gates.

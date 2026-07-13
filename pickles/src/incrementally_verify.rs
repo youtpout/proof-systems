@@ -31,7 +31,8 @@ use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::bulletproof::{
-    bullet_reduce_terms, check_bulletproof_equation, combine_commitments, CommitmentOpt,
+    bullet_reduce_terms, check_bulletproof_equation_from_q, combine_commitments,
+    prepare_bulletproof_q, CommitmentOpt,
 };
 use crate::commitments::ft_comm;
 use crate::oracles::{absorb_commitment, FqOracles, PointVar};
@@ -442,6 +443,19 @@ where
         endo_scalar,
     )?;
 
+    // OCaml computes p_prime and q before it absorbs delta and squeezes c.
+    // Keep this separate from the remainder of the final equation so its
+    // Type1 scale_fast block precedes the transcript's Poseidon/EndoMulScalar.
+    let q = prepare_bulletproof_q(
+        sys,
+        loc.clone(),
+        &combined_polynomial,
+        &lr_prod,
+        &u,
+        &advice.combined_inner_product,
+        num_bits,
+    )?;
+
     // absorb(delta); c = squeeze_scalar (raw 128-bit)
     absorb_commitment(
         sys,
@@ -452,13 +466,11 @@ where
     let c = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge_before_evaluations)?;
 
     // == The final inner-product-argument equation ==
-    let success = check_bulletproof_equation(
+    let success = check_bulletproof_equation_from_q(
         sys,
         loc,
-        &combined_polynomial,
-        &lr_prod,
+        &q,
         &u,
-        &advice.combined_inner_product,
         &advice.b,
         &openings.z1,
         &openings.z2,
