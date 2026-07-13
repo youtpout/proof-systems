@@ -1664,6 +1664,70 @@ d'absorptions OptSponge), et non ajouter un nouveau réglage de flush aveugle.
 Validation de ce jalon : 101/101 tests lib, 9/9 recorded, step **FULL MATCH**,
 wrap 8192/8192 rows et première divergence de type repoussée à 711.
 
+### Cinquième cible : custom gates exacts et Generic résiduel +10
+
+Les commits Claude suivant le jalon x_hat ont changé le diagnostic de façon
+importante (ils n'avaient pas encore été reportés dans ce fichier) :
+
+1. `638dd90463` aligne `reduce_lincom`/`canonicalize` sur le `Map.fold_right`
+   OCaml en triant les variables par index croissant plutôt que par valeur de
+   coefficient. Cela corrige les slots l/r inversés des contraintes à deux
+   termes, notamment dans `opt_sponge add_in` ;
+2. `59f0299ec7` corrige le cas de base : avec
+   `Max_proofs_verified = 0`, la preuve step ne transporte AUCUN challenge de
+   récursion kimchi. Le vecteur `sg_old` in-circuit est donc vide, sans absorbs
+   de zéros masqués ni entrées `Maybe` dans `combine_commitments`. Tous les
+   types de custom gates deviennent exacts : Poseidon 1001, EndoMul 2464,
+   CompleteAdd 258, VarBaseMul 663 et EndoMulScalar 184 ;
+3. `9d4930b21c` documente le recensement des marqueurs on-curve jsoo : delta
+   et sg avant le sponge, puis un point lr par round bulletproof ;
+4. `d91443851d` porte ce recensement : les openings lr/delta/sg passent par
+   `Inner_curve.typ`, les points VK sélectionnés restent unchecked (aucun
+   marqueur VK côté jsoo), et `endo_inv` vérifie son point témoigné. Il retire
+   également le préflush global des demi-rows Generic avant custom gates : le
+   backend OCaml les conserve à travers les custom rows jusqu'à la prochaine
+   moitié. Les marqueurs sont **73 = 73**, tous les custom gates restent
+   exacts, et le résiduel devient Rust Generic **579** contre OCaml **569**.
+
+Validation déclarée et reproduite au dernier commit : step **FULL MATCH**,
+101/101 lib et 9/9 recorded. Le travail restant porte maintenant sur dix rows
+Generic et leurs coefficients/wiring, plus les divergences de permutation ;
+il ne faut plus chercher une différence de structure Poseidon/EC/endo.
+
+Essais postérieurs au commit `d91443851d`, mesurés puis revertés :
+
+- ajouter les deux checks `Other_field.Packed.typ` des valeurs interdites de
+  z1/z2 dans `api.rs` fait passer Generic **579 → 592** (+13) et décale le
+  circuit dès la première région custom. Cette tentative non commitée a été
+  retirée ; ces checks ne sont pas absents à cet endroit sous cette forme ;
+- supprimer `opt_sponge::add_in` lorsque `x` est la constante zéro fait passer
+  Generic **579 → 544** (-35) et crée 3961 divergences, dès row 231. OCaml
+  conserve donc ces contraintes (ou leurs alias matérialisés) ; ne pas ajouter
+  cette optimisation globale.
+
+Prochaine méthode : repartir strictement de `d91443851d`, produire le diff
+avec labels/HL logs, puis attribuer les dix Generic excédentaires par site.
+Les custom histograms exacts servent désormais d'invariant : toute tentative
+qui modifie un de leurs compteurs ou déplace le premier train Poseidon est une
+régression à reverter immédiatement.
+
+Mesure complémentaire sur ce baseline propre : les **73 marqueurs c=5 sont
+exacts en nombre mais pas en position**. Jsoo les place aux rows 104–166 (32),
+181–229 (25), puis 4261+74k (16). Rust les place aux rows 125–237 (57
+contigus), puis 4271, 4345, et ensuite avec une période 75 jusqu'à 5395. Avant
+le premier Poseidon, Rust compte donc 7 Generic de trop et démarre row 238,
+contre row 231 côté jsoo. La décomposition est précise : Rust possède 21 rows
+de plus avant le premier groupe openings, mais ne possède pas le gap jsoo de
+14 rows entre les groupes de 32 et 25 marqueurs ; bilan net +7.
+
+Le gap jsoo correspond à l'emplacement de z1/z2 dans `Bulletproof.wrap_typ`,
+mais l'essai qui ajoutait seulement les forbidden checks (+13 rows) est
+insuffisant et régressif puisqu'il ne retire pas simultanément les 21 rows
+excédentaires antérieures. La prochaine passe doit donc comparer le bloc
+pré-openings (prev_statement / feature expansion / choose_key) et déplacer le
+traitement z1/z2 en une seule correction structurée. Ne pas réintroduire les
+checks z1/z2 isolément.
+
 ## Session nuit 2026-07-13 — deux fixes majeurs commis, état & pistes
 
 ### Fix 1 (snarky, commit `reduce_lincom`) : ordre des termes par INDEX
