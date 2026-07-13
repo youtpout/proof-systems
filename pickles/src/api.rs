@@ -388,7 +388,35 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             Ok(out)
         };
         let cpt = |p: (Fq, Fq)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
-
+        let other_field_equal =
+            |sys: &mut RunState<Fq>, lhs: &FieldVar<Fq>, rhs: Fq| -> SnarkyResult<Boolean<Fq>> {
+                let z = lhs - &FieldVar::constant(rhs);
+                let z_for_witness = z.clone();
+                let (result, z_inv): (FieldVar<Fq>, FieldVar<Fq>) =
+                    sys.compute(loc!(), move |env| {
+                        let z = env.read_var(&z_for_witness);
+                        match z.inverse() {
+                            Some(inv) => (Fq::from(0u64), inv),
+                            None => (Fq::one(), Fq::from(0u64)),
+                        }
+                    })?;
+                // `Checked.assert_all` stores this pair in reverse order.
+                sys.assert_r1cs(
+                    Some("equals_2".into()),
+                    loc!(),
+                    result.clone(),
+                    z.clone(),
+                    FieldVar::zero(),
+                )?;
+                sys.assert_r1cs(
+                    Some("equals_1".into()),
+                    loc!(),
+                    z_inv,
+                    z,
+                    FieldVar::constant(Fq::one()) - &result,
+                )?;
+                Ok(Boolean::create_unsafe(result))
+            };
         // destructure the statement (to_data order)
         let cip = stmt[0].clone();
         let b = stmt[1].clone();
@@ -419,7 +447,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             for slot in stmt[0..5].iter().rev() {
                 let mut eqs = Vec::with_capacity(forbidden.len());
                 for &value in &forbidden {
-                    eqs.push(slot.equal(sys, loc!(), &FieldVar::constant(value))?);
+                    eqs.push(other_field_equal(sys, slot, value)?);
                 }
                 let eq_refs: Vec<&snarky::Boolean<Fq>> = eqs.iter().collect();
                 let any = snarky::Boolean::any(&eq_refs, sys, loc!())?;
@@ -433,7 +461,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // single-branch o1js program.  Mirror that shape instead of folding the
         // branch data to a pure constant.
         let which_branch: FieldVar<Fq> = sys.compute(loc!(), |_| Fq::from(0u64))?;
-        let branch0 = which_branch.equal(sys, loc!(), &FieldVar::constant(Fq::from(0u64)))?;
+        let branch0 = other_field_equal(sys, &which_branch, Fq::from(0u64))?;
         // `One_hot_vector.of_index` finishes with `Boolean.Assert.any`.  Even
         // for a single branch Snarky implements that assertion as
         // `assert_non_zero(sum bits)`: witness the inverse and constrain
@@ -543,14 +571,22 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             "one Lagrange slot per expanded step statement element"
         );
         let mut elements = Vec::with_capacity(w.step_statement.len());
-        for slot in &w.step_statement {
+        for (slot_index, slot) in w.step_statement.iter().enumerate() {
             match *slot {
                 WrapStepStatementSlot::Field(value) => {
                     let var = sys.compute(loc!(), move |_| value)?;
                     elements.push(StepStatementElement::Split(var));
                 }
                 WrapStepStatementSlot::Packed { value, num_bits } => {
-                    let var = sys.compute(loc!(), move |_| value)?;
+                    // In the base case this is the messages-for-next-step
+                    // digest already present at public-input slot 12. OCaml
+                    // threads that same cvar into x_hat instead of allocating
+                    // an equal private witness.
+                    let var = if slot_index == 0 {
+                        stmt[12].clone()
+                    } else {
+                        sys.compute(loc!(), move |_| value)?
+                    };
                     elements.push(StepStatementElement::Packed {
                         value: var,
                         num_bits,
@@ -744,7 +780,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             for slot in [&z1_repr, &z2_repr] {
                 let mut eqs = Vec::with_capacity(forbidden.len());
                 for &value in &forbidden {
-                    eqs.push(slot.equal(sys, loc!(), &FieldVar::constant(value))?);
+                    eqs.push(other_field_equal(sys, slot, value)?);
                 }
                 let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
                 let any = Boolean::any(&eq_refs, sys, loc!())?;

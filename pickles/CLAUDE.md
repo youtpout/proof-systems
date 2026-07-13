@@ -1964,3 +1964,35 @@ Essais mesurés puis retirés : inversion de l'ordre des deux valeurs interdites
 `Boolean.or` (87 → 94), et allocation gauche-à-droite des sélecteurs
 `x1/x2/x3` (84 → 84). Ne pas réintroduire ces variantes sans une nouvelle
 preuve de localisation.
+
+### Dernière ligne droite : ordre `Checked.assert_all` et réutilisation du digest
+
+La cause commune des sept blocs `Other_field.check` a été identifiée. OCaml
+construit chaque `Field.Checked.equal` normalement, mais son
+`Checked.assert_all [equals_1; equals_2]` enregistre la liste tail-first dans
+ce contexte de check de type. Rust ajoutait systématiquement `equals_1` puis
+`equals_2`. Un helper ciblé, utilisé uniquement pour les cinq slots différés
+du statement et les deux représentants `z1`/`z2`, conserve le même témoin et
+les mêmes équations mais émet `equals_2` puis `equals_1`. Résultat strict :
+**84 → 46**, avec coefficients **52 → 17** et wiring 32→29. Le même ordre sur
+`which_branch` retire encore une divergence de wiring : **46 → 45**.
+
+La première divergence historique row 12 venait d'une duplication de cvar :
+le digest `messages_for_next_step` est déjà le public input `stmt[12]`, mais
+Rust réallouait une variable privée égale pour le premier slot du statement
+step utilisé par x̂. OCaml réutilise directement le cvar public. Le port de
+cette réutilisation supprime les rows divergentes 12 et 103 sans modifier les
+gates ni les valeurs, et donne l'état courant **44 rows divergentes** :
+17 coefficients, 27 wiring, toujours type=0 et histogrammes exacts.
+
+Segments coefficients restants : 73–74, 594–595, 703, 705–706, 2058,
+2095–2096, 5938–5943, 5956. Wiring restant : 697, 699–702, 704, 707, 2059,
+2073–2074, 2076, 2093–2094, 2097–2102, 5460, 5562, 5566, 5624–5625,
+5727, 5934, 5937.
+
+Essais supplémentaires retirés : inversion du tuple témoin `(r, inv)`
+(84→84), inversion des contraintes des six comparaisons de
+`finalize_deferred` (45→45), et inversion locale des opérandes des `&&` du
+group-map (45→45). La réduction des checks de type ne doit pas être
+généralisée à tout `Field.equal` : le step utilise la variante normale et
+reste déjà byte-for-byte iso.
