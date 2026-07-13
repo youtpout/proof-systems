@@ -116,8 +116,8 @@ where
     let t2 = t.mul(t, None, loc.clone(), sys)?;
 
     // alpha = 1 / (t2 * (t2 + fu))
-    let alpha_inv = t2.mul(
-        &(&t2 + &FieldVar::constant(params.fu)),
+    let alpha_inv = (&t2 + &FieldVar::constant(params.fu)).mul(
+        &t2,
         None,
         loc.clone(),
         sys,
@@ -164,18 +164,17 @@ where
         Ok(&(&x_cubed + &x.scale(G::COEFF_A)) + &FieldVar::constant(G::COEFF_B))
     };
 
-    // OCaml's simultaneous
-    // `let y1,b1 = ... and y2,b2 = ... and y3,b3 = ...` evaluates its
-    // right-hand sides from right to left.  Keep each y² computation adjacent
-    // to its flagged square root, in the observed y3/y2/y1 order; computing
-    // all three y² values first is equivalent mathematically but allocates a
-    // different witness/lincom schedule.
-    let y3_squared = y_squared(sys, &x3)?;
-    let (y3, b3) = sqrt_flagged(sys, loc.clone(), &y3_squared)?;
-    let y2_squared = y_squared(sys, &x2)?;
-    let (y2, b2) = sqrt_flagged(sys, loc.clone(), &y2_squared)?;
+    // Keep each y² computation adjacent to its flagged square root and follow
+    // the left-to-right allocation observed for OCaml's simultaneous
+    // `let y1,b1 = ... and y2,b2 = ... and y3,b3 = ...`. Computing all three
+    // y² values first is mathematically equivalent but changes the lincom
+    // schedule.
     let y1_squared = y_squared(sys, &x1)?;
     let (y1, b1) = sqrt_flagged(sys, loc.clone(), &y1_squared)?;
+    let y2_squared = y_squared(sys, &x2)?;
+    let (y2, b2) = sqrt_flagged(sys, loc.clone(), &y2_squared)?;
+    let y3_squared = y_squared(sys, &x3)?;
+    let (y3, b3) = sqrt_flagged(sys, loc.clone(), &y3_squared)?;
 
     // `Boolean.Assert.any [b1; b2; b3]` is implemented by OCaml as
     // `assert_non_zero (b1 + b2 + b3)`, i.e. one inverse R1CS.  Building a
@@ -196,8 +195,8 @@ where
         FieldVar::constant(F::one()),
     )?;
 
-    // The following OCaml `let ... and ...` is likewise evaluated right to
-    // left: construct x3's two conjunctions before x2's one conjunction.
+    // The nested conjunction expressions are allocated from the right-most
+    // simultaneous binding first.
     let x3_is_first = b1
         .not()
         .and(&b2.not(), sys, loc.clone())
@@ -211,10 +210,14 @@ where
         |a: &FieldVar<F>, b: &FieldVar<F>, sys: &mut RunState<F>| a.mul(b, None, loc.clone(), sys);
     // Tuple components are evaluated right-to-left by the OCaml code: emit
     // the y-coordinate multiplications before the x-coordinate ones.
-    let y = &(&mul(&x1_is_first, &y1, sys)? + &mul(&x2_is_first, &y2, sys)?)
-        + &mul(&x3_is_first, &y3, sys)?;
-    let x = &(&mul(&x1_is_first, &x1, sys)? + &mul(&x2_is_first, &x2, sys)?)
-        + &mul(&x3_is_first, &x3, sys)?;
+    let y3_term = mul(&x3_is_first, &y3, sys)?;
+    let y2_term = mul(&x2_is_first, &y2, sys)?;
+    let y1_term = mul(&x1_is_first, &y1, sys)?;
+    let y = &(&y1_term + &y2_term) + &y3_term;
+    let x3_term = mul(&x3_is_first, &x3, sys)?;
+    let x2_term = mul(&x2_is_first, &x2, sys)?;
+    let x1_term = mul(&x1_is_first, &x1, sys)?;
+    let x = &(&x1_term + &x2_term) + &x3_term;
 
     Ok((x, y))
 }

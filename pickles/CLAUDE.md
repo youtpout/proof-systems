@@ -1918,8 +1918,49 @@ candidats et les coordonnées de gauche à droite.
 
 Le port de cet ordre ne change aucune valeur ni aucun type de gate et conserve
 le test group-map, mais réduit strictement le diff wrap **153 → 149** :
-type=0, coefficients 93→89, wiring 60. Un essai complémentaire consistant à
-allouer les champs obligatoires de `choose_key` dans l'ordre inverse du record
-OCaml a été mesuré à **149 → 149** ; il a donc été retiré. Les seals de ce
-record sont déjà normalisés par le parcours interne et cette piste ne doit pas
-être retentée telle quelle.
+type=0, coefficients 93→89, wiring 60. Un premier essai limité à inverser les
+champs obligatoires dans le littéral Rust de `choose_key` avait été mesuré à
+**149 → 149** ; il a été retiré. Cet essai incomplet ne réordonnait ni les
+vecteurs ni l'allocation explicite précédant le littéral ; la passe suivante
+explique et corrige ces deux points.
+
+### Passe lincom suivante : calendrier exact de la VK et du group-map
+
+L'analyse des valeurs présentes dans les 56 contraintes `choose_key` a donné
+la permutation exacte produite par OCaml. `Step.map` évalue les champs du
+record de droite à gauche et les `Vector.map` appliquent leur fonction du
+dernier élément au premier. Le port alloue donc explicitement :
+
+1. `endomul_scalar`, `emul`, `mul`, `complete_add`, `psm`, `generic` ;
+2. les 15 coefficients en ordre inverse ;
+3. le dernier sigma, puis les six premiers sigma en ordre inverse.
+
+Les vecteurs sont ensuite remis dans leur ordre logique avant de construire
+`VerificationKeyComm`. Les coordonnées de chaque `Double.map` sont scellées
+`y` puis `x`, comme le tuple OCaml. Cette correction est la réduction majeure
+de la passe : **141 → 87**, en supprimant les 29 divergences coefficientielles
+de la VK et la majorité de la série de wiring périodique dans l'IPA.
+
+Trois détails du group-map ont ensuite été isolés au lieu d'être testés dans
+un même patch :
+
+- `alpha_inv` doit conserver l'AST OCaml `(t2 + fu) * t2` : **147 → 146** ;
+- les trois `sqrt_flagged` sont alloués `y1`, `y2`, `y3` (gauche à droite),
+  contrairement à l'hypothèse précédente : **146 → 141** ;
+- dans chacune des coordonnées finales, les produits de sélection sont émis
+  `3`, `2`, `1`, puis recombinés dans l'ordre mathématique `1 + 2 + 3` :
+  **87 → 84**.
+
+État mesuré après cette passe : public input 40/40, 8192/8192 rows, tous les
+histogrammes exacts, zéro divergence de type, **84 rows divergentes**
+(52 coefficients, 32 wiring). Segments coefficients : 40–44, 47–51,
+54–58, 60–64, 67–71, 73–74, 168–172, 174–178, 594–595, 703, 705–706,
+2058, 2095–2096, 5938–5943, 5956. Le wiring restant est concentré aux rows
+12, 53, 66, 103, 167, 697–707, 2059, 2073–2076, 2093–2102, puis
+5460–5937.
+
+Essais mesurés puis retirés : inversion de l'ordre des deux valeurs interdites
+(87 → 87, avec coefficients 54→56), inversion globale des opérandes de
+`Boolean.or` (87 → 94), et allocation gauche-à-droite des sélecteurs
+`x1/x2/x3` (84 → 84). Ne pas réintroduire ces variantes sans une nouvelle
+preuve de localisation.

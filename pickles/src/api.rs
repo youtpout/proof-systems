@@ -570,27 +570,44 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // markers wired to the index-sponge absorbs (its pre-sponge markers
         // all belong to the openings/messages witnesses).
         let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
-            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
             let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
+            // `Double.map` constructs an OCaml pair.  Its tuple components
+            // are evaluated right-to-left, so the y-coordinate seal is
+            // emitted before the x-coordinate seal.
+            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
             Ok(Point::new(x, y))
         };
         let choose_pts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
-            let mut out = vec![];
-            for &p in ps {
+            let mut out = Vec::with_capacity(ps.len());
+            for &p in ps.iter().rev() {
                 out.push(choose_pt(sys, p)?);
             }
+            out.reverse();
             Ok(out)
         };
+        // OCaml evaluates the fields of the `Step.map` result record from
+        // right to left. Its vector map also invokes `f` from the last element
+        // to the first. Allocate in that exact order, then assemble the Rust
+        // record without adding constraints.
+        let endomul_scalar = choose_pt(sys, w.endomul_scalar)?;
+        let emul = choose_pt(sys, w.emul)?;
+        let mul = choose_pt(sys, w.mul)?;
+        let complete_add = choose_pt(sys, w.complete_add)?;
+        let psm = choose_pt(sys, w.psm)?;
+        let generic = choose_pt(sys, w.generic)?;
+        let coefficients = choose_pts(sys, &w.coefficients)?;
+        let sigma_last = choose_pts(sys, &w.sigma_last)?;
+        let sigma_init = choose_pts(sys, &w.sigma_init)?;
         let vk = VerificationKeyComm {
-            generic: choose_pt(sys, w.generic)?,
-            psm: choose_pt(sys, w.psm)?,
-            complete_add: choose_pt(sys, w.complete_add)?,
-            mul: choose_pt(sys, w.mul)?,
-            emul: choose_pt(sys, w.emul)?,
-            endomul_scalar: choose_pt(sys, w.endomul_scalar)?,
-            coefficients: choose_pts(sys, &w.coefficients)?,
-            sigma_init: choose_pts(sys, &w.sigma_init)?,
-            sigma_last: choose_pts(sys, &w.sigma_last)?,
+            generic,
+            psm,
+            complete_add,
+            mul,
+            emul,
+            endomul_scalar,
+            coefficients,
+            sigma_init,
+            sigma_last,
         };
         // For the N0 o1js branch, the feature set used by
         // `expand_feature_flags` is part of the selected verification key and
