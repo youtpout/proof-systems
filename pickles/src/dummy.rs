@@ -34,7 +34,11 @@ where
 /// `rounds` dummy challenges from the shared 128-bit stream, with their
 /// `to_field` images under `endo` (`Ipa.compute_challenge`).
 pub fn ipa_challenges<F: PrimeField>(chal_stream: &mut Ro, rounds: usize, endo: F) -> DummyIpa<F> {
-    let prechallenges: Vec<F> = (0..rounds).map(|_| chal_stream.next_field()).collect();
+    // `Pickles_types.Vector.init` enumerates its resulting vector in the
+    // opposite order from the calls to its initializer. Consume the random
+    // oracle forwards, then reverse the stored vector to match OCaml.
+    let mut prechallenges: Vec<F> = (0..rounds).map(|_| chal_stream.next_field()).collect();
+    prechallenges.reverse();
     let challenges_computed = prechallenges
         .iter()
         .map(|&c| crate::scalar_challenge::ScalarChallenge(c).to_field(endo))
@@ -46,8 +50,8 @@ pub fn ipa_challenges<F: PrimeField>(chal_stream: &mut Ro, rounds: usize, endo: 
 }
 
 /// The dummy wrap-side (Tock, 15 rounds) and step-side (Tick, 16 rounds)
-/// challenges, drawn from a single `"chal"` stream in that order (matching
-/// `dummy.ml`'s module-initialisation order).
+/// challenges, drawn from a single `"chal"` stream in that order and stored
+/// in `Pickles_types.Vector.init` order (matching `dummy.ml`).
 pub fn ipa_wrap_and_step<FWrap: PrimeField, FStep: PrimeField>(
     endo_wrap: FWrap,
     endo_step: FStep,
@@ -229,6 +233,34 @@ mod tests {
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
     use poly_commitment::commitment::b_poly_coefficients;
     use poly_commitment::SRS as _;
+    use std::str::FromStr;
+
+    /// Regression vectors from Pickles' `test_common.ml`.
+    #[test]
+    fn wrap_computed_challenges_match_ocaml() {
+        let expected = [
+            "7048930911355605315581096707847688535149125545610393399193999502037687877674",
+            "5945064094191074331354717685811267396540107129706976521474145740173204364019",
+            "20315491820009986698838977727629973056499886675589920515484193128018854963801",
+            "375929229548289966749422550601268097380795636681684498450629863247980915833",
+            "19682218496321100578766622300447982536359891434050417209656101638029891689955",
+            "516598185966802396400068849903674663130928531697254466925429658676832606723",
+            "23729760760563685146228624125180554011222918208600079938584869191222807389336",
+            "11155777282048225577422475738306432747575091690354122761439079853293714987855",
+            "24977767586983413450834833875715786066408803952857478894197349635213480783870",
+            "2813347787496113574506936084777563965225649411532015639663405402448028142689",
+            "22626141769059119580550800305467929090916842064220293932303261732461616709448",
+            "18748107085456859495495117012311103043200881556220793307463332157672741458218",
+            "22196219950929618042921320796106738233125483954115679355597636800196070731081",
+            "13054421325261400802177761929986025883530654947859503505174678618288142017333",
+            "4799483385651443229337780097631636300491234601736019220096005875687579936102",
+        ]
+        .map(|x| Fq::from_str(x).expect("valid OCaml Fq regression vector"));
+        let endo_wrap = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1;
+        let actual = wrap_challenges_computed::<Fq, Fp>(endo_wrap, endo_step);
+        assert_eq!(actual, expected);
+    }
 
     /// The dummy challenge streams are deterministic and correctly sized, and
     /// `compute_sg` equals the direct MSM of the b-poly coefficients.

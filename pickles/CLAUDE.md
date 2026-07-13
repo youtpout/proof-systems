@@ -2041,3 +2041,36 @@ l'index `2 - max_proofs_verified`. Il faut donc passer cette arité logique au
 hash du nouvel accumulateur et représenter ses états `s0/s1/s2` avec le même
 mode duplex. L'essai « supprimer les dummies quand N2 » a régressé à 30 rows :
 ne pas le refaire en changeant seulement les données d'entrée.
+
+## Jalon 2026-07-13 — iso complète Step + Wrap
+
+Les deux dernières divergences sont résolues. Leur cause n'était pas le mode
+duplex Poseidon ni la sélection du cache `s0/s1/s2`, mais l'ordre des
+challenges IPA dummy. Rust tirait bien les mêmes 15 valeurs `chal_1` à
+`chal_15` et appliquait le bon endomorphisme, mais les conservait dans l'ordre
+des appels. En OCaml, `Pickles_types.Vector.init` expose le vecteur dans
+l'ordre inverse. Le vecteur Rust était donc exactement le reverse du vecteur
+de référence ; cela changeait uniquement l'état Poseidon constant du nouvel
+accumulateur, d'où les deux coefficients différents aux rows 5943 et 5956.
+
+Le correctif consomme toujours le flux `Ro.chal` en avant, puis inverse chaque
+vecteur Wrap/Step avant de calculer ses challenges. Un test de régression
+compare désormais les 15 challenges Wrap aux vecteurs officiels de
+`pickles/test/test_common.ml`.
+
+Validation finale :
+
+- `cargo test -p pickles --lib` : **102/102** ;
+- `cargo test -p pickles --test recorded` : **9/9**, y compris N1, N2 et
+  la chaîne stable ;
+- step : **FULL MATCH**, public input 1/1, gates 512/512, histogramme,
+  coefficients et wiring identiques ;
+- wrap : **FULL MATCH**, public input 40/40, gates 8192/8192, histogramme,
+  coefficients et wiring identiques ;
+- smoke test o1js `rust-pickles-zkprogram.ts` : preuve valide, état public
+  `88`.
+
+Essai retiré et à ne pas réintroduire : supprimer le padding dummy du nouvel
+accumulateur. Cet essai modifie la structure Poseidon et régressait de 2 à 30
+rows. Le cache et le padding précédents étaient corrects ; seul l'ordre du
+vecteur dummy était fautif.
