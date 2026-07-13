@@ -1905,3 +1905,21 @@ valeurs mathématiques sont inchangées, les tests unitaires group-map et
 bulletproof passent, et chaque modification a strictement réduit le diff.
 La prochaine phase est exclusivement la parité des lincoms et de l'ordre des
 variables témoins ; ne plus modifier le nombre ni l'ordre des types de gates.
+
+### Passe lincom suivante : ordre d'évaluation du group-map
+
+Le `Snarky_group_map.Checked.wrap` OCaml utilise des liaisons simultanées
+`let ... and ...` et retourne le tuple `(x, y)`. Les expressions concernées
+sont évaluées de droite à gauche : chaque `y_squared` doit rester adjacent à
+son `sqrt_flagged`, dans l'ordre y3/y2/y1 ; les deux conjonctions de x3 sont
+créées avant celle de x2 ; les multiplications de la coordonnée y sont créées
+avant celles de x. Rust regroupait les trois `y_squared`, puis parcourait les
+candidats et les coordonnées de gauche à droite.
+
+Le port de cet ordre ne change aucune valeur ni aucun type de gate et conserve
+le test group-map, mais réduit strictement le diff wrap **153 → 149** :
+type=0, coefficients 93→89, wiring 60. Un essai complémentaire consistant à
+allouer les champs obligatoires de `choose_key` dans l'ordre inverse du record
+OCaml a été mesuré à **149 → 149** ; il a donc été retiré. Les seals de ce
+record sont déjà normalisés par le parcours interne et cette piste ne doit pas
+être retentée telle quelle.
