@@ -1996,3 +1996,32 @@ Essais supplémentaires retirés : inversion du tuple témoin `(r, inv)`
 group-map (45→45). La réduction des checks de type ne doit pas être
 généralisée à tout `Field.equal` : le step utilise la variante normale et
 reste déjà byte-for-byte iso.
+
+## Jalon 2026-07-13 — wrap : 44 divergences → 2 (commit `a5cc3675ab`)
+
+Le commit `a5cc3675ab` réduit le dernier écart structurel du wrap de **44 à
+2 lignes**. Les validations à conserver comme baseline sont :
+
+- step : **FULL MATCH** (512/512, histogramme identique) ;
+- wrap : public input 40/40, 8192/8192 rows, histogramme strictement
+  identique et zéro divergence de type ou de wiring ;
+- Rust : `cargo test -p pickles --lib` : **101/101**.
+
+Les corrections qui ont fermé les 42 lignes sont toutes sémantiquement
+neutres : ordre `y` puis `x` des scellages et réductions de points, contrainte
+booléenne native dans `split_field`, ordre OCaml des operands dans `group_map`,
+scellages explicites de deux y négatifs, et ordre tail-first des deux checks
+de l'égalité finale bulletproof.
+
+Il reste exactement deux coefficients constants, aux rows **5943** et
+**5956**, dans les deux permutations Poseidon terminales. Les types, wires et
+toutes les autres coefficients sont égaux. Les trois constantes attendues
+côté jsoo sont portées par les Generic précédant les Poseidon rows 5944 et
+5957. Elles doivent être attribuées à leur vrai producteur plutôt qu'écrasées
+dans `hash_messages`.
+
+Essai explicitement retiré : forcer un état caché Fq dans
+`hash_messages_for_next_wrap_proof` (y compris son miroir hors-circuit). Bien
+que l'état soit atteint pour deux vecteurs dummy, il déplace les constantes
+vers d'autres valeurs et ne ferme pas le diff. Ne pas réintroduire ce cache
+sans identifier l'appel précis et le mode duplex OCaml correspondant.
