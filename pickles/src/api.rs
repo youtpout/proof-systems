@@ -351,9 +351,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         use groupmap::GroupMap;
         use snarky::gadgets::curve::Point;
 
-        if let Some(system) = &mut sys.system {
-            system.set_flush_generic_before_custom(true);
-        }
+        // OCaml's backend never flushes a pending generic half before a custom
+        // gate — it stays queued (across arbitrarily many custom rows) until
+        // the next half arrives (plonk_constraint_system.ml:1453) or
+        // finalization. E.g. each bulletproof round's φ·x seal pairs with the
+        // next round's on-curve half across ~70 custom rows in the jsoo dump.
 
         let w = &self.w;
         // Every witnessed point goes through OCaml's `exists Inner_curve.typ`,
@@ -366,15 +368,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
             Ok(point)
         };
-        // OCaml's `exists Bulletproof.wrap_typ` emits no curve constraints for
-        // opening points, unlike the following `Messages.wrap_typ`.  Keep a
-        // distinct unchecked witness constructor for that typ only.
-        let mkpt_opening = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
-            Ok(Point::new(
-                sys.compute(loc!(), move |_| p.0)?,
-                sys.compute(loc!(), move |_| p.1)?,
-            ))
-        };
+        // OCaml's `exists Bulletproof.wrap_typ` (wrap_main.ml:440) witnesses
+        // every opening point through `Inner_curve.typ`, whose check emits an
+        // on-curve assert — the jsoo dump's 32 pre-sponge c=5 markers wired to
+        // the bulletproof zone are exactly lr (15×2), delta and sg.
         let mkpts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
             let mut out = vec![];
             for &p in ps {
@@ -571,10 +568,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
         // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
         // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,
-        // sealed to a var (the 56 `Equal` at wrap_main.ml:204). The selected
-        // points are THEN checked on-curve (the following Square/R1CS block),
-        // with no separate per-point equality assert. Reproduce that exactly:
-        // all selections first, then all on-curve checks.
+        // sealed to a var (the 56 `Equal` at wrap_main.ml:204). No on-curve
+        // check is emitted for the selected key: the jsoo dump has NO c=5
+        // markers wired to the index-sponge absorbs (its pre-sponge markers
+        // all belong to the openings/messages witnesses).
         let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
             let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
             let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
@@ -598,22 +595,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sigma_init: choose_pts(sys, &w.sigma_init)?,
             sigma_last: choose_pts(sys, &w.sigma_last)?,
         };
-        for point in vk
-            .sigma_init
-            .iter()
-            .chain(vk.sigma_last.iter())
-            .chain(vk.coefficients.iter())
-            .chain([
-                &vk.generic,
-                &vk.psm,
-                &vk.complete_add,
-                &vk.mul,
-                &vk.emul,
-                &vk.endomul_scalar,
-            ])
-        {
-            point.assert_on_curve(sys, loc!(), Fq::from(0u64), Fq::from(5u64))?;
-        }
         // OCaml `expand_feature_flags` + `assert_consistent`
         // (wrap_main.ml:249-299) runs AFTER `choose_key`, destructuring the
         // selected step_plonk_index.
@@ -806,16 +787,16 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         )> {
             let mut lr = vec![];
             for &(l, r) in &w.lr {
-                lr.push((mkpt_opening(sys, l)?, mkpt_opening(sys, r)?));
+                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
             }
             let z1_repr = w1(sys, w.z1_repr)?;
             let z2_repr = w1(sys, w.z2_repr)?;
             let openings = OpeningProof {
                 lr,
-                delta: mkpt_opening(sys, w.delta)?,
+                delta: mkpt(sys, w.delta)?,
                 z1: t1(z1_repr),
                 z2: t1(z2_repr),
-                challenge_polynomial_commitment: mkpt_opening(sys, w.sg)?,
+                challenge_polynomial_commitment: mkpt(sys, w.sg)?,
                 h_generator: h_for_openings.clone(),
             };
             let messages = Messages {
@@ -1373,7 +1354,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         let mut fr = VestaScalar::from(params);
         fr.absorb(&o.digest);
         let pcd = {
-            let mut prev_sponge = VestaScalar::from(params);
+            let prev_sponge = VestaScalar::from(params);
             for rc in &step_proof.prev_challenges {
                 let _ = rc; // empty in the base case (no kimchi recursion)
             }

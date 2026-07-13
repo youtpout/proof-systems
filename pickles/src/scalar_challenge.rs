@@ -584,6 +584,9 @@ where
         },
     )?;
     let res = Point::new(res.0, res.1);
+    // OCaml witnesses `res` through `exists G.typ` (scalar_challenge.ml:263),
+    // whose check asserts on-curve — one c=5 marker per bulletproof round.
+    res.assert_on_curve(sys, loc.clone(), F::zero(), F::from(5u64))?;
 
     let mapped = endo(sys, loc.clone(), &res, chal, num_bits, endo_base)?;
     mapped.x.assert_equals(sys, loc.clone(), &g.x)?;
