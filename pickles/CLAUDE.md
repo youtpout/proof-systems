@@ -1728,6 +1728,38 @@ pré-openings (prev_statement / feature expansion / choose_key) et déplacer le
 traitement z1/z2 en une seule correction structurée. Ne pas réintroduire les
 checks z1/z2 isolément.
 
+### Sixième cible : pré-openings aligné, résiduel Generic +2
+
+La comparaison des coefficients a attribué exactement les 21 rows en trop
+avant les openings. Les 28 rows `choose_key` jsoo sont 75–102, mais Rust les
+plaçait 80–107 : cinq rows provenaient de checks booléens explicites sur les
+8 slots feature et le flag joint-combiner. Après `choose_key`, Rust émettait
+encore seize rows de `expand_feature_flags/assert_consistent`, tandis que
+jsoo passait directement au premier opening. Cause : ces slots publics ne
+sont pas les `plonk.feature_flags` consommés par `wrap_main`; pour la branche
+N0, les flags de la clé sélectionnée sont statiquement `Features.none` et le
+bloc OCaml se replie à la compilation.
+
+Correctif : suppression de ces 21 rows erronées, puis port des checks
+`Other_field.Packed.typ` de z1/z2 au BON emplacement — après le witness des
+32 points lr et avant delta/sg. Contrairement à l'essai isolé antérieur, les
+deux changements forment une seule correction structurelle. Les positions
+des 57 marqueurs pré-sponge sont désormais EXACTES : 104–166 (32), puis
+181–229 (25) des deux côtés. Les 16 marqueurs bulletproof tardifs restent
+présents, et tous les histogrammes custom restent exacts.
+
+Résultat : Rust Generic **579 → 571**, OCaml 569 ; diff total **3171 →
+2702**. Il ne reste que +2 Generic nettes. Avant le premier Poseidon, Rust a
+au contraire une row de moins : jsoo row 230 contient deux demi-contraintes
+(`1,0,0,0,0` et un R1CS `0,0,-1,1,0`), alors que Rust conserve seulement la
+première en pending et démarre Poseidon row 230 au lieu de 231. Les trois
+rows de différence nettes sont donc réparties : une demi/frontière absente
+ici, puis trois rows excédentaires plus tard (les premiers sites visibles par
+intervalles custom sont x_hat/OptSponge autour de 698–710, 1008–1084 et
+1226).
+
+Validation : 101/101 lib, 9/9 recorded, step **FULL MATCH**, wrap 8192/8192.
+
 ## Session nuit 2026-07-13 — deux fixes majeurs commis, état & pistes
 
 ### Fix 1 (snarky, commit `reduce_lincom`) : ordre des termes par INDEX

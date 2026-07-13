@@ -27,7 +27,7 @@ use poly_commitment::commitment::PolyComm;
 use poly_commitment::ipa::OpeningProof as IpaProof;
 use poly_commitment::SRS;
 use serde::{Deserialize, Serialize};
-use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult, SnarkyType};
+use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::common::FULL_ROUNDS;
 use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
@@ -545,26 +545,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 }
             }
         }
-        // OCaml 40-slot tail: 8 feature-flag booleans + the optional joint
-        // combiner (flag boolean + scalar). o1js compiles with Maybe flags,
-        // so they are public boolean slots; our programs use none of them.
-        for flag in &stmt[14 + ROUNDS..22 + ROUNDS] {
-            sys.assert_r1cs(
-                Some("feature flag bit".into()),
-                loc!(),
-                flag.clone(),
-                flag.clone(),
-                flag.clone(),
-            )?;
-        }
-        sys.assert_r1cs(
-            Some("joint combiner flag bit".into()),
-            loc!(),
-            stmt[22 + ROUNDS].clone(),
-            stmt[22 + ROUNDS].clone(),
-            stmt[22 + ROUNDS].clone(),
-        )?;
-
         // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
         // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
         // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,
@@ -595,80 +575,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sigma_init: choose_pts(sys, &w.sigma_init)?,
             sigma_last: choose_pts(sys, &w.sigma_last)?,
         };
-        // OCaml `expand_feature_flags` + `assert_consistent`
-        // (wrap_main.ml:249-299) runs AFTER `choose_key`, destructuring the
-        // selected step_plonk_index.
-        // OCaml also checks that the statement feature flags are consistent
-        // with the optional verifier-index commitments. Our current native
-        // verifier index only carries the always-present commitments, so all
-        // optional commitment flags are false; still, the derived feature
-        // expansion and equality assertions must be present for wrap-circuit
-        // parity.
-        {
-            let feature_flags: Vec<Boolean<Fq>> = stmt[14 + ROUNDS..22 + ROUNDS]
-                .iter()
-                .cloned()
-                .map(Boolean::create_unsafe)
-                .collect();
-            let range_check0 = feature_flags[0].clone();
-            let range_check1 = feature_flags[1].clone();
-            let foreign_field_add = feature_flags[2].clone();
-            let foreign_field_mul = feature_flags[3].clone();
-            let xor = feature_flags[4].clone();
-            let rot = feature_flags[5].clone();
-            let lookup = feature_flags[6].clone();
-            let runtime_tables = feature_flags[7].clone();
-
-            let lookup_pattern_range_check = Boolean::any(
-                &[&range_check0, &range_check1, &rot],
-                sys,
-                loc!(),
-            )?;
-            let lookup_pattern_xor = xor.clone();
-            let table_width_3 = lookup_pattern_xor.clone();
-            let table_width_at_least_2 = table_width_3.or(&lookup, loc!(), sys);
-            let table_width_at_least_1 = Boolean::any(
-                &[
-                    &table_width_at_least_2,
-                    &lookup_pattern_range_check,
-                    &foreign_field_mul,
-                ],
-                sys,
-                loc!(),
-            )?;
-            table_width_at_least_1.check(sys, loc!())?;
-            // OCaml `Features.to_full` also derives lookups_per_row_4 and
-            // lookups_per_row_3 (forced by the sponge's `uses_lookups`), in
-            // this order — omitting them shifted the subsequent gate pairing.
-            let lookups_per_row_4 = Boolean::any(
-                &[&lookup_pattern_xor, &lookup_pattern_range_check, &foreign_field_mul],
-                sys,
-                loc!(),
-            )?;
-            lookups_per_row_4.check(sys, loc!())?;
-            let _lookups_per_row_3 = lookups_per_row_4.or(&lookup, loc!(), sys);
-
-            let false_ = Boolean::<Fq>::false_().to_field_var();
-            for flag in [
-                xor,
-                range_check0,
-                range_check1,
-                foreign_field_add,
-                foreign_field_mul.clone(),
-                rot,
-                table_width_at_least_1,
-                table_width_at_least_2,
-                table_width_3,
-                runtime_tables,
-                lookup,
-                lookup_pattern_xor,
-                lookup_pattern_range_check,
-                foreign_field_mul,
-            ] {
-                flag.to_field_var()
-                    .assert_equals(sys, loc!(), &false_)?;
-            }
-        }
+        // For the N0 o1js branch, the feature set used by
+        // `expand_feature_flags` is part of the selected verification key and
+        // is statically `Features.none`. OCaml folds the consistency checks at
+        // compile time. The similarly-shaped slots in the wrap statement are
+        // not the `plonk.feature_flags` consumed by this block.
 
         // OCaml witness order (wrap_main.ml): `prev_step_accs` (sg_olds), then
         // `openings_proof` (:440), then `messages` (:470).
@@ -791,6 +702,22 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
             let z1_repr = w1(sys, w.z1_repr)?;
             let z2_repr = w1(sys, w.z2_repr)?;
+            // `Bulletproof.wrap_typ` checks the two Other_field.Packed
+            // representatives after witnessing `lr` and before witnessing
+            // delta / sg. This is the 14-row gap between the two pre-sponge
+            // on-curve marker groups in the jsoo circuit.
+            let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
+            for slot in [&z1_repr, &z2_repr] {
+                let mut eqs = Vec::with_capacity(forbidden.len());
+                for &value in &forbidden {
+                    eqs.push(slot.equal(sys, loc!(), &FieldVar::constant(value))?);
+                }
+                let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
+                let any = Boolean::any(&eq_refs, sys, loc!())?;
+                any.not()
+                    .to_field_var()
+                    .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
+            }
             let openings = OpeningProof {
                 lr,
                 delta: mkpt(sys, w.delta)?,
