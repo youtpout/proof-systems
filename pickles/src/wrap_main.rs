@@ -157,12 +157,17 @@ where
     // OCaml computes the previous accumulator digests in a SECOND pass over
     // the unfinalized proofs (wrap_main.ml:423-427), after every finalize.
     for u in unfinalized {
-        prev_msgs_wrap.push(hash_messages_for_next_wrap_proof(
-            sys,
-            loc.clone(),
-            &u.hash_dummy_challenges,
-            &u.hash_old_bulletproof_challenges,
-            &u.prev_step_acc,
+        prev_msgs_wrap.push(sys.with_label(
+            Some(Cow::Borrowed("wrap_main: previous accumulator hash")),
+            |sys| {
+                hash_messages_for_next_wrap_proof(
+                    sys,
+                    loc.clone(),
+                    &u.hash_dummy_challenges,
+                    &u.hash_old_bulletproof_challenges,
+                    &u.prev_step_acc,
+                )
+            },
         ));
     }
 
@@ -220,12 +225,17 @@ where
         .assert_equals(sys, verify_loc, &FieldVar::constant(F::one()))?;
 
     // == this statement's accumulator digest ==
-    let new_digest = hash_messages_for_next_wrap_proof(
-        sys,
-        loc.clone(),
-        new_acc_dummy_challenges,
-        &new_bulletproof_challenges,
-        &openings.challenge_polynomial_commitment,
+    let new_digest = sys.with_label(
+        Some(Cow::Borrowed("wrap_main: new accumulator hash")),
+        |sys| {
+            hash_messages_for_next_wrap_proof(
+                sys,
+                loc.clone(),
+                new_acc_dummy_challenges,
+                &new_bulletproof_challenges,
+                &openings.challenge_polynomial_commitment,
+            )
+        },
     );
     new_digest.assert_equals(
         sys,

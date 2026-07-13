@@ -2025,3 +2025,19 @@ Essai explicitement retiré : forcer un état caché Fq dans
 que l'état soit atteint pour deux vecteurs dummy, il déplace les constantes
 vers d'autres valeurs et ne ferme pas le diff. Ne pas réintroduire ce cache
 sans identifier l'appel précis et le mode duplex OCaml correspondant.
+
+### Producteur des deux dernières rows (instrumenté)
+
+L'instrumentation non intrusive `RunState::with_label` dans `wrap_main` a
+tranché la provenance : les deux contraintes Poseidon situées aux rows 5943
+et 5956 sont toutes deux sous le label
+`wrap_main: new accumulator hash`. Aucun hash d'ancien accumulateur ne
+participe au diff du circuit wrap de référence. La mesure instrumentée garde
+8192 gates, les histogrammes exacts et les deux seuls écarts coefficientiels.
+
+La comparaison directe de `wrap_hack.ml` donne le prochain port : OCaml ne
+choisit pas son état caché à partir de la longueur du vecteur Rust, mais à
+l'index `2 - max_proofs_verified`. Il faut donc passer cette arité logique au
+hash du nouvel accumulateur et représenter ses états `s0/s1/s2` avec le même
+mode duplex. L'essai « supprimer les dummies quand N2 » a régressé à 30 rows :
+ne pas le refaire en changeant seulement les données d'entrée.
