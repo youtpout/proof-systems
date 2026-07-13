@@ -101,8 +101,8 @@ impl<F: PrimeField> Point<F> {
         then_: &Self,
         else_: &Self,
     ) -> SnarkyResult<Self> {
-        let x = sys.if_(loc.clone(), b.clone(), then_.x.clone(), else_.x.clone())?;
-        let y = sys.if_(loc, b.clone(), then_.y.clone(), else_.y.clone())?;
+        let y = sys.if_(loc.clone(), b.clone(), then_.y.clone(), else_.y.clone())?;
+        let x = sys.if_(loc, b.clone(), then_.x.clone(), else_.x.clone())?;
         Ok(Self { x, y })
     }
 

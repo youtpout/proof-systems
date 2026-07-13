@@ -189,11 +189,14 @@ pub fn public_input_commitment<F: PrimeField>(
         }
     }
 
-    // x_hat = -(acc) + H (blinding)
+    // x_hat = -(acc) + H (blinding). OCaml's `add_fast` seals the negated
+    // y-coordinate before allocating the CompleteAdd witness.
+    let neg_acc = acc.negate();
+    let neg_acc = Point::new(neg_acc.x, neg_acc.y.seal(sys, loc.clone())?);
     add_fast(
         sys,
         Cow::Owned(format!("{loc} | public_input blinding add")),
-        &acc.negate(),
+        &neg_acc,
         h,
     )
 }

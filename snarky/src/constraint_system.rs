@@ -1619,10 +1619,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 x21_inv,
             }) => {
                 let mut reduce_curve_point = |(x, y)| {
-                    (
-                        self.reduce_to_var(labels, loc, x),
-                        self.reduce_to_var(labels, loc, y),
-                    )
+                    let y = self.reduce_to_var(labels, loc, y);
+                    let x = self.reduce_to_var(labels, loc, x);
+                    (x, y)
                 };
                 // 0   1   2   3   4   5   6   7      8   9
                 // x1  y1  x2  y2  x3  y3  inf same_x s   inf_z  x21_inv

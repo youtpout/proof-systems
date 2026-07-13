@@ -125,8 +125,8 @@ fn scale_fast_core<F: PrimeField>(
     );
     let chunks = num_bits / BITS_PER_CHUNK;
 
-    let x_base = base.x.seal(sys, loc.clone())?;
     let y_base = base.y.seal(sys, loc.clone())?;
+    let x_base = base.x.seal(sys, loc.clone())?;
     let base = Point::new(x_base.clone(), y_base.clone());
 
     let mut acc = add_fast(sys, loc.clone(), &base, &base)?;
@@ -451,12 +451,12 @@ pub fn split_field<F: PrimeField>(
             (half, if bits[0] { F::one() } else { F::zero() })
         })?;
     // booleanity of the odd bit, and 2·y + odd == x
-    sys.assert_r1cs(
+    sys.add_constraint(
+        Constraint::BasicSnarkyConstraint(
+            snarky::constraint_system::BasicSnarkyConstraint::Boolean(odd.clone()),
+        ),
         Some("split_field: odd bit".into()),
         loc.clone(),
-        odd.clone(),
-        odd.clone(),
-        odd.clone(),
     )?;
     let recomposed = &(&y + &y) + &odd;
     recomposed.assert_equals(sys, loc, x)?;

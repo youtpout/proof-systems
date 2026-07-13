@@ -80,11 +80,16 @@ pub fn ft_comm<F: PrimeField>(
         &f_comm,
         &chunked_t,
     )?;
+    let neg_t_scaled = t_scaled.negate();
+    let neg_t_scaled = Point::new(
+        neg_t_scaled.x,
+        neg_t_scaled.y.seal(sys, loc.clone())?,
+    );
     add_fast(
         sys,
         Cow::Owned(format!("{loc} | ft_comm final add")),
         &sum,
-        &t_scaled.negate(),
+        &neg_t_scaled,
     )
 }
 

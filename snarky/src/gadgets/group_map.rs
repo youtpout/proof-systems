@@ -50,8 +50,8 @@ pub fn div_unsafe<F: PrimeField>(
     sys.assert_r1cs(
         Some("div_unsafe".into()),
         loc,
-        q.clone(),
         b.clone(),
+        q.clone(),
         a.clone(),
     )?;
     Ok(q)
@@ -190,19 +190,19 @@ where
     sys.assert_r1cs(
         Some("group-map any".into()),
         loc.clone(),
-        candidates_sum_inv,
         candidates_sum,
+        candidates_sum_inv,
         FieldVar::constant(F::one()),
     )?;
 
     // The nested conjunction expressions are allocated from the right-most
     // simultaneous binding first.
+    let x2_is_first = b1.not().and(&b2, sys, loc.clone()).to_field_var();
+    let b2_not_and_b3 = b2.not().and(&b3, sys, loc.clone());
     let x3_is_first = b1
         .not()
-        .and(&b2.not(), sys, loc.clone())
-        .and(&b3, sys, loc.clone())
+        .and(&b2_not_and_b3, sys, loc.clone())
         .to_field_var();
-    let x2_is_first = b1.not().and(&b2, sys, loc.clone()).to_field_var();
     let x1_is_first = b1.to_field_var();
 
     // x = x1_is_first * x1 + x2_is_first * x2 + x3_is_first * x3 (same for y)

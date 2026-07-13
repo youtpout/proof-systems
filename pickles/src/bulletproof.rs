@@ -320,8 +320,37 @@ pub fn check_bulletproof_equation_from_q<F: PrimeField>(
         &z2_h,
     )?;
 
-    let x_eq = lhs.x.equal(sys, loc.clone(), &rhs.x)?;
-    let y_eq = lhs.y.equal(sys, loc.clone(), &rhs.y)?;
+    let equal = |sys: &mut RunState<F>,
+                 lhs: &FieldVar<F>,
+                 rhs: &FieldVar<F>|
+     -> SnarkyResult<snarky::Boolean<F>> {
+        let z = lhs - rhs;
+        let z_for_witness = z.clone();
+        let (result, z_inv): (FieldVar<F>, FieldVar<F>) = sys.compute(loc.clone(), move |env| {
+            let z = env.read_var(&z_for_witness);
+            match z.inverse() {
+                Some(inv) => (F::zero(), inv),
+                None => (F::one(), F::zero()),
+            }
+        })?;
+        sys.assert_r1cs(
+            Some("equals_2".into()),
+            loc.clone(),
+            result.clone(),
+            z.clone(),
+            FieldVar::zero(),
+        )?;
+        sys.assert_r1cs(
+            Some("equals_1".into()),
+            loc.clone(),
+            z_inv,
+            z,
+            FieldVar::constant(F::one()) - &result,
+        )?;
+        Ok(snarky::Boolean::create_unsafe(result))
+    };
+    let x_eq = equal(sys, &lhs.x, &rhs.x)?;
+    let y_eq = equal(sys, &lhs.y, &rhs.y)?;
     snarky::Boolean::all(&[x_eq, y_eq], sys, loc)
 }
 

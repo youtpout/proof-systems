@@ -389,8 +389,9 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         };
         let cpt = |p: (Fq, Fq)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
         let other_field_equal =
-            |sys: &mut RunState<Fq>, lhs: &FieldVar<Fq>, rhs: Fq| -> SnarkyResult<Boolean<Fq>> {
-                let z = lhs - &FieldVar::constant(rhs);
+            |sys: &mut RunState<Fq>, lhs: &FieldVar<Fq>, rhs: Fq, reverse: bool| -> SnarkyResult<Boolean<Fq>> {
+                let rhs = FieldVar::constant(rhs);
+                let z = if reverse { &rhs - lhs } else { lhs - &rhs };
                 let z_for_witness = z.clone();
                 let (result, z_inv): (FieldVar<Fq>, FieldVar<Fq>) =
                     sys.compute(loc!(), move |env| {
@@ -447,7 +448,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             for slot in stmt[0..5].iter().rev() {
                 let mut eqs = Vec::with_capacity(forbidden.len());
                 for &value in &forbidden {
-                    eqs.push(other_field_equal(sys, slot, value)?);
+                    eqs.push(other_field_equal(sys, slot, value, false)?);
                 }
                 let eq_refs: Vec<&snarky::Boolean<Fq>> = eqs.iter().collect();
                 let any = snarky::Boolean::any(&eq_refs, sys, loc!())?;
@@ -461,7 +462,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // single-branch o1js program.  Mirror that shape instead of folding the
         // branch data to a pure constant.
         let which_branch: FieldVar<Fq> = sys.compute(loc!(), |_| Fq::from(0u64))?;
-        let branch0 = other_field_equal(sys, &which_branch, Fq::from(0u64))?;
+        let branch0 = other_field_equal(sys, &which_branch, Fq::from(0u64), true)?;
         // `One_hot_vector.of_index` finishes with `Boolean.Assert.any`.  Even
         // for a single branch Snarky implements that assertion as
         // `assert_non_zero(sum bits)`: witness the inverse and constrain
@@ -478,8 +479,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         sys.assert_r1cs(
             Some("one-hot any".into()),
             loc!(),
-            branch0_inv,
             branch0_field.clone(),
+            branch0_inv,
             FieldVar::constant(Fq::from(1u64)),
         )?;
         let proofs_verified = branch0_field.mul(
@@ -780,7 +781,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             for slot in [&z1_repr, &z2_repr] {
                 let mut eqs = Vec::with_capacity(forbidden.len());
                 for &value in &forbidden {
-                    eqs.push(other_field_equal(sys, slot, value)?);
+                    eqs.push(other_field_equal(sys, slot, value, false)?);
                 }
                 let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
                 let any = Boolean::any(&eq_refs, sys, loc!())?;
