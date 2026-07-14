@@ -101,26 +101,26 @@ where
     fn to_constant_and_terms_inner(
         &self,
         scale: F,
-        constant: F,
-        terms: Vec<Term<F>>,
-    ) -> (F, Vec<Term<F>>) {
+        constant: &mut F,
+        terms: &mut Vec<Term<F>>,
+    ) {
         match self {
-            FieldVar::Constant(c) => (constant + (scale * c), terms),
-            FieldVar::Var(v) => {
-                let mut new_terms = vec![(scale, *v)];
-                new_terms.extend(terms);
-                (constant, new_terms)
+            FieldVar::Constant(c) => *constant += scale * c,
+            FieldVar::Var(v) => terms.push((scale, *v)),
+            FieldVar::Scale(s, t) => {
+                t.to_constant_and_terms_inner(scale * s, constant, terms)
             }
-            FieldVar::Scale(s, t) => t.to_constant_and_terms_inner(scale * s, constant, terms),
             FieldVar::Add(x1, x2) => {
-                let (c1, terms1) = x1.to_constant_and_terms_inner(scale, constant, terms);
-                x2.to_constant_and_terms_inner(scale, c1, terms1)
+                x1.to_constant_and_terms_inner(scale, constant, terms);
+                x2.to_constant_and_terms_inner(scale, constant, terms);
             }
         }
     }
 
     pub fn to_constant_and_terms(&self) -> (Option<F>, Vec<Term<F>>) {
-        let (constant, terms) = self.to_constant_and_terms_inner(F::one(), F::zero(), vec![]);
+        let mut constant = F::zero();
+        let mut terms = vec![];
+        self.to_constant_and_terms_inner(F::one(), &mut constant, &mut terms);
         let constant = if constant.is_zero() {
             None
         } else {

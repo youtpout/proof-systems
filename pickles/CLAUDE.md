@@ -2309,3 +2309,12 @@ indépendant d'une preuve concrète, Wrap partagé) au lieu de conserver
 Validation du jalon : les 18 tests Snarky passent; N0 prouve et vérifie; N1
 prouve deux fois en réutilisant Step/Wrap; N2 prouve sur deux bases conservées
 et exécute la nouvelle application. Tous ces tests release sont verts.
+
+Correctif supplémentaire après ce jalon : `FieldVar::to_constant_and_terms`
+construisait un nouveau `Vec` et recopiait les termes accumulés à chaque feuille
+de l'AST, donnant un coût quadratique pour les longues expressions linéaires.
+Le parcours utilise maintenant un accumulateur mutable O(n). La compilation N1
+native descend de **4,35 s** à **1,99 s** et le test N2 complet de **27,06 s**
+à **17,16 s** sur les mesures voisines. N0/N1/N2 et les 18 tests Snarky restent
+verts. En WASM, le lowering N1 dépasse encore la borne : ce correctif est réel
+mais une seconde source spécifique au frontend récursif reste à localiser.
