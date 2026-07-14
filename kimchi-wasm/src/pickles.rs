@@ -324,6 +324,9 @@ pub struct WasmRecordedCompiledBase(pickles::recorded::RecordedCompiledBase);
 pub struct WasmRecordedCompiledN1(pickles::recorded::RecordedCompiledN1);
 
 #[wasm_bindgen]
+pub struct WasmRecordedCompiledN2(pickles::recorded::RecordedCompiledN2);
+
+#[wasm_bindgen]
 pub fn rust_pickles_recorded_base_cache_key(circuit_json: String) -> Result<String, JsError> {
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
@@ -443,6 +446,38 @@ pub fn rust_pickles_prove_recorded_n2_over_base_handles_bytes(
         )
     })
     .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
+    recorded_n2_envelope(proved)
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_n2_bytes(
+    first: &WasmRecordedBaseHandle,
+    second: &WasmRecordedBaseHandle,
+    circuit_json: String,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedCompiledN2, JsError> {
+    let circuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let compiled = crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledN2::compile(
+            &first.0, &second.0, circuit, witness,
+        )
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N2 compile failed: {err:?}")))?;
+    Ok(WasmRecordedCompiledN2(compiled))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n2_compiled_bytes(
+    compiled: &mut WasmRecordedCompiledN2,
+    first: &WasmRecordedBaseHandle,
+    second: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+) -> Result<String, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let proved = crate::rayon::run_in_pool(|| compiled.0.prove(&first.0, &second.0, witness))
+        .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
     recorded_n2_envelope(proved)
 }
 

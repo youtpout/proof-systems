@@ -545,6 +545,57 @@ pub fn rust_pickles_prove_recorded_n2_over_base_handles_bytes(
     n2_envelope(proved)
 }
 
+#[napi(js_name = "rust_pickles_compile_recorded_n2")]
+pub fn rust_pickles_compile_recorded_n2(
+    first: &External<pickles::recorded::RecordedBaseHandle>,
+    second: &External<pickles::recorded::RecordedBaseHandle>,
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<External<pickles::recorded::RecordedCompiledN2>> {
+    let circuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let compiled = pickles::recorded::RecordedCompiledN2::compile(
+        first, second, circuit, witness,
+    )
+    .map_err(|err| Error::from_reason(format!("rust pickles N2 compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_compile_recorded_n2_bytes")]
+pub fn rust_pickles_compile_recorded_n2_bytes(
+    first: &External<pickles::recorded::RecordedBaseHandle>,
+    second: &External<pickles::recorded::RecordedBaseHandle>,
+    circuit_json: String,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedCompiledN2>> {
+    let circuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let compiled = pickles::recorded::RecordedCompiledN2::compile(
+        first, second, circuit, witness,
+    )
+    .map_err(|err| Error::from_reason(format!("rust pickles N2 compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_prove_recorded_n2_compiled_bytes")]
+pub fn rust_pickles_prove_recorded_n2_compiled_bytes(
+    compiled: &mut External<pickles::recorded::RecordedCompiledN2>,
+    first: &External<pickles::recorded::RecordedBaseHandle>,
+    second: &External<pickles::recorded::RecordedBaseHandle>,
+    witness_bytes: Uint8Array,
+) -> Result<String> {
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let proved = compiled
+        .prove(first, second, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N2 prove failed: {err:?}")))?;
+    n2_envelope(proved)
+}
+
 #[napi(js_name = "rust_pickles_compile_recorded_n1")]
 pub fn rust_pickles_compile_recorded_n1(
     previous: &External<pickles::recorded::RecordedBaseHandle>,

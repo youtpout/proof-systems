@@ -402,6 +402,46 @@ fn recorded_n2_over_two_kept_bases_executes_the_new_application() {
 }
 
 #[test]
+fn recorded_compiled_n2_reuses_step_and_wrap_indexes() {
+    use pickles::recorded::{RecordedCompiledBase, RecordedCompiledN2};
+
+    let mut base = RecordedCompiledBase::compile(
+        square_circuit(),
+        vec![Fp::from(3u64), Fp::from(9u64)],
+    )
+    .unwrap();
+    let first = base
+        .prove_keep(vec![Fp::from(4u64), Fp::from(16u64)])
+        .unwrap();
+    let second = base
+        .prove_keep(vec![Fp::from(5u64), Fp::from(25u64)])
+        .unwrap();
+    let mut compiled = RecordedCompiledN2::compile(
+        &first,
+        &second,
+        square_circuit(),
+        vec![Fp::from(6u64), Fp::from(36u64)],
+    )
+    .unwrap();
+    let proof = compiled
+        .prove(
+            &first,
+            &second,
+            vec![Fp::from(7u64), Fp::from(49u64)],
+        )
+        .unwrap();
+    assert_eq!(proof.app_state, vec![Fp::from(49u64)]);
+    pickles::verify::verify_side_loaded_with_step_vk(
+        &proof.app_state,
+        Some(&proof.dlog_plonk_index),
+        &proof.challenge_polynomial_commitments,
+        &proof.old_bulletproof_challenges,
+        &proof.proof,
+    )
+    .unwrap();
+}
+
+#[test]
 fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
     use pickles::{
         recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over_keep},
