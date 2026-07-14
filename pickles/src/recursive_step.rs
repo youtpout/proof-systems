@@ -1634,6 +1634,22 @@ pub fn prove_prepared_recursive_step<
     )
 }
 
+pub fn compile_prepared_recursive_step<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStep<PUBLIC_INPUT_LEN>,
+    app_main: Option<EmbeddedAppMain>,
+) -> RecursiveStepIndexes<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
+    RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
+        d: [prepared.data.clone()],
+        app: app_main,
+    }
+    .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+    .unwrap()
+}
+
 pub fn prepare_recursive_step_width2<
     const WRAP_ROUNDS: usize,
     const WIDTH1_INPUT_LEN: usize,
@@ -2243,10 +2259,7 @@ pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize
     prove_prepared_recursive_wrap(prepared, None).0
 }
 
-pub fn compile_prepared_recursive_wrap<
-    const STEP_ROUNDS: usize,
-    const WRAP_STMT_LEN: usize,
->(
+pub fn compile_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
     prepared: &PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
 ) -> RecursiveWrapIndexes<STEP_ROUNDS, WRAP_STMT_LEN> {
     WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> {
@@ -2259,10 +2272,7 @@ pub fn compile_prepared_recursive_wrap<
     .unwrap()
 }
 
-pub fn prove_prepared_recursive_wrap<
-    const STEP_ROUNDS: usize,
-    const WRAP_STMT_LEN: usize,
->(
+pub fn prove_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
     prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
     indexes: Option<RecursiveWrapIndexes<STEP_ROUNDS, WRAP_STMT_LEN>>,
 ) -> (

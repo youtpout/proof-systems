@@ -208,27 +208,32 @@ fn recorded_n1_cycle_proves_and_verifies_standalone() {
 
 #[test]
 fn recorded_compiled_n1_reuses_step_and_wrap_indexes() {
-    use pickles::recorded::{prove_recorded_base_case_keep, RecordedCompiledN1};
-    use pickles::verify::verify_side_loaded_with_step_vk;
+    use pickles::{
+        recorded::{prove_recorded_base_case_keep, RecordedCompiledN1},
+        verify::verify_side_loaded_with_step_vk,
+    };
 
-    let base = prove_recorded_base_case_keep(
-        square_circuit(),
-        vec![Fp::from(6u64), Fp::from(36u64)],
-    )
-    .unwrap();
+    let base =
+        prove_recorded_base_case_keep(square_circuit(), vec![Fp::from(6u64), Fp::from(36u64)])
+            .unwrap();
     let witness = vec![Fp::from(7u64), Fp::from(49u64)];
     let mut compiled =
         RecordedCompiledN1::compile(&base, square_circuit(), witness.clone()).unwrap();
-    let proved = compiled.prove_keep(&base, witness).unwrap();
-    let recursive = proved.to_recorded_n1_proof().unwrap();
-    verify_side_loaded_with_step_vk(
-        &recursive.app_state,
-        Some(&recursive.dlog_plonk_index),
-        &[recursive.challenge_polynomial_commitment],
-        &[recursive.old_bulletproof_challenges],
-        &recursive.proof,
-    )
-    .unwrap();
+    for witness in [
+        vec![Fp::from(7u64), Fp::from(49u64)],
+        vec![Fp::from(8u64), Fp::from(64u64)],
+    ] {
+        let proved = compiled.prove_keep(&base, witness).unwrap();
+        let recursive = proved.to_recorded_n1_proof().unwrap();
+        verify_side_loaded_with_step_vk(
+            &recursive.app_state,
+            Some(&recursive.dlog_plonk_index),
+            &[recursive.challenge_polynomial_commitment],
+            &[recursive.old_bulletproof_challenges],
+            &recursive.proof,
+        )
+        .unwrap();
+    }
 }
 
 #[test]

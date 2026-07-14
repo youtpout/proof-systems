@@ -2124,7 +2124,62 @@ Validation : **12/12** tests `recorded` release, dont réutilisation N0 sur deux
 witnesses distincts et N1 compilé ; smoke test o1js vert ; Wrap toujours **FULL
 MATCH** 8192/8192. Sur AddZkProgram, le proving compilé base+N1 est maintenant
 plus rapide en Rust : 8,361 s contre 8,774 s JSOO en WASM et 4,409 s contre
-6,042 s en natif. La compilation froide N1 reste le goulot : elle produit
-encore une preuve Step temporaire afin de fabriquer le witness nécessaire à la
-compilation du Wrap. La prochaine optimisation doit construire ce witness de
-compilation sans preuve cryptographique temporaire.
+6,042 s en natif.
+
+## Jalon 2026-07-14 — réutilisation de la preuve Step de compilation N1
+
+La preuve Step nécessaire à la construction du witness de compilation Wrap
+n'est plus jetée. `RecordedCompiledN1` conserve le Step, le
+`PreparedRecursiveWrap`, le witness et la preuve précédente employés à la
+compilation. Le premier `prove_keep` correspondant consomme ce pré-calcul et
+ne refait que la preuve Wrap. Les appels suivants, ou un premier appel avec un
+witness différent, reprennent le chemin normal avec les deux index conservés.
+Le test N1 compilé couvre les deux chemins et vérifie les deux preuves.
+
+Le profil natif froid N1 (`PICKLES_PROFILE=1`) localise désormais le coût :
+
+- préparation : **0,036 s** ;
+- compilation de l'index Step : **4,340 s** ;
+- preuve Step, utile et réutilisée : **1,596 s** ;
+- compilation de l'index Wrap : **3,415 s** ;
+- total : **9,386 s**.
+
+Sur AddZkProgram sans cache, le total Rust WASM passe de **33,359 s** à
+**29,911 s**, et le total Rust natif de **18,020 s** à **16,247 s**. Le temps
+de preuve+vérification après compilation reste nettement meilleur que JSOO :
+**5,438 s contre 9,262 s** en WASM, et **2,899 s contre 6,236 s** en natif.
+Le retard froid restant est donc la génération des deux index, notamment parce
+que l'API actuelle compile un Wrap par méthode là où le compilateur Pickles de
+programme partage son Wrap entre les branches.
+
+### Multithreading et frontière WASM
+
+Le benchmark Rust WASM à un worker mesure **29,771 s** pour compiler N0,
+**80,402 s** pour compiler N1, puis **30,948 s** pour les deux preuves et
+vérifications. Avec 16 workers, les mêmes catégories prennent respectivement
+**8,780 s**, **15,693 s** et **5,438 s**. Rayon apporte donc déjà un gain
+majeur. L'écart avec JSOO n'est pas plus spectaculaire parce que le frontend
+OCaml/JS de Snarky/Pickles est mono-thread, mais ses opérations cryptographiques
+lourdes (Kimchi, FFT, MSM et prover) appellent déjà le backend Rust WASM/NAPI
+parallèle commun.
+
+Le chemin Rust WASM a aussi été vérifié : l'export `kimchi-wasm` entre une fois
+dans `rayon::run_in_pool`, puis appelle directement
+`pickles::recorded -> recursive_step -> snarky -> kimchi` dans le même module et
+la même mémoire WASM. Il n'existe aucun aller-retour JS entre Pickles et
+Kimchi. La frontière JS restante est une entrée par compilation/preuve et une
+sortie du résultat ; le circuit JSON est parsé une seule fois à la compilation
+et le handle opaque conserve les index en mémoire. Le transport décimal du
+witness reste optimisable, mais ne peut pas expliquer les secondes de retard
+froid observées par le profil.
+
+### Régression SRS découverte pendant la validation
+
+Le contrôle Step a révélé que le cache SRS partagé paniquait lorsque Snarky
+passait une taille de domaine inférieure au SRS Mina complet (512 rows pour le
+Step N0). Le paramètre de `SnarkyCircuit::srs` décrit le domaine du circuit, pas
+la taille cryptographique fixe à imposer à Pickles. `tick_srs` et `tock_srs`
+ignorent donc maintenant cette taille de domaine et retournent toujours les
+SRS Mina complets 2^16 et 2^15. Après correction : Step **FULL MATCH** 512/512,
+Wrap **FULL MATCH** 8192/8192, smoke test o1js vert et test N1 compilé avec
+pré-calcul puis witness différent vert.

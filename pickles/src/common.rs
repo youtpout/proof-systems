@@ -20,19 +20,23 @@ pub const TICK_ROUNDS: usize = 16;
 /// The number of rounds of the IPA on the Tock (wrap / Pallas) side.
 pub const TOCK_ROUNDS: usize = 15;
 
-pub(crate) fn tick_srs(size: usize) -> Arc<SRS<Vesta>> {
+/// Returns Mina's full Tick SRS.
+///
+/// `SnarkyCircuit` passes the circuit domain size here. That domain can be
+/// smaller than Mina's fixed proof SRS (for example the 512-row base Step
+/// circuit), so it must not be used as the SRS size or asserted to equal it.
+pub(crate) fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
     static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
-    assert_eq!(size, 1 << TICK_ROUNDS, "unexpected Tick SRS size");
     TICK_SRS
-        .get_or_init(|| Arc::new(SRS::<Vesta>::create(size)))
+        .get_or_init(|| Arc::new(SRS::<Vesta>::create(1 << TICK_ROUNDS)))
         .clone()
 }
 
-pub(crate) fn tock_srs(size: usize) -> Arc<SRS<Pallas>> {
+/// Returns Mina's full Tock SRS independently of the circuit domain size.
+pub(crate) fn tock_srs(_domain_size: usize) -> Arc<SRS<Pallas>> {
     static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
-    assert_eq!(size, 1 << TOCK_ROUNDS, "unexpected Tock SRS size");
     TOCK_SRS
-        .get_or_init(|| Arc::new(SRS::<Pallas>::create(size)))
+        .get_or_init(|| Arc::new(SRS::<Pallas>::create(1 << TOCK_ROUNDS)))
         .clone()
 }
 
