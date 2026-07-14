@@ -29,6 +29,39 @@ use poly_commitment::{commitment::CommitmentCurve, OpenProof, SRS};
 use super::{asm::Asm, errors::SnarkyResult, runner::RunState, snarky_type::SnarkyType};
 use crate::FULL_ROUNDS;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompileProfile {
+    pub lowering_micros: u64,
+    pub constraint_system_micros: u64,
+    pub lagrange_micros: u64,
+    pub prover_index_micros: u64,
+}
+
+static LAST_COMPILE_PROFILE: std::sync::Mutex<CompileProfile> =
+    std::sync::Mutex::new(CompileProfile {
+        lowering_micros: 0,
+        constraint_system_micros: 0,
+        lagrange_micros: 0,
+        prover_index_micros: 0,
+    });
+static COMPILE_PROFILE_HOOK: std::sync::Mutex<Option<fn(CompileProfile)>> =
+    std::sync::Mutex::new(None);
+
+pub fn last_compile_profile() -> CompileProfile {
+    *LAST_COMPILE_PROFILE.lock().unwrap()
+}
+
+pub fn set_compile_profile_hook(hook: Option<fn(CompileProfile)>) {
+    *COMPILE_PROFILE_HOOK.lock().unwrap() = hook;
+}
+
+fn record_compile_profile(profile: CompileProfile) {
+    *LAST_COMPILE_PROFILE.lock().unwrap() = profile;
+    if let Some(hook) = *COMPILE_PROFILE_HOOK.lock().unwrap() {
+        hook(profile);
+    }
+}
+
 /// A witness represents the execution trace of a circuit.
 #[derive(Debug)]
 pub struct Witness<F>(pub [Vec<F>; COLUMNS]);
@@ -92,7 +125,7 @@ where
                 );
                 compiled_circuit
                     .gate_labels
-                    .extend(std::iter::repeat_n(String::from("pad"), pad));
+                    .extend(std::iter::repeat_with(String::new).take(pad));
             }
         }
         let expected_cs = ConstraintSystem::create(compiled_circuit.gates.clone())
@@ -430,6 +463,7 @@ fn compile<Circuit: SnarkyCircuit>(circuit: Circuit) -> SnarkyResult<CompiledCir
         .as_ref()
         .map(|s| s.gate_labels.clone())
         .unwrap_or_default();
+    sys.compact_for_witness();
 
     // return compiled circuit
     let compiled_circuit = CompiledCircuit {
@@ -549,6 +583,7 @@ pub trait SnarkyCircuit: Sized {
     where
         <Self::Curve as AffineRepr>::BaseField: PrimeField,
     {
+        let started = std::time::Instant::now();
         let mut compiled_circuit = compile(self)?;
         if minimum_domain_log2 > 0 {
             let target_domain_size = 1usize << minimum_domain_log2;
@@ -566,9 +601,15 @@ pub trait SnarkyCircuit: Sized {
                 );
                 compiled_circuit
                     .gate_labels
-                    .extend(std::iter::repeat_n(String::from("pad"), pad));
+                    .extend(std::iter::repeat_with(String::new).take(pad));
             }
         }
+        let lowered_at = std::time::Instant::now();
+        let mut profile = CompileProfile {
+            lowering_micros: (lowered_at - started).as_micros() as u64,
+            ..CompileProfile::default()
+        };
+        record_compile_profile(profile);
 
         // create constraint system
         let cs = ConstraintSystem::create(compiled_circuit.gates.clone())
@@ -576,6 +617,10 @@ pub trait SnarkyCircuit: Sized {
             .prev_challenges(Self::PREV_CHALLENGES)
             .build()
             .unwrap();
+        let constraint_system_at = std::time::Instant::now();
+        profile.constraint_system_micros =
+            (constraint_system_at - lowered_at).as_micros() as u64;
+        record_compile_profile(profile);
         if minimum_domain_log2 > 0 {
             assert!(
                 cs.domain.d1.log_size_of_group >= minimum_domain_log2,
@@ -596,6 +641,10 @@ pub trait SnarkyCircuit: Sized {
         };
         let srs = Self::srs(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
+        let lagrange_at = std::time::Instant::now();
+        profile.lagrange_micros =
+            (lagrange_at - constraint_system_at).as_micros() as u64;
+        record_compile_profile(profile);
 
         debug!("using an SRS of size {}", srs.size());
 
@@ -608,6 +657,9 @@ pub trait SnarkyCircuit: Sized {
                 cs, *endo_q, srs, false,
             );
         let verifier_index = prover_index.verifier_index();
+        let prover_index_at = std::time::Instant::now();
+        profile.prover_index_micros = (prover_index_at - lagrange_at).as_micros() as u64;
+        record_compile_profile(profile);
 
         let prover_index = ProverIndexWrapper {
             compiled_circuit,

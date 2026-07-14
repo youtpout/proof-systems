@@ -94,9 +94,11 @@ where
     /// but rather the number of times we call [RunState::add_constraint].
     constraints_counter: usize,
 
-    /// A map from a constraint index to a source location
-    /// (usually a file name and line number).
-    constraints_locations: Vec<Cow<'static, str>>,
+    /// Source location of the most recently emitted constraint.
+    /// Error reporting only ever reads the current location, so retaining the
+    /// complete history wastes substantial memory on large recursive circuits.
+    last_constraint_location: Option<Cow<'static, str>>,
+
 }
 
 //
@@ -191,7 +193,7 @@ where
             as_prover: false,
             labels_stack: vec![],
             constraints_counter: 0,
-            constraints_locations: vec![],
+            last_constraint_location: None,
         };
 
         // allocate the public inputs
@@ -390,7 +392,7 @@ where
             // have an enum: 1) compile 2) witness generation 3) both
             // and have the both enum variant be used from an API that does both
             // [END_TODO]
-            env.constraints_locations.push(loc.clone());
+            env.last_constraint_location = Some(loc.clone());
 
             // We check the constraint
             // TODO: this is checked at the front end level, perhaps we should check at the constraint system / backend level so that we can tell exactly what row is messed up? (for internal debugging that would really help)
@@ -401,31 +403,6 @@ where
             }
 
             if !env.has_witness {
-                // High-level constraint log (env-gated), aligned with the
-                // OCaml checked_runner SNARKY_LOG_CONSTRAINTS granularity —
-                // for constraint-sequence diffing.
-                if std::env::var("SNARKY_LOG_HL_CONSTRAINTS").is_ok() {
-                    let kind = match &constraint {
-                        Constraint::BasicSnarkyConstraint(c) => match c {
-                            crate::constraint_system::BasicSnarkyConstraint::Boolean(_) => "Boolean",
-                            crate::constraint_system::BasicSnarkyConstraint::Equal(..) => "Equal",
-                            crate::constraint_system::BasicSnarkyConstraint::Square(..) => "Square",
-                            crate::constraint_system::BasicSnarkyConstraint::R1CS(..) => "R1CS",
-                        },
-                        Constraint::KimchiConstraint(c) => match c {
-                            crate::constraint_system::KimchiConstraint::Basic(..) => "Basic",
-                            crate::constraint_system::KimchiConstraint::Poseidon(..)
-                            | crate::constraint_system::KimchiConstraint::Poseidon2(..) => "Poseidon",
-                            crate::constraint_system::KimchiConstraint::EcAddComplete(..) => "EC_add_complete",
-                            crate::constraint_system::KimchiConstraint::EcScale(..) => "EC_scale",
-                            crate::constraint_system::KimchiConstraint::EcEndoscale(..) => "EC_endoscale",
-                            crate::constraint_system::KimchiConstraint::EcEndoscalar(..) => "EC_endoscalar",
-                            _ => "KimchiOther",
-                        },
-                    };
-                    println!("HLCONSTRAINT {} @ {}", kind, env.labels_stack.join(" | "));
-                }
-
                 // TODO: we should have a mode "don't create constraints" instead of having an option here
                 let cs = match &mut env.system {
                     Some(cs) => cs,
@@ -549,6 +526,13 @@ where
         }
     }
 
+    /// Releases state needed only while lowering constraints to Kimchi gates.
+    pub(crate) fn compact_for_witness(&mut self) {
+        if let Some(system) = &mut self.system {
+            system.compact_for_witness();
+        }
+    }
+
     /// Getter for the OCaml side.
     #[cfg(feature = "ocaml_types")]
     pub fn get_private_inputs(&self) -> Vec<F> {
@@ -591,11 +575,10 @@ where
 
     /// Creates an [RealSnarkyError] using the current context.
     pub fn error(&self, error: SnarkyError) -> RealSnarkyError {
-        let loc = if self.constraints_counter == 0 {
-            "error during initialization".into()
-        } else {
-            self.constraints_locations[self.constraints_counter - 1].clone()
-        };
+        let loc = self
+            .last_constraint_location
+            .clone()
+            .unwrap_or_else(|| "error during initialization".into());
         RealSnarkyError::new_with_ctx(error, loc, self.labels_stack.clone())
     }
 
@@ -641,7 +624,7 @@ where
         // reset the constraints' locations
         // we have to do this to imitate what the OCaml side does
         // (the OCaml side always starts with a fresh state)
-        self.constraints_locations = Vec::with_capacity(self.constraints_locations.len());
+        self.last_constraint_location = None;
 
         Ok(())
     }

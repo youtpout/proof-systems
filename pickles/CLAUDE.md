@@ -2267,3 +2267,45 @@ sur des machines où la compilation est plus lente, mais il ne constitue pas
 encore un gain sur cette machine. Le prochain travail cache est un encodage
 compact/rapide des évaluations ou un cache mémoire inter-programmes ; ne pas
 présenter le format rmp actuel comme une accélération universelle.
+
+## Jalon 2026-07-14 — compilation N1 paresseuse et profil WASM
+
+`RecordedCompiledN1::compile` ne génère plus une preuve Step uniquement pour
+construire immédiatement l'index Wrap. Il compile l'index Step et diffère la
+preuve Step ainsi que l'index Wrap jusqu'au premier `prove`; les appels suivants
+réutilisent les deux index. Sur AddZkProgram natif sans cache, `compile update`
+passe ainsi d'environ **9,2 s** à **4,5 s**. Ce changement rapproche le cycle de
+vie de l'API Pickles OCaml, où les clés sont paresseuses, sans changer les
+preuves ni leur vérification.
+
+Le frontend Snarky a aussi été allégé sur les chemins chauds : union-find,
+variables internes et classes d'équivalence utilisent maintenant des indices
+denses; la réduction des combinaisons linéaires trie et compacte un petit
+`Vec` au lieu de créer une `HashMap` par contrainte; les labels Generic
+intermédiaires et l'historique complet des localisations ne sont plus alloués.
+Les variables `SNARKY_LOG_CONSTRAINTS`, `SNARKY_LOG_PENDING_GENERIC` et
+`SNARKY_LOG_HL_CONSTRAINTS` ont été retirées des boucles chaudes : les lectures
+répétées de l'environnement causaient une régression WASM importante. Une
+instrumentation par phase, appelée seulement quatre fois par compilation,
+reste disponible pour localiser lowering, construction du CS, Lagrange et
+index Kimchi.
+
+Le build release `kimchi-wasm` applique désormais automatiquement
+`wasm-opt -O4` avec threads et bulk-memory. L'artefact passe de **29 Mio** à
+**11 Mio**, ce qui améliore le téléchargement et l'instanciation navigateur,
+mais ne réduit presque pas le temps N0 sur cette machine (**7,23 s** à
+**7,21 s**). Ce n'était donc pas la cause du retard N1.
+
+État mesuré : N0 Rust WASM reste plus rapide que JSOO WASM à froid
+(**7,21 s** contre **9,06 s** pour compiler), tandis que la compilation N1
+directe dépasse encore la borne de 30 s en WASM malgré un domaine seulement
+égal à 2^14. À 16 workers le processus garde environ **1,7 Gio RSS** et utilise
+les workers, mais le frontend récursif reste le goulot. Ne pas reprendre les
+micro-optimisations au hasard : utiliser le profil par phase, puis porter le
+modèle programme de `Pickles.compile` (branches compilées ensemble, Step
+indépendant d'une preuve concrète, Wrap partagé) au lieu de conserver
+`compileN1Over(previousProof)` comme architecture finale.
+
+Validation du jalon : les 18 tests Snarky passent; N0 prouve et vérifie; N1
+prouve deux fois en réutilisant Step/Wrap; N2 prouve sur deux bases conservées
+et exécute la nouvelle application. Tous ces tests release sont verts.

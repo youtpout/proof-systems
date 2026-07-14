@@ -417,10 +417,13 @@ pub fn rust_pickles_compile_recorded_n1(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    pickles::set_compile_profile_hook(Some(log_pickles_compile_profile));
     let compiled = crate::rayon::run_in_pool(|| {
         pickles::recorded::RecordedCompiledN1::compile(&previous.0, circuit, witness)
-    })
-    .map_err(|err| JsError::new(&format!("rust pickles N1 compile failed: {err:?}")))?;
+    });
+    pickles::set_compile_profile_hook(None);
+    let compiled = compiled
+        .map_err(|err| JsError::new(&format!("rust pickles N1 compile failed: {err:?}")))?;
     Ok(WasmRecordedCompiledN1(compiled))
 }
 
@@ -433,11 +436,24 @@ pub fn rust_pickles_compile_recorded_n1_bytes(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    pickles::set_compile_profile_hook(Some(log_pickles_compile_profile));
     let compiled = crate::rayon::run_in_pool(|| {
         pickles::recorded::RecordedCompiledN1::compile(&previous.0, circuit, witness)
-    })
-    .map_err(|err| JsError::new(&format!("rust pickles N1 compile failed: {err:?}")))?;
+    });
+    pickles::set_compile_profile_hook(None);
+    let compiled = compiled
+        .map_err(|err| JsError::new(&format!("rust pickles N1 compile failed: {err:?}")))?;
     Ok(WasmRecordedCompiledN1(compiled))
+}
+
+fn log_pickles_compile_profile(profile: pickles::CompileProfile) {
+    crate::console_log(&format!(
+        "Rust Pickles compile profile: lowering={:.1}ms cs={:.1}ms lagrange={:.1}ms index={:.1}ms",
+        profile.lowering_micros as f64 / 1000.0,
+        profile.constraint_system_micros as f64 / 1000.0,
+        profile.lagrange_micros as f64 / 1000.0,
+        profile.prover_index_micros as f64 / 1000.0,
+    ));
 }
 
 #[wasm_bindgen]

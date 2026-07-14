@@ -41,7 +41,7 @@ pub use snarky_type::{CircuitAndValue, SnarkyType};
 #[macro_export]
 macro_rules! loc {
     () => {{
-        ::std::borrow::Cow::Owned(format!("{}:{}", file!(), line!()))
+        ::std::borrow::Cow::Borrowed(concat!(file!(), ":", line!()))
     }};
 }
 

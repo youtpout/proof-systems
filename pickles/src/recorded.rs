@@ -1358,23 +1358,6 @@ pub struct RecordedCompiledN1 {
             RECORDED_N1_WRAP_STMT_LEN,
         >,
     >,
-    precomputed: Option<PrecomputedRecordedN1>,
-}
-
-struct PrecomputedRecordedN1 {
-    witness: Vec<Fp>,
-    previous_state: Vec<Fp>,
-    previous_proof: crate::api::MinaWrapProof,
-    new_state: Vec<Fp>,
-    step: crate::recursive_step::RecursiveStepProof<
-        16,
-        RECORDED_BASE_WRAP_ROUNDS,
-        RECORDED_N1_STEP_STMT_LEN,
-    >,
-    prepared_wrap: crate::recursive_step::PreparedRecursiveWrap<
-        RECORDED_N1_STEP_ROUNDS,
-        RECORDED_N1_WRAP_STMT_LEN,
-    >,
 }
 
 impl RecordedCompiledN1 {
@@ -1397,7 +1380,6 @@ impl RecordedCompiledN1 {
         let profile = std::env::var_os("PICKLES_PROFILE").is_some();
         let started = std::time::Instant::now();
         let new_state = circuit.state(&witness);
-        let compiled_witness = witness.clone();
         let app = RecordedApp {
             circuit: circuit.clone(),
         };
@@ -1423,44 +1405,19 @@ impl RecordedCompiledN1 {
             RECORDED_N1_STEP_STMT_LEN,
         >(&prepared, Some(main.clone()));
         let step_compiled_at = std::time::Instant::now();
-        let (step, step_indexes) = crate::recursive_step::prove_prepared_recursive_step(
-            prepared,
-            Some(main),
-            Some(step_indexes),
-        );
-        let step_proved_at = std::time::Instant::now();
-        let prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
-            RecordedApp,
-            16,
-            RECORDED_BASE_WRAP_ROUNDS,
-            RECORDED_N1_STEP_ROUNDS,
-            40,
-            RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N1_WRAP_STMT_LEN,
-        >(base, &step);
-        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
         if profile {
+            let step_domain = step_indexes.1.index.domain.log_size_of_group;
             eprintln!(
-                "pickles compile N1: prepare={:?} step_index={:?} step_proof={:?} wrap_index={:?} total={:?}",
+                "pickles compile N1: domain=2^{step_domain} prepare={:?} step_index={:?} total={:?}",
                 prepared_at - started,
                 step_compiled_at - prepared_at,
-                step_proved_at - step_compiled_at,
-                step_proved_at.elapsed(),
                 started.elapsed(),
             );
         }
         Ok(Self {
             circuit,
             step_indexes: Some(step_indexes),
-            wrap_indexes: Some(wrap_indexes),
-            precomputed: Some(PrecomputedRecordedN1 {
-                witness: compiled_witness,
-                previous_state: previous.app_state.clone(),
-                previous_proof: previous.proof.clone(),
-                new_state,
-                step,
-                prepared_wrap,
-            }),
+            wrap_indexes: None,
         })
     }
 
@@ -1479,42 +1436,6 @@ impl RecordedCompiledN1 {
                 crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
             ));
         };
-        if self.precomputed.as_ref().is_some_and(|precomputed| {
-            precomputed.witness == witness
-                && precomputed.previous_state == previous.app_state
-                && precomputed.previous_proof == previous.proof
-        }) {
-            let precomputed = self.precomputed.take().unwrap();
-            let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
-            let wrap_indexes = self.wrap_indexes.take().expect("compiled N1 Wrap indexes");
-            let (wrap, wrap_indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
-                precomputed.prepared_wrap,
-                Some(wrap_indexes),
-            );
-            self.wrap_indexes = Some(wrap_indexes);
-            let cycle = crate::recursive_step::RecursiveCycleProof {
-                step: precomputed.step,
-                wrap,
-            };
-            let proof = crate::recursive_step::DirectN1Proof::<
-                16,
-                RECORDED_BASE_WRAP_ROUNDS,
-                RECORDED_N1_STEP_ROUNDS,
-                RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N1_WRAP_STMT_LEN,
-            > {
-                cycle,
-                wrap_vk_pts,
-            };
-            let encoded = proof
-                .to_mina_network_proof()
-                .map_err(RecordedProveError::RecursiveBackend)?;
-            return Ok(RecordedProofHandle {
-                app_state: precomputed.new_state,
-                proof: encoded,
-                inner: RecordedProofInner::Recursive(proof.cycle),
-            });
-        }
         let new_state = self.circuit.state(&witness);
         let app = RecordedApp {
             circuit: self.circuit.clone(),
@@ -1550,9 +1471,9 @@ impl RecordedCompiledN1 {
             RECORDED_N1_STEP_STMT_LEN,
             RECORDED_N1_WRAP_STMT_LEN,
         >(base, &step);
-        let wrap_indexes = self.wrap_indexes.take().expect("compiled N1 Wrap indexes");
+        let wrap_indexes = self.wrap_indexes.take();
         let (wrap, wrap_indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(wrap_indexes));
+            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, wrap_indexes);
         self.wrap_indexes = Some(wrap_indexes);
         let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
         let proof = crate::recursive_step::DirectN1Proof::<

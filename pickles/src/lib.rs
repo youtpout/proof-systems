@@ -84,4 +84,5 @@ pub mod tick_tock {
     }
 }
 
+pub use snarky::api::{CompileProfile, set_compile_profile_hook};
 pub use tick_tock::{Side, Tick, Tock};

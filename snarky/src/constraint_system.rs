@@ -61,8 +61,6 @@ impl Position<usize> {
 
 #[derive(Debug, Clone)]
 struct PendingGate<F, V> {
-    labels: Vec<Cow<'static, str>>,
-    loc: Cow<'static, str>,
     vars: (Option<V>, Option<V>, Option<V>),
     coeffs: Vec<F>,
 }
@@ -281,6 +279,15 @@ enum V {
     Internal(InternalVar),
 }
 
+impl V {
+    fn union_find_id(self) -> usize {
+        match self {
+            V::External(id) => id * 2,
+            V::Internal(InternalVar(id)) => id * 2 + 1,
+        }
+    }
+}
+
 /** Keeps track of a circuit (which is a list of gates)
   while it is being written.
 */
@@ -307,10 +314,10 @@ where
     constants: Constants<Field>,
 
     /** Map of cells that share the same value (enforced by to the permutation). */
-    equivalence_classes: HashMap<V, Vec<Position<Row>>>,
+    equivalence_classes: Vec<Vec<Position<Row>>>,
     next_internal_var: usize,
     /** How to compute each internal variable (as a linear combination of other variables). */
-    internal_vars: HashMap<InternalVar, (Vec<(Field, V)>, Option<Field>)>,
+    internal_vars: Vec<(Vec<(Field, V)>, Option<Field>)>,
     /** The variables that hold each witness value for each row, in reverse order. */
     rows: Vec<Vec<Option<V>>>,
     /** A circuit is described by a series of gates.
@@ -360,7 +367,7 @@ where
     a single equivalence class, so that the permutation argument enforces these desired equalities
     as well.
     */
-    union_finds: DisjointSet<V>,
+    union_finds: DisjointSet,
 }
 
 impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
@@ -387,8 +394,11 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     */
     fn equivalence_classes_to_hashtbl(&mut self) -> HashMap<Position<Row>, Position<Row>> {
         let mut equivalence_classes: HashMap<usize, HashSet<Position<Row>>> = HashMap::new();
-        for (key, data) in &self.equivalence_classes {
-            let u = self.union_finds.find(*key).unwrap();
+        for (key, data) in self.equivalence_classes.iter().enumerate() {
+            if data.is_empty() {
+                continue;
+            }
+            let u = self.union_finds.find(key).unwrap();
             let entry = equivalence_classes.entry(u).or_insert_with(HashSet::new);
             for position in data.iter() {
                 entry.insert(*position);
@@ -470,7 +480,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     // for internal values, compute the linear combination
                     Some(V::Internal(var)) => {
                         let (lc, c) = {
-                            match self.internal_vars.get(var) {
+                            match self.internal_vars.get(var.0) {
                                 None => panic!("Could not find {:?}", var),
                                 Some(x) => x,
                             }
@@ -498,14 +508,15 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     }
 
     fn union_find(&mut self, value: V) {
-        self.union_finds.make_set(value);
+        self.union_finds.make_set(value.union_find_id());
     }
 
     fn create_internal(&mut self, constant: Option<Field>, lc: Vec<(Field, V)>) -> V {
         let v = InternalVar(self.next_internal_var);
         self.next_internal_var += 1;
         self.union_find(V::Internal(v));
-        self.internal_vars.insert(v, (lc, constant));
+        debug_assert_eq!(v.0, self.internal_vars.len());
+        self.internal_vars.push((lc, constant));
         V::Internal(v)
     }
 
@@ -516,12 +527,12 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             public_input_size: None,
             prev_challenges: None,
             next_internal_var: 0,
-            internal_vars: HashMap::new(),
+            internal_vars: Vec::new(),
             gates: Circuit::Unfinalized(Vec::new()),
             gate_labels: Vec::new(),
             rows: Vec::new(),
             next_row: 0,
-            equivalence_classes: HashMap::new(),
+            equivalence_classes: Vec::new(),
             generic_gate_optimization: true,
             flush_generic_before_custom: false,
             pending_generic_gate: None,
@@ -571,10 +582,11 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     (so at the start of the public-input rows). */
     fn wire_(&mut self, key: V, row: Row, col: usize) {
         self.union_find(key);
-        self.equivalence_classes
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(Position { row, col });
+        let key = key.union_find_id();
+        if self.equivalence_classes.len() <= key {
+            self.equivalence_classes.resize_with(key + 1, Vec::new);
+        }
+        self.equivalence_classes[key].push(Position { row, col });
     }
 
     /** Same as wire', except that the row must be given relatively to the end of the public-input rows. */
@@ -585,8 +597,8 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     /** Adds a row/gate/constraint to a constraint system `sys`. */
     fn add_row(
         &mut self,
-        labels: &[Cow<'static, str>],
-        loc: &Cow<'static, str>,
+        _labels: &[Cow<'static, str>],
+        _loc: &Cow<'static, str>,
         vars: Vec<Option<V>>,
         kind: GateType,
         coeffs: Vec<Field>,
@@ -594,12 +606,6 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         if self.flush_generic_before_custom && kind != GateType::Generic {
             self.flush_pending_generic_gate();
         }
-        // TODO: for now we can print the debug info at runtime, but in the future we should allow serialization of these things as well
-        // TODO: this ignores the public gates!!
-        if std::env::var("SNARKY_LOG_CONSTRAINTS").is_ok() {
-            println!("{}: {loc} - {}", self.next_row, labels.join(", "));
-        }
-
         /* As we're adding a row, we're adding new cells.
            If these cells (the first 7) contain variables,
            make sure that they are wired
@@ -618,7 +624,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     kind,
                     wired_to: Vec::new(),
                     coeffs,
-                    label: labels.join(", "),
+                    label: String::new(),
                 });
             }
         }
@@ -628,26 +634,17 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
 
     fn flush_pending_generic_gate(&mut self) {
         if let Some(PendingGate {
-            labels,
-            loc,
             vars: (l, r, o),
             coeffs,
         }) = self.pending_generic_gate.take()
         {
-            if std::env::var("SNARKY_LOG_PENDING_GENERIC").is_ok() {
-                println!(
-                    "PENDING flush row={} label={} loc={}",
-                    self.next_row,
-                    labels.join(" | "),
-                    loc
-                );
-            }
+            let loc = Cow::Borrowed("");
             self.add_row(
-                &labels,
+                &[],
                 &loc,
                 vec![l, r, o],
                 GateType::Generic,
-                coeffs.clone(),
+                coeffs,
             );
         }
     }
@@ -698,7 +695,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 kind: GateType::Generic,
                 wired_to: Vec::new(),
                 coeffs: pub_selectors.clone(),
-                label: "public_input".to_string(),
+                label: String::new(),
             });
         }
 
@@ -788,6 +785,25 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
             Circuit::Unfinalized(_) => unreachable!(),
         }
     }
+
+    /// Drops compilation-only state after the gates have been copied into the
+    /// Kimchi index. Witness generation only needs `rows`, `internal_vars`,
+    /// the public-input metadata and the field constants.
+    pub(crate) fn compact_for_witness(&mut self) {
+        self.equivalence_classes.clear();
+        self.equivalence_classes.shrink_to_fit();
+        self.union_finds = DisjointSet::new();
+        self.cached_constants.clear();
+        self.cached_constants.shrink_to_fit();
+        self.gate_labels.clear();
+        self.gate_labels.shrink_to_fit();
+        if let Circuit::Compiled(digest, gates) = &mut self.gates {
+            let digest = *digest;
+            gates.clear();
+            gates.shrink_to_fit();
+            self.gates = Circuit::Compiled(digest, Vec::new());
+        }
+    }
 }
 
 /** Regroup terms that share the same variable.
@@ -799,26 +815,19 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     Returns `(last_scalar, last_variable, terms, terms_length)`
     where terms does not contain the last scalar and last variable observed.
 */
-fn accumulate_terms<Field: PrimeField>(terms: Vec<(Field, usize)>) -> HashMap<usize, Field> {
-    let mut acc = HashMap::new();
-    for (x, i) in terms {
-        match acc.entry(i) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let res = x + entry.get();
-                if res.is_zero() {
-                    entry.remove();
-                } else {
-                    *entry.get_mut() = res;
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                if !x.is_zero() {
-                    entry.insert(x);
-                }
-            }
+fn accumulate_terms<Field: PrimeField>(mut terms: Vec<(Field, usize)>) -> Vec<(Field, usize)> {
+    terms.sort_unstable_by_key(|&(_, variable)| variable);
+    let mut accumulated = Vec::with_capacity(terms.len());
+    let mut terms = terms.into_iter().peekable();
+    while let Some((mut coefficient, variable)) = terms.next() {
+        while matches!(terms.peek(), Some((_, next_variable)) if *next_variable == variable) {
+            coefficient += terms.next().unwrap().0;
+        }
+        if !coefficient.is_zero() {
+            accumulated.push((coefficient, variable));
         }
     }
-    acc
+    accumulated
 }
 
 pub trait SnarkyCvar: Clone {
@@ -840,10 +849,8 @@ where
         terms.push((c, 0));
     }
     let has_constant_term = c.is_some();
-    let terms = accumulate_terms(terms);
-    let mut terms_list: Vec<_> = terms.into_iter().map(|(key, data)| (data, key)).collect();
     // OCaml `canonicalize` orders by ascending variable index (no reverse).
-    terms_list.sort_by_key(|&(_, key)| key);
+    let terms_list = accumulate_terms(terms);
     let num_terms = terms_list.len();
     Some((terms_list, num_terms, has_constant_term))
 }
@@ -862,15 +869,6 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         o: Option<V>,
         mut coeffs: Vec<Field>,
     ) {
-        if std::env::var("SNARKY_LOG_PENDING_GENERIC").is_ok() {
-            println!(
-                "PENDING add row={} occupied={} label={} loc={}",
-                self.next_row,
-                self.pending_generic_gate.is_some(),
-                labels.join(" | "),
-                loc
-            );
-        }
         if !self.generic_gate_optimization {
             assert!(coeffs.len() <= GENERIC_COEFFS);
             self.add_row(labels, loc, vec![l, r, o], GateType::Generic, coeffs);
@@ -880,29 +878,20 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         match self.pending_generic_gate {
             None => {
                 self.pending_generic_gate = Some(PendingGate {
-                    labels: labels.to_vec(),
-                    loc: loc.to_owned(),
                     vars: (l, r, o),
                     coeffs,
                 })
             }
             Some(_) => {
                 if let Some(PendingGate {
-                    labels: labels2,
-                    loc: loc2,
                     vars: (l2, r2, o2),
                     coeffs: coeffs2,
                 }) = core::mem::replace(&mut self.pending_generic_gate, None)
                 {
-                    let labels1 = labels.join(",");
-                    let labels2 = labels2.join(",");
-                    let labels = vec![Cow::Owned(format!("gen1:[{}] gen2:[{}]", labels1, labels2))];
-                    let loc = format!("gen1:[{}] gen2:[{}]", loc, loc2).into();
-
                     coeffs.extend(coeffs2);
                     self.add_row(
-                        &labels,
-                        &loc,
+                        &[],
+                        loc,
                         vec![l, r, o, l2, r2, o2],
                         GateType::Generic,
                         coeffs,
@@ -977,15 +966,13 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         Cvar: SnarkyCvar<Field = Field>,
     {
         let (constant, terms) = x.to_constant_and_terms();
-        let terms = accumulate_terms(terms);
-        let mut terms_list: Vec<_> = terms.into_iter().map(|(key, data)| (data, key)).collect();
+        let terms_list = accumulate_terms(terms);
         // OCaml (`plonk_constraint_system.ml reduce_lincom`) orders the terms
         // by ASCENDING VARIABLE INDEX (`Map.fold_right` over the index-keyed
         // map) — never by coefficient value. Sorting by the `(coeff, index)`
         // tuple swapped the l/r slots whenever the coefficient order differed
         // from the index order (observed in the wrap opt-sponge add_in
         // reductions).
-        terms_list.sort_by_key(|&(_, key)| key);
         match (constant, terms_list.len()) {
             (Some(c), 0) => (c, ConstantOrVar::Constant),
             (None, 0) => (Field::zero(), ConstantOrVar::Constant),
@@ -1322,7 +1309,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                             if !s1.is_zero() {
                                 self.union_find(x1);
                                 self.union_find(x2);
-                                self.union_finds.union(x1, x2).unwrap();
+                                self.union_finds
+                                    .union(x1.union_find_id(), x2.union_find_id())
+                                    .unwrap();
                             };
                         } else if
                         /* s1 x1 - s2 x2 = 0 */
@@ -1356,7 +1345,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                                 let x2 = x2.clone();
                                 self.union_find(x1);
                                 self.union_find(x2);
-                                self.union_finds.union(x1, x2).unwrap();
+                                self.union_finds
+                                    .union(x1.union_find_id(), x2.union_find_id())
+                                    .unwrap();
                             }
                             None => {
                                 self.add_generic_constraint(
@@ -1381,7 +1372,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                                 let x1 = x1.clone();
                                 self.union_find(x1);
                                 self.union_find(x2);
-                                self.union_finds.union(x1, x2).unwrap();
+                                self.union_finds
+                                    .union(x1.union_find_id(), x2.union_find_id())
+                                    .unwrap();
                             }
                             None => {
                                 self.add_generic_constraint(
