@@ -2359,3 +2359,54 @@ Wrap partagé et vérifie l'enveloppe standalone avec les messages physiques.
 La prochaine étape est d'étendre ce même handle aux preuves N1/N2 consommant
 des handles programme, puis seulement d'exposer le handle par NAPI/WASM et
 `mina-runtime`; ne pas revenir aux trois Wrap séparés pour simplifier le port.
+
+## Handoff 2026-07-14 — essais N1/N2 du handle programme
+
+L'état poussé reste volontairement le dernier jalon vert :
+`RecordedCompiledProgram` compile toutes les branches Step, partage une seule
+Wrap VK et prouve/vérifie N0. Les modifications N1/N2 décrites ci-dessous ont
+été restaurées après les tests en échec; ne pas supposer qu'elles se trouvent
+encore dans les sources.
+
+Validations vertes avant les essais :
+
+- `recorded_program_compiles_n0_n1_n2_with_one_wrap_key` avec preuve N0 et
+  vérification standalone : vert en environ 299 s en debug;
+- `recorded_compilation_does_not_require_a_satisfying_witness` : vert en
+  35,54 s;
+- `program_wrap_index_is_shared_by_n0_n1_n2` : N0/N1/N2 verts avec le même
+  index Wrap en 236,25 s;
+- `cargo check -p pickles -p kimchi-napi -p kimchi_wasm` : vert.
+
+Essais effectués pour faire consommer des handles programme par N1/N2 :
+
+1. Reconstruction directe d'un `PreparedRecursiveStep` depuis le Step width-2
+   et le Wrap précédents, avec propagation des deux accumulateurs/challenges
+   physiques. Le premier N1 échoue sur `finalize: xi`.
+2. Rejeu du masque Kimchi du proof précédent dans
+   `oracles_with_recursion_mask` (`[false,false]`, `[false,true]` ou
+   `[true,true]`) puis filtrage de `finalize_prev_challenges` aux seuls slots
+   actifs. Cela dépasse l'erreur `xi`, mais révèle que l'index N1 avait été
+   compilé avec une forme de base sans les deux anciens messages : dépassement
+   du witness Snarky autour de l'index 267270.
+3. Compilation eager des Step N1/N2 avec un vrai cycle width-2 structurel.
+   L'écart tombe à trois cellules (`index 267273` pour une taille 267270). La
+   cause est `share_index_sponge` : le cycle provisoire vérifie une Wrap VK
+   différente de la prochaine VK (`false`), tandis qu'un vrai cycle du
+   programme réutilise l'unique Wrap VK (`true`).
+4. Tentative de reprover le cycle structurel avec l'index Wrap final avant la
+   compilation définitive des Step. La réutilisation de cet index avec les
+   données de branche structurelles n'est pas valide :
+   `DisconnectedWires(Wire { row: 91, col: 5 }, Wire { row: 4224, col: 3 })`.
+   Cet essai a donc été restauré, pas contourné.
+
+Piste prioritaire pour la reprise : lors de la **compilation seulement** du
+gabarit N1/N2, fournir comme `previous_messages_vk_pts` les points de la VK du
+Wrap structurel effectivement vérifié. Cela force la même forme
+`share_index_sponge=true` que le runtime sans tenter de prouver un witness
+contre un index câblé pour une autre sélection de branche. Le gabarit de
+compilation n'a pas besoin d'être satisfaisant; le proving réel continuera à
+utiliser les messages authentiques du handle précédent. Vérifier d'abord que
+le nombre de variables/contraintes du Step compilé est identique au Step N1
+réel, puis relancer le test complet N0 -> N1 -> N2. Une fois vert seulement,
+exposer le handle partagé dans NAPI/WASM et `mina-runtime`.
