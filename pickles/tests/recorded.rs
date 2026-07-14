@@ -91,6 +91,37 @@ fn recorded_compiled_base_reuses_indexes_across_witnesses() {
     }
 }
 
+#[test]
+fn recorded_compiled_base_cache_round_trips_and_rejects_corruption() {
+    use pickles::recorded::RecordedCompiledBase;
+
+    let circuit = square_circuit();
+    let compiled =
+        RecordedCompiledBase::compile(circuit.clone(), vec![Fp::from(3u64), Fp::from(9u64)])
+            .unwrap();
+    let bytes = compiled.to_cache_bytes().unwrap();
+    let mut restored = RecordedCompiledBase::from_cache_bytes(
+        circuit.clone(),
+        vec![Fp::from(4u64), Fp::from(16u64)],
+        &bytes,
+    )
+    .unwrap();
+    let proof = restored
+        .prove_keep(vec![Fp::from(4u64), Fp::from(16u64)])
+        .unwrap();
+    assert_eq!(proof.app_state, vec![Fp::from(16u64)]);
+
+    let mut corrupted = bytes;
+    let middle = corrupted.len() / 2;
+    corrupted[middle] ^= 1;
+    assert!(RecordedCompiledBase::from_cache_bytes(
+        circuit,
+        vec![Fp::from(5u64), Fp::from(25u64)],
+        &corrupted,
+    )
+    .is_err());
+}
+
 /// Recorded EC complete addition of two Vesta points (base field Fp),
 /// output = x3. Witness layout: [x1, y1, x2, y2, x3, y3, slope, x21_inv].
 fn ec_add_circuit() -> RecordedCircuit {

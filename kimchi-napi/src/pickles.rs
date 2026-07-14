@@ -48,9 +48,8 @@ fn parse_fp_bytes(bytes: &[u8], name: &str) -> Result<Vec<Fp>> {
     bytes
         .chunks_exact(FIELD_BYTES)
         .map(|chunk| {
-            Fp::deserialize_compressed(chunk).map_err(|_| {
-                Error::from_reason(format!("{name}: non-canonical Pasta Fp encoding"))
-            })
+            Fp::deserialize_compressed(chunk)
+                .map_err(|_| Error::from_reason(format!("{name}: non-canonical Pasta Fp encoding")))
         })
         .collect()
 }
@@ -444,6 +443,41 @@ pub fn rust_pickles_compile_recorded_base_bytes(
     let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
     let compiled = pickles::recorded::RecordedCompiledBase::compile(circuit, witness)
         .map_err(|err| Error::from_reason(format!("rust pickles compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_recorded_base_cache_key")]
+pub fn rust_pickles_recorded_base_cache_key(circuit_json: String) -> Result<String> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    Ok(pickles::recorded::RecordedCompiledBase::cache_key(&circuit))
+}
+
+#[napi(js_name = "rust_pickles_recorded_base_cache_bytes")]
+pub fn rust_pickles_recorded_base_cache_bytes(
+    compiled: &External<pickles::recorded::RecordedCompiledBase>,
+) -> Result<Uint8Array> {
+    compiled
+        .to_cache_bytes()
+        .map(Uint8Array::from)
+        .map_err(|err| Error::from_reason(format!("failed to serialize Rust Pickles cache: {err}")))
+}
+
+#[napi(js_name = "rust_pickles_compile_recorded_base_from_cache_bytes")]
+pub fn rust_pickles_compile_recorded_base_from_cache_bytes(
+    circuit_json: String,
+    witness_bytes: Uint8Array,
+    cache_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedCompiledBase>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let compiled = pickles::recorded::RecordedCompiledBase::from_cache_bytes(
+        circuit,
+        witness,
+        cache_bytes.as_ref(),
+    )
+    .map_err(|err| Error::from_reason(format!("invalid Rust Pickles cache: {err}")))?;
     Ok(External::new(compiled))
 }
 

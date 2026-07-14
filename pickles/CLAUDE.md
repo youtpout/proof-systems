@@ -2249,3 +2249,21 @@ canonique dédié : la tentative serde directe a été retirée, car les champs 
 domaines Arkworks ne l'implémentent volontairement pas. Ne pas contourner cette
 propriété avec une sérialisation mémoire brute ; restaurer les index seuls et
 reconstruire les données auxiliaires est la voie retenue.
+
+Le cache N0 est maintenant exposé par NAPI/WASM et branché sur le `Cache`
+fichier standard d'o1js. La clé `recorded-base-v1-<sha256>` engage le JSON
+canonique complet du circuit et la version du format. Le fichier contient les
+index Step/Wrap sans SRS. Les points de VK ne sont pas acceptés depuis le cache :
+ils sont recalculés depuis l'index Wrap validé. Au chargement, Snarky reconstruit
+les deux circuits avec le witness courant et rejette toute différence avant de
+rattacher l'index. Une empreinte SHA-256 distincte couvre aussi les deux index
+sérialisés. Une entrée illisible, corrompue ou incompatible devient un cache miss ;
+`Cache.None` désactive aussi ce chemin Rust.
+
+Mesure honnête sur AddZkProgram natif 16 workers : miss **3,402 s**, hit fichier
+**3,507 s**. L'entrée fait **85 Mio** et sa désérialisation coûte actuellement
+autant que le recalcul parallèle. Le cache est donc fonctionnel et sûr, utile
+sur des machines où la compilation est plus lente, mais il ne constitue pas
+encore un gain sur cette machine. Le prochain travail cache est un encodage
+compact/rapide des évaluations ou un cache mémoire inter-programmes ; ne pas
+présenter le format rmp actuel comme une accélération universelle.

@@ -11,7 +11,7 @@
 //! host-language callback re-entering Rust.
 
 use ark_ff::Zero;
-use mina_curves::pasta::Fp;
+use mina_curves::pasta::{Fp, Pallas, Vesta};
 use snarky::{
     constraint_system::{
         BasicInput, BasicSnarkyConstraint, EcAddCompleteInput, EcEndoscaleInput, EndoscaleRound,
@@ -1131,6 +1131,63 @@ pub struct RecordedProofHandle {
 /// Backward-compatible name for callers that only retain base proofs.
 pub type RecordedBaseHandle = RecordedProofHandle;
 
+const RECORDED_BASE_CACHE_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecordedBaseIndexCache {
+    version: u32,
+    circuit_digest: [u8; 32],
+    index_digest: [u8; 32],
+    step_index: Vec<u8>,
+    wrap_index: Vec<u8>,
+}
+
+fn recorded_circuit_digest(circuit: &RecordedCircuit) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(serde_json::to_vec(circuit).expect("recorded circuit serializes")).into()
+}
+
+fn recorded_index_digest(step_index: &[u8], wrap_index: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(step_index);
+    digest.update(wrap_index);
+    digest.finalize().into()
+}
+
+type RecordedRawStepIndex = kimchi::prover_index::ProverIndex<
+    { crate::common::FULL_ROUNDS },
+    Vesta,
+    poly_commitment::ipa::SRS<Vesta>,
+>;
+type RecordedRawWrapIndex = kimchi::prover_index::ProverIndex<
+    { crate::common::FULL_ROUNDS },
+    Pallas,
+    poly_commitment::ipa::SRS<Pallas>,
+>;
+
+fn restore_step_index(mut index: RecordedRawStepIndex) -> RecordedRawStepIndex {
+    let (linearization, powers_of_alpha) =
+        kimchi::linearization::expr_linearization(Some(&index.cs.feature_flags), true);
+    index.linearization = linearization;
+    index.powers_of_alpha = powers_of_alpha;
+    index.srs = crate::common::tick_srs(1 << crate::common::TICK_ROUNDS);
+    index.verifier_index = None;
+    index.verifier_index_digest = None;
+    index
+}
+
+fn restore_wrap_index(mut index: RecordedRawWrapIndex) -> RecordedRawWrapIndex {
+    let (linearization, powers_of_alpha) =
+        kimchi::linearization::expr_linearization(Some(&index.cs.feature_flags), true);
+    index.linearization = linearization;
+    index.powers_of_alpha = powers_of_alpha;
+    index.srs = crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS);
+    index.verifier_index = None;
+    index.verifier_index_digest = None;
+    index
+}
+
 /// A recorded base circuit whose Step and Wrap prover indexes stay alive for
 /// repeated proofs. The initial witness is used only to discover and compile
 /// the two Pickles indexes; every `prove_keep` call supplies its own witness.
@@ -1140,6 +1197,108 @@ pub struct RecordedCompiledBase {
 }
 
 impl RecordedCompiledBase {
+    pub fn cache_key(circuit: &RecordedCircuit) -> String {
+        let digest = recorded_circuit_digest(circuit);
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("recorded-base-v{RECORDED_BASE_CACHE_VERSION}-{hex}")
+    }
+
+    pub fn to_cache_bytes(&self) -> Result<Vec<u8>, String> {
+        let step = self
+            .compiled
+            .step_indexes
+            .as_ref()
+            .ok_or_else(|| "compiled Step index is temporarily in use".to_string())?;
+        let wrap = self
+            .compiled
+            .wrap_indexes
+            .as_ref()
+            .ok_or_else(|| "compiled Wrap index is temporarily in use".to_string())?;
+        let step_index = rmp_serde::to_vec(&step.0.index).map_err(|err| err.to_string())?;
+        let wrap_index = rmp_serde::to_vec(&wrap.0.index).map_err(|err| err.to_string())?;
+        let cache = RecordedBaseIndexCache {
+            version: RECORDED_BASE_CACHE_VERSION,
+            circuit_digest: recorded_circuit_digest(&self.circuit),
+            index_digest: recorded_index_digest(&step_index, &wrap_index),
+            step_index,
+            wrap_index,
+        };
+        rmp_serde::to_vec(&cache).map_err(|err| err.to_string())
+    }
+
+    pub fn from_cache_bytes(
+        circuit: RecordedCircuit,
+        witness: Vec<Fp>,
+        bytes: &[u8],
+    ) -> Result<Self, String> {
+        circuit.validate().map_err(|err| format!("{err:?}"))?;
+        if witness.len() != circuit.aux_count as usize {
+            return Err(format!("wrong witness length: {}", witness.len()));
+        }
+        let cache: RecordedBaseIndexCache =
+            rmp_serde::from_slice(bytes).map_err(|err| err.to_string())?;
+        if cache.version != RECORDED_BASE_CACHE_VERSION
+            || cache.circuit_digest != recorded_circuit_digest(&circuit)
+        {
+            return Err("cached indexes belong to a different circuit or version".into());
+        }
+        if cache.index_digest != recorded_index_digest(&cache.step_index, &cache.wrap_index) {
+            return Err("cached indexes are corrupted".into());
+        }
+        let step_index: RecordedRawStepIndex =
+            rmp_serde::from_slice(&cache.step_index).map_err(|err| err.to_string())?;
+        let wrap_index: RecordedRawWrapIndex =
+            rmp_serde::from_slice(&cache.wrap_index).map_err(|err| err.to_string())?;
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        let (step_prover, step_verifier) = snarky::api::ProverIndexWrapper::from_cached_index(
+            crate::api::StepCircuit { app: app.clone() },
+            0,
+            restore_step_index(step_index),
+        )?;
+        use ark_ec::{AffineRepr, CurveGroup};
+        use mina_curves::pasta::Fq;
+        let generator = Pallas::generator().into_group();
+        let bootstrap_points = (1..=28u64)
+            .map(|i| {
+                let point = (generator * Fq::from(i)).into_affine();
+                (point.x, point.y)
+            })
+            .collect();
+        let built = crate::api::build_base_case::<RecordedApp, 16, 40>(
+            app.clone(),
+            witness,
+            bootstrap_points,
+            false,
+            Some((step_prover, step_verifier)),
+            None,
+            Some(restore_wrap_index(wrap_index)),
+        );
+        let crate::api::BaseCaseBuild::Compiled {
+            step_prover,
+            step_verifier,
+            wrap_prover,
+            wrap_verifier,
+        } = built
+        else {
+            return Err("cached base compilation unexpectedly produced a proof".into());
+        };
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_verifier);
+        Ok(Self {
+            circuit,
+            compiled: crate::api::CompiledBaseCase {
+                app,
+                wrap_vk_pts,
+                step_indexes: Some((step_prover, step_verifier)),
+                wrap_indexes: Some((wrap_prover, wrap_verifier)),
+            },
+        })
+    }
+
     pub fn compile(circuit: RecordedCircuit, witness: Vec<Fp>) -> Result<Self, RecordedProveError> {
         circuit.validate()?;
         if witness.len() != circuit.aux_count as usize {

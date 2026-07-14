@@ -1091,6 +1091,7 @@ where
         false,
         None,
         None,
+        None,
     ) {
         BaseCaseBuild::Compiled {
             step_prover,
@@ -1107,6 +1108,7 @@ where
         actual_points.clone(),
         true,
         Some((step_prover, step_verifier)),
+        None,
         None,
     ) {
         BaseCaseBuild::Proof { proof, .. } => proof,
@@ -1292,8 +1294,13 @@ type WrapIndexes<const ROUNDS: usize, const STMT_LEN: usize> = (
     snarky::api::ProverIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
     snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
 );
+pub(crate) type RawWrapIndex = kimchi::prover_index::ProverIndex<
+    FULL_ROUNDS,
+    Pallas,
+    poly_commitment::ipa::SRS<Pallas>,
+>;
 
-enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
+pub(crate) enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     Compiled {
         step_prover: snarky::api::ProverIndexWrapper<StepCircuit<A>>,
         step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
@@ -1312,10 +1319,10 @@ enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
 /// key-discovery passes once; subsequent proofs regenerate witnesses while
 /// reusing both the Step and final Wrap indexes.
 pub struct CompiledBaseCase<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
-    app: A,
-    wrap_vk_pts: Vec<(Fp, Fp)>,
-    step_indexes: Option<StepIndexes<A>>,
-    wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
+    pub(crate) app: A,
+    pub(crate) wrap_vk_pts: Vec<(Fp, Fp)>,
+    pub(crate) step_indexes: Option<StepIndexes<A>>,
+    pub(crate) wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
 }
 
 impl<A: StepApp + Clone, const ROUNDS: usize, const STMT_LEN: usize>
@@ -1338,6 +1345,7 @@ where
                 witness,
                 bootstrap_points,
                 false,
+                None,
                 None,
                 None,
             ) {
@@ -1373,6 +1381,7 @@ where
             true,
             Some(step_indexes),
             Some(wrap_indexes),
+            None,
         ) {
             BaseCaseBuild::Proof {
                 proof,
@@ -1396,19 +1405,20 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
-    match build_base_case(app, witness, wrap_vk_pts, true, None, None) {
+    match build_base_case(app, witness, wrap_vk_pts, true, None, None, None) {
         BaseCaseBuild::Proof { proof, dump, .. } => (proof, dump),
         BaseCaseBuild::Compiled { .. } => unreachable!("proof mode returns a complete proof"),
     }
 }
 
-fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
+pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     app: A,
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
     prove_wrap: bool,
     step_indexes: Option<StepIndexes<A>>,
     wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
+    cached_wrap_index: Option<RawWrapIndex>,
 ) -> BaseCaseBuild<A, ROUNDS, STMT_LEN> {
     assert_eq!(STMT_LEN, 13 + ROUNDS + 11, "STMT_LEN mismatch (OCaml 40-slot layout)");
     // ---- step proof ----
@@ -1672,11 +1682,32 @@ fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     // Full Tock SRS (2^15): wrap IPA proofs always have 15 rounds.
     let (mut wrap_pi, wrap_ver) = match wrap_indexes {
         Some(indexes) => indexes,
-        None => WrapCircuit::<ROUNDS, STMT_LEN> {
-            w: Some(wdata.clone()),
+        None => {
+            let circuit = WrapCircuit::<ROUNDS, STMT_LEN> {
+                w: Some(wdata.clone()),
+            };
+            match cached_wrap_index {
+                Some(index) => {
+                    match snarky::api::ProverIndexWrapper::from_cached_index(circuit, 0, index) {
+                        Ok(indexes) => indexes,
+                        Err(_) => WrapCircuit::<ROUNDS, STMT_LEN> {
+                            w: Some(wdata.clone()),
+                        }
+                        .compile_to_indexes_with_domain_and_srs(
+                            0,
+                            Some(crate::common::TOCK_ROUNDS as u32),
+                        )
+                        .unwrap(),
+                    }
+                }
+                None => circuit
+                    .compile_to_indexes_with_domain_and_srs(
+                        0,
+                        Some(crate::common::TOCK_ROUNDS as u32),
+                    )
+                    .unwrap(),
+            }
         }
-        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
-        .unwrap(),
     };
     if !prove_wrap {
         return BaseCaseBuild::Compiled {

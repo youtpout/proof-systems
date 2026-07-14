@@ -30,9 +30,8 @@ fn parse_fp_bytes(bytes: &[u8], name: &str) -> Result<Vec<Fp>, JsError> {
     bytes
         .chunks_exact(FIELD_BYTES)
         .map(|chunk| {
-            Fp::deserialize_compressed(chunk).map_err(|_| {
-                JsError::new(&format!("{name}: non-canonical Pasta Fp encoding"))
-            })
+            Fp::deserialize_compressed(chunk)
+                .map_err(|_| JsError::new(&format!("{name}: non-canonical Pasta Fp encoding")))
         })
         .collect()
 }
@@ -323,6 +322,39 @@ pub struct WasmRecordedCompiledBase(pickles::recorded::RecordedCompiledBase);
 
 #[wasm_bindgen]
 pub struct WasmRecordedCompiledN1(pickles::recorded::RecordedCompiledN1);
+
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_cache_key(circuit_json: String) -> Result<String, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    Ok(pickles::recorded::RecordedCompiledBase::cache_key(&circuit))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_cache_bytes(
+    compiled: &WasmRecordedCompiledBase,
+) -> Result<Vec<u8>, JsError> {
+    compiled
+        .0
+        .to_cache_bytes()
+        .map_err(|err| JsError::new(&format!("failed to serialize Rust Pickles cache: {err}")))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_base_from_cache_bytes(
+    circuit_json: String,
+    witness_bytes: &[u8],
+    cache_bytes: &[u8],
+) -> Result<WasmRecordedCompiledBase, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let compiled = crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledBase::from_cache_bytes(circuit, witness, cache_bytes)
+    })
+    .map_err(|err| JsError::new(&format!("invalid Rust Pickles cache: {err}")))?;
+    Ok(WasmRecordedCompiledBase(compiled))
+}
 
 #[wasm_bindgen]
 pub fn rust_pickles_compile_recorded_base(
