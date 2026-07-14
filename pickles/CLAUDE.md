@@ -2205,3 +2205,20 @@ Step VK sélectionnée dans les constantes du circuit. La parité programme OCam
 demande donc un circuit Wrap multi-branches à slots fixes, avec sélection
 one-hot des VK et masquage des slots inactifs ; réutiliser directement l'index
 N0 pour N1 serait incorrect.
+
+## Jalon 2026-07-14 — transport canonique binaire des witnesses
+
+Les quatre opérations compilées N0/N1 exposent maintenant des variantes
+`*_bytes` dans `kimchi-wasm` et `kimchi-napi`. Chaque élément Fp occupe
+exactement 32 octets little-endian et est décodé avec
+`CanonicalDeserialize` : longueur non multiple de 32 et représentants hors
+corps sont rejetés, sans réduction modulaire silencieuse. o1js préfère ces
+endpoints lorsqu'ils existent et conserve le chemin décimal comme fallback de
+compatibilité.
+
+Les benchmarks natif et WASM sans cache restent dans la variance précédente,
+ce qui confirme que le parsing décimal n'expliquait pas les secondes de
+compilation. Le bénéfice est surtout une frontière JS/WASM sans chaînes ni
+allocations par élément pour les circuits à gros witness. Validation : build
+NAPI/WASM, preuve N0/N1 complète sur AddZkProgram, smoke o1js et rejet explicite
+d'un bloc Fp non canonique.

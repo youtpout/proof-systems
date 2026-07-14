@@ -4,6 +4,7 @@
 
 use core::str::FromStr;
 
+use ark_serialize::CanonicalDeserialize;
 use mina_curves::pasta::Fp;
 use wasm_bindgen::prelude::*;
 
@@ -16,6 +17,23 @@ fn parse_fp_decimals(values: Vec<String>, name: &str) -> Result<Vec<Fp>, JsError
     values
         .iter()
         .map(|value| parse_fp_decimal(value, name))
+        .collect()
+}
+
+fn parse_fp_bytes(bytes: &[u8], name: &str) -> Result<Vec<Fp>, JsError> {
+    const FIELD_BYTES: usize = 32;
+    if !bytes.len().is_multiple_of(FIELD_BYTES) {
+        return Err(JsError::new(&format!(
+            "{name}: expected a multiple of {FIELD_BYTES} canonical Fp bytes"
+        )));
+    }
+    bytes
+        .chunks_exact(FIELD_BYTES)
+        .map(|chunk| {
+            Fp::deserialize_compressed(chunk).map_err(|_| {
+                JsError::new(&format!("{name}: non-canonical Pasta Fp encoding"))
+            })
+        })
         .collect()
 }
 
@@ -322,11 +340,37 @@ pub fn rust_pickles_compile_recorded_base(
 }
 
 #[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_base_bytes(
+    circuit_json: String,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedCompiledBase, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let compiled = crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledBase::compile(circuit, witness)
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles compile failed: {err:?}")))?;
+    Ok(WasmRecordedCompiledBase(compiled))
+}
+
+#[wasm_bindgen]
 pub fn rust_pickles_prove_recorded_base_keep_compiled(
     compiled: &mut WasmRecordedCompiledBase,
     witness_decimal: Vec<String>,
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(witness))
+        .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_base_keep_compiled_bytes(
+    compiled: &mut WasmRecordedCompiledBase,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(witness))
         .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
     Ok(WasmRecordedBaseHandle(handle))
@@ -349,12 +393,50 @@ pub fn rust_pickles_compile_recorded_n1(
 }
 
 #[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_n1_bytes(
+    previous: &WasmRecordedBaseHandle,
+    circuit_json: String,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedCompiledN1, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let compiled = crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledN1::compile(&previous.0, circuit, witness)
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N1 compile failed: {err:?}")))?;
+    Ok(WasmRecordedCompiledN1(compiled))
+}
+
+#[wasm_bindgen]
 pub fn rust_pickles_prove_recorded_n1_compiled(
     compiled: &mut WasmRecordedCompiledN1,
     previous: &WasmRecordedBaseHandle,
     witness_decimal: Vec<String>,
 ) -> Result<String, JsError> {
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(&previous.0, witness))
+        .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
+    let proved = handle
+        .to_recorded_n1_proof()
+        .ok_or_else(|| JsError::new("compiled N1 did not return a recursive proof"))?;
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        &proved.challenge_polynomial_commitment,
+        &proved.old_bulletproof_challenges,
+        &proved.dlog_plonk_index,
+        None,
+    )
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n1_compiled_bytes(
+    compiled: &mut WasmRecordedCompiledN1,
+    previous: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+) -> Result<String, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(&previous.0, witness))
         .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
     let proved = handle

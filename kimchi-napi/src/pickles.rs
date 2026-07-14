@@ -1,3 +1,4 @@
+use ark_serialize::CanonicalDeserialize;
 use mina_curves::pasta::Fp;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -35,6 +36,23 @@ fn parse_fp_decimal(value: &str, name: &str) -> Result<Fp> {
     value
         .parse::<Fp>()
         .map_err(|_| Error::from_reason(format!("{name}: expected decimal Pasta Fp field")))
+}
+
+fn parse_fp_bytes(bytes: &[u8], name: &str) -> Result<Vec<Fp>> {
+    const FIELD_BYTES: usize = 32;
+    if !bytes.len().is_multiple_of(FIELD_BYTES) {
+        return Err(Error::from_reason(format!(
+            "{name}: expected a multiple of {FIELD_BYTES} canonical Fp bytes"
+        )));
+    }
+    bytes
+        .chunks_exact(FIELD_BYTES)
+        .map(|chunk| {
+            Fp::deserialize_compressed(chunk).map_err(|_| {
+                Error::from_reason(format!("{name}: non-canonical Pasta Fp encoding"))
+            })
+        })
+        .collect()
 }
 
 /// Proves a recorded circuit (the JSON envelope produced by o1js's
@@ -416,6 +434,19 @@ pub fn rust_pickles_compile_recorded_base(
     Ok(External::new(compiled))
 }
 
+#[napi(js_name = "rust_pickles_compile_recorded_base_bytes")]
+pub fn rust_pickles_compile_recorded_base_bytes(
+    circuit_json: String,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedCompiledBase>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let compiled = pickles::recorded::RecordedCompiledBase::compile(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
 #[napi(js_name = "rust_pickles_prove_recorded_base_keep_compiled")]
 pub fn rust_pickles_prove_recorded_base_keep_compiled(
     compiled: &mut External<pickles::recorded::RecordedCompiledBase>,
@@ -425,6 +456,18 @@ pub fn rust_pickles_prove_recorded_base_keep_compiled(
         .iter()
         .map(|value| parse_fp_decimal(value, "witness"))
         .collect::<Result<Vec<_>>>()?;
+    let handle = compiled
+        .prove_keep(witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles prove failed: {err:?}")))?;
+    Ok(External::new(handle))
+}
+
+#[napi(js_name = "rust_pickles_prove_recorded_base_keep_compiled_bytes")]
+pub fn rust_pickles_prove_recorded_base_keep_compiled_bytes(
+    compiled: &mut External<pickles::recorded::RecordedCompiledBase>,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedBaseHandle>> {
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
     let handle = compiled
         .prove_keep(witness)
         .map_err(|err| Error::from_reason(format!("rust pickles prove failed: {err:?}")))?;
@@ -448,6 +491,20 @@ pub fn rust_pickles_compile_recorded_n1(
     Ok(External::new(compiled))
 }
 
+#[napi(js_name = "rust_pickles_compile_recorded_n1_bytes")]
+pub fn rust_pickles_compile_recorded_n1_bytes(
+    previous: &External<pickles::recorded::RecordedBaseHandle>,
+    circuit_json: String,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedCompiledN1>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let compiled = pickles::recorded::RecordedCompiledN1::compile(previous, circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1 compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
 #[napi(js_name = "rust_pickles_prove_recorded_n1_compiled")]
 pub fn rust_pickles_prove_recorded_n1_compiled(
     compiled: &mut External<pickles::recorded::RecordedCompiledN1>,
@@ -458,6 +515,22 @@ pub fn rust_pickles_prove_recorded_n1_compiled(
         .iter()
         .map(|value| parse_fp_decimal(value, "witness"))
         .collect::<Result<Vec<_>>>()?;
+    let handle = compiled
+        .prove_keep(previous, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1 prove failed: {err:?}")))?;
+    let proved = handle
+        .to_recorded_n1_proof()
+        .ok_or_else(|| Error::from_reason("compiled N1 did not return a recursive proof"))?;
+    n1_envelope(proved)
+}
+
+#[napi(js_name = "rust_pickles_prove_recorded_n1_compiled_bytes")]
+pub fn rust_pickles_prove_recorded_n1_compiled_bytes(
+    compiled: &mut External<pickles::recorded::RecordedCompiledN1>,
+    previous: &External<pickles::recorded::RecordedBaseHandle>,
+    witness_bytes: Uint8Array,
+) -> Result<String> {
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
     let handle = compiled
         .prove_keep(previous, witness)
         .map_err(|err| Error::from_reason(format!("rust pickles N1 prove failed: {err:?}")))?;
