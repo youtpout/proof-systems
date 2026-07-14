@@ -302,7 +302,7 @@ pub struct WrapUnfinalizedWitnessData {
     pub hash_old_bulletproof_challenges: Vec<Vec<Fq>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrapBranchData {
     pub proofs_verified: usize,
     pub step_domain_log2: u8,

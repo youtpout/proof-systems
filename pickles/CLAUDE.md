@@ -2342,3 +2342,20 @@ tests unitaires Pickles, le test N1 padded, le test N1 compilé réutilisable et
 les checks NAPI/WASM passent. Il reste à exposer ce compilateur de programme
 dans `recorded`/NAPI et à faire compiler `ZkProgram` en une seule opération au
 lieu de conserver les handles N0/N1/N2 séparés.
+
+## Jalon 2026-07-14 — handle `RecordedCompiledProgram` et preuve N0 partagée
+
+`recorded` possède maintenant un premier vrai handle programme fixe : chaque
+méthode N0/N1/N2 compile son propre Step largeur physique deux, tandis qu'un
+unique index Wrap maximal contient la sélection one-hot de toutes leurs VK.
+La compilation utilise un proof structurel interne indépendant des contraintes
+utilisateur, puis effectue les passes de point fixe nécessaires : Wrap
+bootstrap, proof structurel rattaché à la VK Wrap obtenue, Step finaux, puis
+Wrap final et vérification de stabilité des VK Step.
+
+Le test `recorded_program_compiles_n0_n1_n2_with_one_wrap_key` compile les trois
+arités, prouve réellement la branche N0 avec `[dummy, dummy]`, réutilise le
+Wrap partagé et vérifie l'enveloppe standalone avec les messages physiques.
+La prochaine étape est d'étendre ce même handle aux preuves N1/N2 consommant
+des handles programme, puis seulement d'exposer le handle par NAPI/WASM et
+`mina-runtime`; ne pas revenir aux trois Wrap séparés pour simplifier le port.

@@ -473,6 +473,7 @@ pub struct RecursiveStepPrivate<const WIDTH: usize> {
     pub app: Option<EmbeddedAppMain>,
 }
 
+#[derive(Clone)]
 pub struct PreparedRecursiveStep<const PUBLIC_INPUT_LEN: usize> {
     pub data: RecursiveStepData,
     pub statement: [Fp; PUBLIC_INPUT_LEN],
@@ -1941,6 +1942,35 @@ pub fn prove_prepared_recursive_step_width2<
         PUBLIC_INPUT_LEN,
         2,
     >(prepared, app, indexes)
+}
+
+pub fn compile_prepared_recursive_step_width2<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+) -> RecursiveStepWidth2Indexes<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    RecursiveStepWidth2Circuit::<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        PUBLIC_INPUT_LEN,
+        2,
+    > {
+        proofs: prepared.proofs.clone(),
+        dummy_slots: prepared.dummy_slots,
+        app_state: prepared.app_state.clone(),
+        app,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+    }
+    .compile_to_indexes_with_domain_and_srs(
+        crate::common::TICK_ROUNDS as u32,
+        Some(crate::common::TICK_ROUNDS as u32),
+    )
+    .unwrap()
 }
 
 pub fn prove_prepared_recursive_step_width2_arity<

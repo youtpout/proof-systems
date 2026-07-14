@@ -108,6 +108,35 @@ fn recorded_compilation_does_not_require_a_satisfying_witness() {
 }
 
 #[test]
+fn recorded_program_compiles_n0_n1_n2_with_one_wrap_key() {
+    use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};
+
+    let branches = (0..=2)
+        .map(|proofs_verified| RecordedProgramBranch {
+            circuit: square_circuit(),
+            witness: vec![Fp::from(6u64), Fp::from(36u64)],
+            proofs_verified,
+        })
+        .collect();
+    let mut program = RecordedCompiledProgram::compile(branches).unwrap();
+    assert_eq!(program.branch_count(), 3);
+    assert_eq!(program.wrap_verification_key_points().len(), 28);
+    let proved = program
+        .prove_n0(0, vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    assert_eq!(proved.app_state, vec![Fp::from(36u64)]);
+    let (accumulators, challenges, vk) = proved.program_verification_messages().unwrap();
+    pickles::verify::verify_side_loaded_with_step_vk(
+        &proved.app_state,
+        Some(&vk),
+        &accumulators,
+        &challenges,
+        &proved.proof,
+    )
+    .unwrap();
+}
+
+#[test]
 fn recorded_compiled_base_cache_round_trips_and_rejects_corruption() {
     use pickles::recorded::RecordedCompiledBase;
 
