@@ -1332,10 +1332,10 @@ where
                 (point.x, point.y)
             })
             .collect();
-        let (step_prover, step_verifier, bootstrap_verifier) =
+        let (step_prover, step_verifier, wrap_prover, wrap_verifier) =
             match build_base_case::<A, ROUNDS, STMT_LEN>(
                 app.clone(),
-                witness.clone(),
+                witness,
                 bootstrap_points,
                 false,
                 None,
@@ -1344,44 +1344,22 @@ where
                 BaseCaseBuild::Compiled {
                     step_prover,
                     step_verifier,
-                    wrap_verifier,
-                    ..
-                } => (step_prover, step_verifier, wrap_verifier),
-                BaseCaseBuild::Proof { .. } => unreachable!("compile mode returns indexes"),
-            };
-        let wrap_vk_pts = wrap_verification_key_points(&bootstrap_verifier);
-        let (step_indexes, wrap_indexes) =
-            match build_base_case::<A, ROUNDS, STMT_LEN>(
-                app.clone(),
-                witness,
-                wrap_vk_pts.clone(),
-                false,
-                Some((step_prover, step_verifier)),
-                None,
-            ) {
-                BaseCaseBuild::Compiled {
-                    step_prover,
-                    step_verifier,
                     wrap_prover,
                     wrap_verifier,
-                } => {
-                    assert_eq!(
-                        wrap_verification_key_points(&wrap_verifier),
-                        wrap_vk_pts,
-                        "wrap verification key changed between compilation passes"
-                    );
-                    (
-                        (step_prover, step_verifier),
-                        (wrap_prover, wrap_verifier),
-                    )
-                }
+                } => (step_prover, step_verifier, wrap_prover, wrap_verifier),
                 BaseCaseBuild::Proof { .. } => unreachable!("compile mode returns indexes"),
             };
+        // The bootstrap Wrap VK points only feed the Step proof's private
+        // witness and public digest. They do not alter either circuit's
+        // constraints, so the Wrap index produced by this discovery pass is
+        // already the final fixed-point index. Recompiling it with its own VK
+        // points used to create the exact same index a second time.
+        let wrap_vk_pts = wrap_verification_key_points(&wrap_verifier);
         Self {
             app,
             wrap_vk_pts,
-            step_indexes: Some(step_indexes),
-            wrap_indexes: Some(wrap_indexes),
+            step_indexes: Some((step_prover, step_verifier)),
+            wrap_indexes: Some((wrap_prover, wrap_verifier)),
         }
     }
 

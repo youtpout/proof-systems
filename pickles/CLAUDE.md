@@ -2183,3 +2183,25 @@ ignorent donc maintenant cette taille de domaine et retournent toujours les
 SRS Mina complets 2^16 et 2^15. Après correction : Step **FULL MATCH** 512/512,
 Wrap **FULL MATCH** 8192/8192, smoke test o1js vert et test N1 compilé avec
 pré-calcul puis witness différent vert.
+
+## Jalon 2026-07-14 — suppression de la seconde compilation Wrap N0
+
+`CompiledBaseCase::compile` recompilait le Wrap après la passe de découverte
+de sa VK. Cette seconde passe produisait exactement le même index : les points
+de la Wrap VK ne servent qu'au witness et au digest public du Step, tandis que
+les contraintes du Step et du Wrap sont déjà définitives. La première passe
+conserve maintenant directement ses index Step/Wrap et en dérive les points
+de VK utilisés lors des preuves suivantes.
+
+Sur AddZkProgram natif sans cache, `compile init` passe de **3,930 s** à
+**3,075 s** et le total Rust froid de **16,247 s** à **15,133 s**. La
+compilation N1 ne change pas. Validation : deux witnesses N0 avec les mêmes
+index, suite `recorded` complète, Step **FULL MATCH** 512/512 et Wrap **FULL
+MATCH** 8192/8192.
+
+Le partage d'un Wrap entre plusieurs méthodes N0/N1 reste une étape distincte.
+Le Wrap Rust actuel déroule ses `unfinalized` selon l'arité réelle et encode la
+Step VK sélectionnée dans les constantes du circuit. La parité programme OCaml
+demande donc un circuit Wrap multi-branches à slots fixes, avec sélection
+one-hot des VK et masquage des slots inactifs ; réutiliser directement l'index
+N0 pour N1 serait incorrect.
