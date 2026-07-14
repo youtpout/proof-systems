@@ -1,6 +1,9 @@
 //! Common constants and helpers (port of pickles' `common.ml`).
 
 use crate::composition_types::ProofsVerified;
+use mina_curves::pasta::{Pallas, Vesta};
+use poly_commitment::{ipa::SRS, SRS as _};
+use std::sync::{Arc, OnceLock};
 
 /// The maximum number of previous proofs a step circuit can verify.
 /// (OCaml: `Nat.N2` — pickles is specialized to width 2.)
@@ -16,6 +19,22 @@ pub const TICK_ROUNDS: usize = 16;
 
 /// The number of rounds of the IPA on the Tock (wrap / Pallas) side.
 pub const TOCK_ROUNDS: usize = 15;
+
+pub(crate) fn tick_srs(size: usize) -> Arc<SRS<Vesta>> {
+    static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
+    assert_eq!(size, 1 << TICK_ROUNDS, "unexpected Tick SRS size");
+    TICK_SRS
+        .get_or_init(|| Arc::new(SRS::<Vesta>::create(size)))
+        .clone()
+}
+
+pub(crate) fn tock_srs(size: usize) -> Arc<SRS<Pallas>> {
+    static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
+    assert_eq!(size, 1 << TOCK_ROUNDS, "unexpected Tock SRS size");
+    TOCK_SRS
+        .get_or_init(|| Arc::new(SRS::<Pallas>::create(size)))
+        .clone()
+}
 
 /// The Poseidon full-rounds constant shared with the snarky crate.
 pub const FULL_ROUNDS: usize = snarky::FULL_ROUNDS;

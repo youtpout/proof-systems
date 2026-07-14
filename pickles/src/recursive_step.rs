@@ -3355,6 +3355,10 @@ impl<
     type PublicInput = [FieldVar<Fp>; PUBLIC_INPUT_LEN];
     type PublicOutput = ();
 
+    fn srs(size: usize) -> std::sync::Arc<poly_commitment::ipa::SRS<Vesta>> {
+        crate::common::tick_srs(size)
+    }
+
     fn circuit(
         &self,
         sys: &mut RunState<Fp>,

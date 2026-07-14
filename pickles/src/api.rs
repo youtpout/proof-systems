@@ -107,6 +107,10 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
     type PublicInput = FieldVar<Fp>;
     type PublicOutput = ();
 
+    fn srs(size: usize) -> std::sync::Arc<poly_commitment::ipa::SRS<Vesta>> {
+        crate::common::tick_srs(size)
+    }
+
     fn circuit(
         &self,
         sys: &mut RunState<Fp>,
@@ -341,6 +345,10 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
     type PrivateInput = ();
     type PublicInput = [FieldVar<Fq>; STMT_LEN];
     type PublicOutput = ();
+
+    fn srs(size: usize) -> std::sync::Arc<poly_commitment::ipa::SRS<Pallas>> {
+        crate::common::tock_srs(size)
+    }
 
     fn circuit(
         &self,
@@ -1065,10 +1073,35 @@ where
             })
             .collect()
     };
-    let bootstrap =
-        prove_base_case::<A, ROUNDS, STMT_LEN>(app.clone(), witness.clone(), bootstrap_points);
-    let actual_points = wrap_verification_key_points(&bootstrap.wrap_verifier);
-    let final_proof = prove_base_case::<A, ROUNDS, STMT_LEN>(app, witness, actual_points.clone());
+    let (step_prover, step_verifier, bootstrap_verifier) = match build_base_case::<
+        A,
+        ROUNDS,
+        STMT_LEN,
+    >(
+        app.clone(),
+        witness.clone(),
+        bootstrap_points,
+        false,
+        None,
+    ) {
+        BaseCaseBuild::Bootstrap {
+            step_prover,
+            step_verifier,
+            wrap_verifier,
+        } => (step_prover, step_verifier, wrap_verifier),
+        BaseCaseBuild::Proof(_, _) => unreachable!("bootstrap mode only compiles the wrap VK"),
+    };
+    let actual_points = wrap_verification_key_points(&bootstrap_verifier);
+    let final_proof = match build_base_case::<A, ROUNDS, STMT_LEN>(
+        app,
+        witness,
+        actual_points.clone(),
+        true,
+        Some((step_prover, step_verifier)),
+    ) {
+        BaseCaseBuild::Proof(proof, _) => proof,
+        BaseCaseBuild::Bootstrap { .. } => unreachable!("final mode returns a complete proof"),
+    };
     assert_eq!(
         wrap_verification_key_points(&final_proof.wrap_verifier),
         actual_points,
@@ -1241,6 +1274,15 @@ pub struct WrapCircuitDump {
     pub labels: Vec<String>,
 }
 
+enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
+    Bootstrap {
+        step_prover: snarky::api::ProverIndexWrapper<StepCircuit<A>>,
+        step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
+        wrap_verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+    },
+    Proof(BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump),
+}
+
 /// [`prove_base_case`], additionally returning the compiled wrap circuit's
 /// gates for parity tooling.
 pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
@@ -1248,15 +1290,33 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
+    match build_base_case(app, witness, wrap_vk_pts, true, None) {
+        BaseCaseBuild::Proof(proof, dump) => (proof, dump),
+        BaseCaseBuild::Bootstrap { .. } => unreachable!("proof mode returns a complete proof"),
+    }
+}
+
+fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
+    app: A,
+    witness: A::Witness,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prove_wrap: bool,
+    step_indexes: Option<(
+        snarky::api::ProverIndexWrapper<StepCircuit<A>>,
+        snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
+    )>,
+) -> BaseCaseBuild<A, ROUNDS, STMT_LEN> {
     assert_eq!(STMT_LEN, 13 + ROUNDS + 11, "STMT_LEN mismatch (OCaml 40-slot layout)");
     // ---- step proof ----
     let app_state = app.state(&witness);
-    let step = StepCircuit { app };
     // Mina proves over the full Tick SRS (2^16) regardless of the circuit's
     // domain, so step IPA proofs always have 16 rounds.
-    let (mut step_pi, step_ver) = step
-        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
-        .unwrap();
+    let (mut step_pi, step_ver) = match step_indexes {
+        Some(indexes) => indexes,
+        None => StepCircuit { app }
+            .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+            .unwrap(),
+    };
     let svi = &step_ver.index;
 
     let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
@@ -1509,6 +1569,13 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     let (mut wrap_pi, wrap_ver) = WrapCircuit::<ROUNDS, STMT_LEN> { w: wdata }
         .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
         .unwrap();
+    if !prove_wrap {
+        return BaseCaseBuild::Bootstrap {
+            step_prover: step_pi,
+            step_verifier: step_ver,
+            wrap_verifier: wrap_ver,
+        };
+    }
     let wrap_dump = WrapCircuitDump {
         public_input_size: wrap_pi.index.cs.public,
         gates: wrap_pi.index.cs.gates.to_vec(),
@@ -1519,7 +1586,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
         .unwrap();
     wrap_ver.verify::<PallasBase, PallasScalar>(wrap_proof.clone(), stmt_arr, ());
 
-    (
+    BaseCaseBuild::Proof(
         BaseCaseProof {
             statement,
             stable_statement,

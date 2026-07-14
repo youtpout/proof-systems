@@ -753,8 +753,7 @@ fn measure_step_rounds(app: RecordedApp) -> SnarkyResult<u32> {
     use snarky::api::SnarkyCircuit as _;
     // Proofs are made over the full Tick SRS (2^16), so the IPA round count
     // is fixed; this only checks that the circuit's domain fits.
-    let (_, verifier) = crate::api::StepCircuit { app }.compile_to_indexes()?;
-    let domain_log2 = verifier.index.domain.log_size_of_group;
+    let domain_log2 = crate::api::StepCircuit { app }.domain_log2()?;
     assert!(
         domain_log2 as usize <= crate::common::TICK_ROUNDS,
         "recorded circuit domain 2^{domain_log2} exceeds the Tick SRS"

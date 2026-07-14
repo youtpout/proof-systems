@@ -415,6 +415,29 @@ pub trait SnarkyCircuit: Sized {
         private_input: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<Self::PublicOutput>;
 
+    /// Returns the SRS used to compile this circuit. Implementations that
+    /// repeatedly compile circuits over a protocol-fixed SRS can override
+    /// this to share the immutable setup instead of regenerating it.
+    fn srs(size: usize) -> std::sync::Arc<SrsOf<Self>>
+    where
+        <Self::Curve as AffineRepr>::BaseField: PrimeField,
+    {
+        std::sync::Arc::new(<SrsOf<Self> as SRS<Self::Curve>>::create(size))
+    }
+
+    /// Compile only far enough to determine the Kimchi evaluation domain.
+    /// Unlike [`Self::compile_to_indexes`], this does not create an SRS or
+    /// polynomial commitments and is suitable for dispatching on domain size.
+    fn domain_log2(self) -> SnarkyResult<u32> {
+        let compiled_circuit = compile(self)?;
+        let cs = ConstraintSystem::create(compiled_circuit.gates)
+            .public(compiled_circuit.public_input_size)
+            .prev_challenges(Self::PREV_CHALLENGES)
+            .build()
+            .unwrap();
+        Ok(cs.domain.d1.log_size_of_group)
+    }
+
     /// Compiles the circuit to a prover index ([ProverIndexWrapper]) and a verifier index ([VerifierIndexWrapper]).
     fn compile_to_indexes(
         self,
@@ -497,9 +520,8 @@ pub trait SnarkyCircuit: Sized {
             }
             None => cs.domain.d1.size as usize,
         };
-        let srs = <SrsOf<Self> as SRS<Self::Curve>>::create(srs_size);
+        let srs = Self::srs(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
-        let srs = std::sync::Arc::new(srs);
 
         debug!("using an SRS of size {}", srs.size());
 

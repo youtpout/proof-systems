@@ -94,8 +94,9 @@ pub fn rust_pickles_prove_recorded_base(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
-    let proved = pickles::recorded::prove_recorded_base_case(circuit, witness)
-        .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
+    let proved =
+        crate::rayon::run_in_pool(|| pickles::recorded::prove_recorded_base_case(circuit, witness))
+            .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
     let envelope = serde_json::json!({
         "appState": proved
             .app_state
@@ -144,7 +145,10 @@ pub fn rust_pickles_verify_side_loaded(
         .collect::<Result<Vec<_>, JsError>>()?;
     let proof = pickles::api::MinaWrapProof::from_o1js_json_string(&proof_json)
         .map_err(|err| JsError::new(&format!("invalid proof JSON: {err:?}")))?;
-    match pickles::verify::verify_side_loaded(&app_state, &commitments, &challenges, &proof) {
+    let verified = crate::rayon::run_in_pool(|| {
+        pickles::verify::verify_side_loaded(&app_state, &commitments, &challenges, &proof)
+    });
+    match verified {
         Ok(_) => Ok(true),
         Err(pickles::verify::StandaloneVerifyError::VerificationKey(err)) => Err(JsError::new(
             &format!("invalid side-loaded verification key: {err:?}"),
@@ -170,8 +174,9 @@ pub fn rust_pickles_prove_recorded_n1(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
-    let proved = pickles::recorded::prove_recorded_n1(circuit, witness)
-        .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
+    let proved =
+        crate::rayon::run_in_pool(|| pickles::recorded::prove_recorded_n1(circuit, witness))
+            .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
     recorded_n1_envelope(
         &proved.app_state,
         &proved.proof,
@@ -195,11 +200,13 @@ pub fn rust_pickles_prove_recorded_stable_n1(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
-    let proved = pickles::recorded::prove_recorded_stable_n1(
-        circuit,
-        witness,
-        additional_stable_cycles as usize,
-    )
+    let proved = crate::rayon::run_in_pool(|| {
+        pickles::recorded::prove_recorded_stable_n1(
+            circuit,
+            witness,
+            additional_stable_cycles as usize,
+        )
+    })
     .map_err(|err| JsError::new(&format!("rust pickles stable N1 prove failed: {err:?}")))?;
     recorded_n1_envelope(
         &proved.app_state,
@@ -227,9 +234,10 @@ pub fn rust_pickles_prove_recorded_n2(
     let first_witness = parse_fp_decimals(first_witness_decimal, "first_witness")?;
     let second_witness = parse_fp_decimals(second_witness_decimal, "second_witness")?;
     let app_state = parse_fp_decimals(app_state_decimal, "app_state")?;
-    let proved =
+    let proved = crate::rayon::run_in_pool(|| {
         pickles::recorded::prove_recorded_n2(circuit, first_witness, second_witness, app_state)
-            .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
     recorded_n2_envelope(proved)
 }
 
@@ -264,13 +272,16 @@ pub fn rust_pickles_verify_side_loaded_with_step_vk(
         .collect::<Result<Vec<_>, JsError>>()?;
     let proof = pickles::api::MinaWrapProof::from_o1js_json_string(&proof_json)
         .map_err(|err| JsError::new(&format!("invalid proof JSON: {err:?}")))?;
-    match pickles::verify::verify_side_loaded_with_step_vk(
-        &app_state,
-        Some(&dlog_index),
-        &commitments,
-        &challenges,
-        &proof,
-    ) {
+    let verified = crate::rayon::run_in_pool(|| {
+        pickles::verify::verify_side_loaded_with_step_vk(
+            &app_state,
+            Some(&dlog_index),
+            &commitments,
+            &challenges,
+            &proof,
+        )
+    });
+    match verified {
         Ok(_) => Ok(true),
         Err(pickles::verify::StandaloneVerifyError::VerificationKey(err)) => Err(JsError::new(
             &format!("invalid side-loaded verification key: {err:?}"),
@@ -299,8 +310,10 @@ pub fn rust_pickles_prove_recorded_base_keep(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
-    let handle = pickles::recorded::prove_recorded_base_case_keep(circuit, witness)
-        .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
+    let handle = crate::rayon::run_in_pool(|| {
+        pickles::recorded::prove_recorded_base_case_keep(circuit, witness)
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles prove failed: {err:?}")))?;
     Ok(WasmRecordedBaseHandle(handle))
 }
 
@@ -334,8 +347,10 @@ pub fn rust_pickles_prove_recorded_n1_over(
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
-    let proved = pickles::recorded::prove_recorded_n1_over(&handle.0, circuit, witness)
-        .map_err(|err| JsError::new(&format!("rust pickles N1-over prove failed: {err:?}")))?;
+    let proved = crate::rayon::run_in_pool(|| {
+        pickles::recorded::prove_recorded_n1_over(&handle.0, circuit, witness)
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N1-over prove failed: {err:?}")))?;
     recorded_n1_envelope(
         &proved.app_state,
         &proved.proof,

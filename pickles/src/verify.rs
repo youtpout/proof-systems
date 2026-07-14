@@ -7,8 +7,6 @@
 //! that `compile_to_indexes` produces for [`crate::api::WrapCircuit`] (no
 //! optional gates, no lookups, zero prev challenges).
 
-use std::sync::Arc;
-
 use ark_poly::EvaluationDomain;
 use kimchi::{
     circuits::{
@@ -66,7 +64,7 @@ pub fn wrap_verifier_index_from_side_loaded(
         .expect("wrap domain size is a supported power of two");
     // Wrap proofs are made over the full Tock SRS (2^15) regardless of the
     // circuit's domain, so their IPA openings always have 15 rounds.
-    let srs = SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
+    let srs = crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS);
     srs.get_lagrange_basis(domain);
 
     let comms = vk.commitments();
@@ -103,7 +101,7 @@ pub fn wrap_verifier_index_from_side_loaded(
         domain,
         max_poly_size: srs.max_poly_size(),
         zk_rows,
-        srs: Arc::new(srs),
+        srs,
         public: public_input_size,
         prev_challenges: 0,
         // Pickles canonical order: 7 sigma, 15 coefficients, then generic,
