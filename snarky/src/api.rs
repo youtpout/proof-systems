@@ -262,6 +262,17 @@ where
     pub index: VerifierIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
 }
 
+impl<Circuit> Clone for VerifierIndexWrapper<Circuit>
+where
+    Circuit: SnarkyCircuit,
+{
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+        }
+    }
+}
+
 impl<Circuit> VerifierIndexWrapper<Circuit>
 where
     Circuit: SnarkyCircuit,

@@ -75,6 +75,22 @@ fn recorded_square_circuit_proves_and_verifies_standalone() {
     .is_err());
 }
 
+#[test]
+fn recorded_compiled_base_reuses_indexes_across_witnesses() {
+    let mut compiled = pickles::recorded::RecordedCompiledBase::compile(
+        square_circuit(),
+        vec![Fp::from(6u64), Fp::from(36u64)],
+    )
+    .unwrap();
+    for (x, square) in [(6u64, 36u64), (7u64, 49u64)] {
+        let proved = compiled
+            .prove_keep(vec![Fp::from(x), Fp::from(square)])
+            .unwrap();
+        assert_eq!(proved.app_state, vec![Fp::from(square)]);
+        verify_side_loaded_base_case(&proved.app_state, &proved.proof).unwrap();
+    }
+}
+
 /// Recorded EC complete addition of two Vesta points (base field Fp),
 /// output = x3. Witness layout: [x1, y1, x2, y2, x3, y3, slope, x21_inv].
 fn ec_add_circuit() -> RecordedCircuit {
@@ -188,6 +204,31 @@ fn recorded_n1_cycle_proves_and_verifies_standalone() {
         &proved.proof,
     )
     .is_err());
+}
+
+#[test]
+fn recorded_compiled_n1_reuses_step_and_wrap_indexes() {
+    use pickles::recorded::{prove_recorded_base_case_keep, RecordedCompiledN1};
+    use pickles::verify::verify_side_loaded_with_step_vk;
+
+    let base = prove_recorded_base_case_keep(
+        square_circuit(),
+        vec![Fp::from(6u64), Fp::from(36u64)],
+    )
+    .unwrap();
+    let witness = vec![Fp::from(7u64), Fp::from(49u64)];
+    let mut compiled =
+        RecordedCompiledN1::compile(&base, square_circuit(), witness.clone()).unwrap();
+    let proved = compiled.prove_keep(&base, witness).unwrap();
+    let recursive = proved.to_recorded_n1_proof().unwrap();
+    verify_side_loaded_with_step_vk(
+        &recursive.app_state,
+        Some(&recursive.dlog_plonk_index),
+        &[recursive.challenge_polynomial_commitment],
+        &[recursive.old_bulletproof_challenges],
+        &recursive.proof,
+    )
+    .unwrap();
 }
 
 #[test]

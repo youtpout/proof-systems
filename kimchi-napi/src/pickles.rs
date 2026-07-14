@@ -397,6 +397,76 @@ pub fn rust_pickles_prove_recorded_base_keep(
     Ok(External::new(handle))
 }
 
+/// Compiles and retains the Step/Wrap prover indexes of a recorded base
+/// circuit. The returned handle can prove multiple witnesses without
+/// rebuilding either index.
+#[napi(js_name = "rust_pickles_compile_recorded_base")]
+pub fn rust_pickles_compile_recorded_base(
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<External<pickles::recorded::RecordedCompiledBase>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let compiled = pickles::recorded::RecordedCompiledBase::compile(circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_prove_recorded_base_keep_compiled")]
+pub fn rust_pickles_prove_recorded_base_keep_compiled(
+    compiled: &mut External<pickles::recorded::RecordedCompiledBase>,
+    witness_decimal: Vec<String>,
+) -> Result<External<pickles::recorded::RecordedBaseHandle>> {
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let handle = compiled
+        .prove_keep(witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles prove failed: {err:?}")))?;
+    Ok(External::new(handle))
+}
+
+#[napi(js_name = "rust_pickles_compile_recorded_n1")]
+pub fn rust_pickles_compile_recorded_n1(
+    previous: &External<pickles::recorded::RecordedBaseHandle>,
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<External<pickles::recorded::RecordedCompiledN1>> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| Error::from_reason(format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let compiled = pickles::recorded::RecordedCompiledN1::compile(previous, circuit, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1 compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_prove_recorded_n1_compiled")]
+pub fn rust_pickles_prove_recorded_n1_compiled(
+    compiled: &mut External<pickles::recorded::RecordedCompiledN1>,
+    previous: &External<pickles::recorded::RecordedBaseHandle>,
+    witness_decimal: Vec<String>,
+) -> Result<String> {
+    let witness = witness_decimal
+        .iter()
+        .map(|value| parse_fp_decimal(value, "witness"))
+        .collect::<Result<Vec<_>>>()?;
+    let handle = compiled
+        .prove_keep(previous, witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles N1 prove failed: {err:?}")))?;
+    let proved = handle
+        .to_recorded_n1_proof()
+        .ok_or_else(|| Error::from_reason("compiled N1 did not return a recursive proof"))?;
+    n1_envelope(proved)
+}
+
 /// The `{ appState, proof }` envelope of a kept base proof — the same shape
 /// `rust_pickles_prove_recorded_base` returns.
 #[napi(js_name = "rust_pickles_recorded_base_envelope")]

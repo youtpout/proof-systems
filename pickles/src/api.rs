@@ -274,6 +274,7 @@ pub enum WrapStepStatementSlot {
 
 /// One previous proof-state carried by a recursive step statement and
 /// finalized by the wrap circuit before it verifies the step proof.
+#[derive(Clone)]
 pub struct WrapUnfinalizedWitnessData {
     pub finalize_tokens: Vec<WrapPolishToken>,
     pub finalize_domain: ark_poly::Radix2EvaluationDomain<Fq>,
@@ -301,6 +302,7 @@ pub struct WrapUnfinalizedWitnessData {
     pub hash_old_bulletproof_challenges: Vec<Vec<Fq>>,
 }
 
+#[derive(Clone)]
 pub struct WrapWitnessData {
     pub step_domain_log2: u8,
     pub step_vk_digest: Fq,
@@ -336,13 +338,16 @@ pub struct WrapWitnessData {
 /// branch data, 8 feature flags, optional joint combiner
 /// (`STMT_LEN = 13 + ROUNDS + 11` — the OCaml 40-slot layout).
 pub struct WrapCircuit<const ROUNDS: usize, const STMT_LEN: usize> {
-    pub w: WrapWitnessData,
+    /// Compilation witness used only while building the constraint system.
+    /// Proving supplies the current witness through `PrivateInput`, allowing
+    /// the same prover index to be reused for multiple proofs.
+    pub w: Option<WrapWitnessData>,
 }
 
 impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<ROUNDS, STMT_LEN> {
     type Curve = Pallas;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
-    type PrivateInput = ();
+    type PrivateInput = WrapWitnessData;
     type PublicInput = [FieldVar<Fq>; STMT_LEN];
     type PublicOutput = ();
 
@@ -354,7 +359,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         &self,
         sys: &mut RunState<Fq>,
         stmt: Self::PublicInput,
-        _private: Option<&Self::PrivateInput>,
+        private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
         use groupmap::GroupMap;
         use snarky::gadgets::curve::Point;
@@ -365,7 +370,9 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // finalization. E.g. each bulletproof round's φ·x seal pairs with the
         // next round's on-curve half across ~70 custom rows in the jsoo dump.
 
-        let w = &self.w;
+        let w = private
+            .or(self.w.as_ref())
+            .expect("WrapCircuit needs a compilation or proving witness");
         // Every witnessed point goes through OCaml's `exists Inner_curve.typ`,
         // whose check is `assert_on_curve` (Vesta: y² = x³ + 5).
         let mkpt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
@@ -1083,13 +1090,15 @@ where
         bootstrap_points,
         false,
         None,
+        None,
     ) {
-        BaseCaseBuild::Bootstrap {
+        BaseCaseBuild::Compiled {
             step_prover,
             step_verifier,
+            wrap_prover: _,
             wrap_verifier,
         } => (step_prover, step_verifier, wrap_verifier),
-        BaseCaseBuild::Proof(_, _) => unreachable!("bootstrap mode only compiles the wrap VK"),
+        BaseCaseBuild::Proof { .. } => unreachable!("bootstrap mode only compiles the wrap VK"),
     };
     let actual_points = wrap_verification_key_points(&bootstrap_verifier);
     let final_proof = match build_base_case::<A, ROUNDS, STMT_LEN>(
@@ -1098,9 +1107,10 @@ where
         actual_points.clone(),
         true,
         Some((step_prover, step_verifier)),
+        None,
     ) {
-        BaseCaseBuild::Proof(proof, _) => proof,
-        BaseCaseBuild::Bootstrap { .. } => unreachable!("final mode returns a complete proof"),
+        BaseCaseBuild::Proof { proof, .. } => proof,
+        BaseCaseBuild::Compiled { .. } => unreachable!("final mode returns a complete proof"),
     };
     assert_eq!(
         wrap_verification_key_points(&final_proof.wrap_verifier),
@@ -1274,13 +1284,131 @@ pub struct WrapCircuitDump {
     pub labels: Vec<String>,
 }
 
+type StepIndexes<A> = (
+    snarky::api::ProverIndexWrapper<StepCircuit<A>>,
+    snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
+);
+type WrapIndexes<const ROUNDS: usize, const STMT_LEN: usize> = (
+    snarky::api::ProverIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+    snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+);
+
 enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
-    Bootstrap {
+    Compiled {
         step_prover: snarky::api::ProverIndexWrapper<StepCircuit<A>>,
         step_verifier: snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
+        wrap_prover: snarky::api::ProverIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
         wrap_verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
     },
-    Proof(BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump),
+    Proof {
+        proof: BaseCaseProof<A, ROUNDS, STMT_LEN>,
+        dump: WrapCircuitDump,
+        step_indexes: StepIndexes<A>,
+        wrap_indexes: WrapIndexes<ROUNDS, STMT_LEN>,
+    },
+}
+
+/// Reusable base-case prover indexes. Compilation performs the two Pickles
+/// key-discovery passes once; subsequent proofs regenerate witnesses while
+/// reusing both the Step and final Wrap indexes.
+pub struct CompiledBaseCase<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
+    app: A,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    step_indexes: Option<StepIndexes<A>>,
+    wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
+}
+
+impl<A: StepApp + Clone, const ROUNDS: usize, const STMT_LEN: usize>
+    CompiledBaseCase<A, ROUNDS, STMT_LEN>
+where
+    A::Witness: Clone,
+{
+    pub fn compile(app: A, witness: A::Witness) -> Self {
+        use ark_ec::{AffineRepr, CurveGroup};
+        let generator = Pallas::generator().into_group();
+        let bootstrap_points = (1..=28u64)
+            .map(|i| {
+                let point = (generator * Fq::from(i)).into_affine();
+                (point.x, point.y)
+            })
+            .collect();
+        let (step_prover, step_verifier, bootstrap_verifier) =
+            match build_base_case::<A, ROUNDS, STMT_LEN>(
+                app.clone(),
+                witness.clone(),
+                bootstrap_points,
+                false,
+                None,
+                None,
+            ) {
+                BaseCaseBuild::Compiled {
+                    step_prover,
+                    step_verifier,
+                    wrap_verifier,
+                    ..
+                } => (step_prover, step_verifier, wrap_verifier),
+                BaseCaseBuild::Proof { .. } => unreachable!("compile mode returns indexes"),
+            };
+        let wrap_vk_pts = wrap_verification_key_points(&bootstrap_verifier);
+        let (step_indexes, wrap_indexes) =
+            match build_base_case::<A, ROUNDS, STMT_LEN>(
+                app.clone(),
+                witness,
+                wrap_vk_pts.clone(),
+                false,
+                Some((step_prover, step_verifier)),
+                None,
+            ) {
+                BaseCaseBuild::Compiled {
+                    step_prover,
+                    step_verifier,
+                    wrap_prover,
+                    wrap_verifier,
+                } => {
+                    assert_eq!(
+                        wrap_verification_key_points(&wrap_verifier),
+                        wrap_vk_pts,
+                        "wrap verification key changed between compilation passes"
+                    );
+                    (
+                        (step_prover, step_verifier),
+                        (wrap_prover, wrap_verifier),
+                    )
+                }
+                BaseCaseBuild::Proof { .. } => unreachable!("compile mode returns indexes"),
+            };
+        Self {
+            app,
+            wrap_vk_pts,
+            step_indexes: Some(step_indexes),
+            wrap_indexes: Some(wrap_indexes),
+        }
+    }
+
+    pub fn prove(&mut self, witness: A::Witness) -> BaseCaseProof<A, ROUNDS, STMT_LEN> {
+        let step_indexes = self.step_indexes.take().expect("compiled Step indexes");
+        let wrap_indexes = self.wrap_indexes.take().expect("compiled Wrap indexes");
+        match build_base_case::<A, ROUNDS, STMT_LEN>(
+            self.app.clone(),
+            witness,
+            self.wrap_vk_pts.clone(),
+            true,
+            Some(step_indexes),
+            Some(wrap_indexes),
+        ) {
+            BaseCaseBuild::Proof {
+                proof,
+                step_indexes,
+                wrap_indexes,
+                ..
+            } => {
+                self.step_indexes = Some(step_indexes);
+                self.wrap_indexes = Some(wrap_indexes);
+                proof
+            }
+            BaseCaseBuild::Compiled { .. } => unreachable!("proof mode returns a proof"),
+        }
+    }
 }
 
 /// [`prove_base_case`], additionally returning the compiled wrap circuit's
@@ -1290,9 +1418,9 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
-    match build_base_case(app, witness, wrap_vk_pts, true, None) {
-        BaseCaseBuild::Proof(proof, dump) => (proof, dump),
-        BaseCaseBuild::Bootstrap { .. } => unreachable!("proof mode returns a complete proof"),
+    match build_base_case(app, witness, wrap_vk_pts, true, None, None) {
+        BaseCaseBuild::Proof { proof, dump, .. } => (proof, dump),
+        BaseCaseBuild::Compiled { .. } => unreachable!("proof mode returns a complete proof"),
     }
 }
 
@@ -1301,10 +1429,8 @@ fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
     prove_wrap: bool,
-    step_indexes: Option<(
-        snarky::api::ProverIndexWrapper<StepCircuit<A>>,
-        snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
-    )>,
+    step_indexes: Option<StepIndexes<A>>,
+    wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
 ) -> BaseCaseBuild<A, ROUNDS, STMT_LEN> {
     assert_eq!(STMT_LEN, 13 + ROUNDS + 11, "STMT_LEN mismatch (OCaml 40-slot layout)");
     // ---- step proof ----
@@ -1566,13 +1692,19 @@ fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         .try_into()
         .unwrap_or_else(|_| unreachable!());
     // Full Tock SRS (2^15): wrap IPA proofs always have 15 rounds.
-    let (mut wrap_pi, wrap_ver) = WrapCircuit::<ROUNDS, STMT_LEN> { w: wdata }
+    let (mut wrap_pi, wrap_ver) = match wrap_indexes {
+        Some(indexes) => indexes,
+        None => WrapCircuit::<ROUNDS, STMT_LEN> {
+            w: Some(wdata.clone()),
+        }
         .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
-        .unwrap();
+        .unwrap(),
+    };
     if !prove_wrap {
-        return BaseCaseBuild::Bootstrap {
+        return BaseCaseBuild::Compiled {
             step_prover: step_pi,
             step_verifier: step_ver,
+            wrap_prover: wrap_pi,
             wrap_verifier: wrap_ver,
         };
     }
@@ -1582,20 +1714,22 @@ fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         labels: wrap_pi.gate_labels().to_vec(),
     };
     let (wrap_proof, _) = wrap_pi
-        .prove::<PallasBase, PallasScalar>(stmt_arr, (), true)
+        .prove::<PallasBase, PallasScalar>(stmt_arr, wdata, true)
         .unwrap();
     wrap_ver.verify::<PallasBase, PallasScalar>(wrap_proof.clone(), stmt_arr, ());
 
-    BaseCaseBuild::Proof(
-        BaseCaseProof {
+    BaseCaseBuild::Proof {
+        proof: BaseCaseProof {
             statement,
             stable_statement,
             proof: wrap_proof,
             step_proof,
-            step_verifier: step_ver,
-            wrap_verifier: wrap_ver,
+            step_verifier: step_ver.clone(),
+            wrap_verifier: wrap_ver.clone(),
             wrap_vk_pts,
         },
-        wrap_dump,
-    )
+        dump: wrap_dump,
+        step_indexes: (step_pi, step_ver),
+        wrap_indexes: (wrap_pi, wrap_ver),
+    }
 }

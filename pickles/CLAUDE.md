@@ -2109,3 +2109,22 @@ pas encore retenu comme entrée d'un cycle N2 suivant.
 Validation ciblée : deux preuves `square` retenues sont vérifiées par un step
 N2 qui exécute un nouveau circuit `6 * 7 = 42`, puis la preuve finale est
 vérifiée standalone avec `ProofsVerified::N2`.
+
+## Jalon 2026-07-14 — index compilés réutilisables N0/N1
+
+`WrapCircuit` et `RecursiveStepCircuit` reçoivent désormais leur witness via
+`PrivateInput` au proving au lieu de le capturer dans la valeur compilée du
+circuit. `RecordedCompiledBase` conserve les index Step/Wrap finaux après les
+deux passes de découverte de VK ; `RecordedCompiledN1` conserve les index du
+Step récursif et de son Wrap. Les deux handles prouvent ensuite de nouveaux
+witnesses sans reconstruire les index. Les mêmes handles opaques sont exposés
+par `kimchi-wasm` et `kimchi-napi`.
+
+Validation : **12/12** tests `recorded` release, dont réutilisation N0 sur deux
+witnesses distincts et N1 compilé ; smoke test o1js vert ; Wrap toujours **FULL
+MATCH** 8192/8192. Sur AddZkProgram, le proving compilé base+N1 est maintenant
+plus rapide en Rust : 8,361 s contre 8,774 s JSOO en WASM et 4,409 s contre
+6,042 s en natif. La compilation froide N1 reste le goulot : elle produit
+encore une preuve Step temporaire afin de fabriquer le witness nécessaire à la
+compilation du Wrap. La prochaine optimisation doit construire ce witness de
+compilation sans preuve cryptographique temporaire.

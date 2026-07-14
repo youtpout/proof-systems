@@ -1131,6 +1131,212 @@ pub struct RecordedProofHandle {
 /// Backward-compatible name for callers that only retain base proofs.
 pub type RecordedBaseHandle = RecordedProofHandle;
 
+/// A recorded base circuit whose Step and Wrap prover indexes stay alive for
+/// repeated proofs. The initial witness is used only to discover and compile
+/// the two Pickles indexes; every `prove_keep` call supplies its own witness.
+pub struct RecordedCompiledBase {
+    circuit: RecordedCircuit,
+    compiled: crate::api::CompiledBaseCase<RecordedApp, 16, 40>,
+}
+
+impl RecordedCompiledBase {
+    pub fn compile(
+        circuit: RecordedCircuit,
+        witness: Vec<Fp>,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness.len() != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        let domain_log2 = measure_step_rounds(app.clone())
+            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?;
+        if domain_log2 != 16 {
+            return Err(RecordedProveError::UnsupportedStepRounds(domain_log2));
+        }
+        Ok(Self {
+            circuit,
+            compiled: crate::api::CompiledBaseCase::compile(app, witness),
+        })
+    }
+
+    pub fn prove_keep(
+        &mut self,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        if witness.len() != self.circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let app_state = self.circuit.state(&witness);
+        let base = self.compiled.prove(witness);
+        let proof = base
+            .to_mina_network_proof()
+            .map_err(RecordedProveError::Backend)?;
+        Ok(RecordedProofHandle {
+            app_state,
+            proof,
+            inner: RecordedProofInner::R16(base),
+        })
+    }
+}
+
+/// Reusable indexes for the first N1 transition over a retained base proof.
+pub struct RecordedCompiledN1 {
+    circuit: RecordedCircuit,
+    step_indexes: Option<crate::recursive_step::RecursiveStepIndexes<
+        16,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+    >>,
+    wrap_indexes: Option<crate::recursive_step::RecursiveWrapIndexes<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_N1_WRAP_STMT_LEN,
+    >>,
+}
+
+impl RecordedCompiledN1 {
+    pub fn compile(
+        previous: &RecordedProofHandle,
+        circuit: RecordedCircuit,
+        witness: Vec<Fp>,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness.len() != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let RecordedProofInner::R16(base) = &previous.inner else {
+            return Err(RecordedProveError::RecursiveBackend(
+                crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
+            ));
+        };
+        let new_state = circuit.state(&witness);
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        let main: crate::recursive_step::EmbeddedAppMain =
+            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
+        let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            base,
+            wrap_vk_pts,
+            previous.app_state.clone(),
+            new_state,
+        );
+        let (step, step_indexes) = crate::recursive_step::prove_prepared_recursive_step(
+            prepared,
+            Some(main),
+            None,
+        );
+        let prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(base, &step);
+        let wrap_indexes =
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        Ok(Self {
+            circuit,
+            step_indexes: Some(step_indexes),
+            wrap_indexes: Some(wrap_indexes),
+        })
+    }
+
+    pub fn prove_keep(
+        &mut self,
+        previous: &RecordedProofHandle,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        if witness.len() != self.circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let RecordedProofInner::R16(base) = &previous.inner else {
+            return Err(RecordedProveError::RecursiveBackend(
+                crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
+            ));
+        };
+        let new_state = self.circuit.state(&witness);
+        let app = RecordedApp {
+            circuit: self.circuit.clone(),
+        };
+        let main: crate::recursive_step::EmbeddedAppMain =
+            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
+        let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            base,
+            wrap_vk_pts.clone(),
+            previous.app_state.clone(),
+            new_state.clone(),
+        );
+        let step_indexes = self.step_indexes.take().expect("compiled N1 Step indexes");
+        let (step, step_indexes) = crate::recursive_step::prove_prepared_recursive_step(
+            prepared,
+            Some(main),
+            Some(step_indexes),
+        );
+        self.step_indexes = Some(step_indexes);
+        let prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(base, &step);
+        let wrap_indexes = self.wrap_indexes.take().expect("compiled N1 Wrap indexes");
+        let (wrap, wrap_indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
+            prepared_wrap,
+            Some(wrap_indexes),
+        );
+        self.wrap_indexes = Some(wrap_indexes);
+        let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
+        let proof = crate::recursive_step::DirectN1Proof::<
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+        > {
+            cycle,
+            wrap_vk_pts,
+        };
+        let encoded = proof
+            .to_mina_network_proof()
+            .map_err(RecordedProveError::RecursiveBackend)?;
+        Ok(RecordedProofHandle {
+            app_state: new_state,
+            proof: encoded,
+            inner: RecordedProofInner::Recursive(proof.cycle),
+        })
+    }
+}
+
 impl RecordedProofHandle {
     /// The envelope-only view of the kept proof.
     pub fn to_recorded_proof(&self) -> RecordedProof {
