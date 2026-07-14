@@ -2074,3 +2074,22 @@ Essai retiré et à ne pas réintroduire : supprimer le padding dummy du nouvel
 accumulateur. Cet essai modifie la structure Poseidon et régressait de 2 à 30
 rows. Le cache et le padding précédents étaient corrects ; seul l'ordre du
 vecteur dummy était fautif.
+
+## Jalon 2026-07-14 — handle récursif N1 chaînable
+
+`RecordedBaseHandle` est généralisé en `RecordedProofHandle` (l'ancien nom
+reste un alias compatible). Le handle conserve soit la preuve de base
+complète, soit le dernier cycle step/wrap complet avec ses index. La nouvelle
+API `prove_recorded_n1_over_keep` accepte les deux formes : base → premier N1,
+puis N1 → N1 sans rejouer les circuits ou témoins précédents.
+
+Le chemin stable accepte maintenant une application embarquée différente à
+chaque cycle. Les deux passes de stabilisation de la VK partagent la même
+closure applicative ; la première tentative sans application dans le
+bootstrap produisait une VK différente. Il faut également distinguer l'état
+public précédent de l'état produit par la nouvelle application : confondre les
+deux casse la finalisation du digest du cycle consommé.
+
+Validation : `cargo check -p pickles` et `cargo test -p pickles --test
+recorded --release` : **9/9**, avec un test réel base → N1 → N1 et vérification
+standalone du dernier résultat.

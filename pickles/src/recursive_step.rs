@@ -451,7 +451,8 @@ pub struct RecursiveStepData {
 /// runs in-circuit (allocating its own witness) and returns the new
 /// application state bound by the step statement's
 /// messages-for-next-step digest.
-pub type EmbeddedAppMain = Box<dyn Fn(&mut RunState<Fp>) -> SnarkyResult<Vec<FieldVar<Fp>>>>;
+pub type EmbeddedAppMain =
+    std::sync::Arc<dyn Fn(&mut RunState<Fp>) -> SnarkyResult<Vec<FieldVar<Fp>>> + Send + Sync>;
 
 pub struct RecursiveStepCircuit<
     const PREV_ROUNDS: usize,
@@ -1532,12 +1533,13 @@ pub fn prove_recursive_step_with_app<
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
     let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
     let messages_for_next_step_proof = prepared.messages_for_next_step_proof.clone();
-    let (mut prover, verifier) = RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
-        d: [prepared.data],
-        app: app_main,
-    }
-    .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
-    .unwrap();
+    let (mut prover, verifier) =
+        RecursiveStepCircuit::<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
+            d: [prepared.data],
+            app: app_main,
+        }
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+        .unwrap();
     let (proof, _) = prover
         .prove_with_recursion::<VestaBase, VestaScalar>(
             prepared.statement,
@@ -2357,6 +2359,44 @@ pub fn prepare_next_recursive_step<
     wrap_vk_pts: Vec<(Fp, Fp)>,
     prev_app_state: Vec<Fp>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    prepare_next_recursive_step_with_state::<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        PUBLIC_INPUT_LEN,
+    >(
+        previous,
+        wrap_vk_pts,
+        prev_app_state.clone(),
+        prev_app_state,
+    )
+}
+
+/// [`prepare_next_recursive_step`] with a distinct application state produced
+/// by an application embedded in the next recursive step.
+pub fn prepare_next_recursive_step_with_state<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+    new_app_state: Vec<Fp>,
+) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
     assert_eq!(previous.wrap.proof.proof.lr.len(), WRAP_PROOF_ROUNDS);
     prepare_recursive_step_from_parts::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN>(
         &previous.step.verifier.index,
@@ -2377,8 +2417,8 @@ pub fn prepare_next_recursive_step<
             .collect(),
         previous.step.messages_for_next_step_vk_pts.clone(),
         wrap_vk_pts,
-        prev_app_state.clone(),
         prev_app_state,
+        new_app_state,
     )
 }
 
@@ -2469,7 +2509,7 @@ pub fn prove_next_recursive_step<
     wrap_vk_pts: Vec<(Fp, Fp)>,
     prev_app_state: Vec<Fp>,
 ) -> RecursiveStepProof<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
-    let prepared = prepare_next_recursive_step::<
+    prove_next_recursive_step_with_app::<
         PREV_ROUNDS,
         VERIFIED_WRAP_ROUNDS,
         PREV_STEP_PROOF_ROUNDS,
@@ -2477,7 +2517,45 @@ pub fn prove_next_recursive_step<
         PREV_WRAP_STMT_LEN,
         WRAP_PROOF_ROUNDS,
         PUBLIC_INPUT_LEN,
-    >(previous, wrap_vk_pts, prev_app_state);
+    >(previous, wrap_vk_pts, prev_app_state, None)
+}
+
+/// [`prove_next_recursive_step`] with an optional application embedded in the
+/// next step. When present, the application's output replaces the previous
+/// application state in the new statement digest.
+pub fn prove_next_recursive_step_with_app<
+    const PREV_ROUNDS: usize,
+    const VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+    app: Option<(EmbeddedAppMain, Vec<Fp>)>,
+) -> RecursiveStepProof<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
+    let (app_main, new_app_state) = match app {
+        Some((main, state)) => (Some(main), state),
+        None => (None, prev_app_state.clone()),
+    };
+    let prepared = prepare_next_recursive_step_with_state::<
+        PREV_ROUNDS,
+        VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        PUBLIC_INPUT_LEN,
+    >(previous, wrap_vk_pts, prev_app_state, new_app_state);
     let verified_wrap_accumulator = prepared.verified_wrap_accumulator;
     let finalized_step_challenges = prepared.finalized_step_challenges.clone();
     let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
@@ -2485,7 +2563,7 @@ pub fn prove_next_recursive_step<
     let (mut prover, verifier) =
         RecursiveStepCircuit::<PREV_STEP_PROOF_ROUNDS, WRAP_PROOF_ROUNDS, PUBLIC_INPUT_LEN> {
             d: [prepared.data],
-            app: None,
+            app: app_main,
         }
         .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
         .unwrap();
@@ -2536,7 +2614,7 @@ pub fn prove_next_recursive_cycle<
     NEXT_STEP_STMT_LEN,
     NEXT_WRAP_STMT_LEN,
 > {
-    let step = prove_next_recursive_step::<
+    prove_next_recursive_cycle_with_app::<
         CYCLE_PREV_ROUNDS,
         CYCLE_VERIFIED_WRAP_ROUNDS,
         PREV_STEP_PROOF_ROUNDS,
@@ -2544,7 +2622,50 @@ pub fn prove_next_recursive_cycle<
         PREV_WRAP_STMT_LEN,
         WRAP_PROOF_ROUNDS,
         NEXT_STEP_STMT_LEN,
-    >(previous, wrap_vk_pts, prev_app_state);
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_WRAP_STMT_LEN,
+    >(previous, wrap_vk_pts, prev_app_state, None)
+}
+
+/// [`prove_next_recursive_cycle`] with an optional application embedded in
+/// the new step.
+pub fn prove_next_recursive_cycle_with_app<
+    const CYCLE_PREV_ROUNDS: usize,
+    const CYCLE_VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const NEXT_STEP_STMT_LEN: usize,
+    const NEXT_STEP_PROOF_ROUNDS: usize,
+    const NEXT_WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    prev_app_state: Vec<Fp>,
+    app: Option<(EmbeddedAppMain, Vec<Fp>)>,
+) -> RecursiveCycleProof<
+    PREV_STEP_PROOF_ROUNDS,
+    WRAP_PROOF_ROUNDS,
+    NEXT_STEP_PROOF_ROUNDS,
+    NEXT_STEP_STMT_LEN,
+    NEXT_WRAP_STMT_LEN,
+> {
+    let step = prove_next_recursive_step_with_app::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+    >(previous, wrap_vk_pts, prev_app_state, app);
     let prepared_wrap = prepare_next_recursive_wrap::<
         CYCLE_PREV_ROUNDS,
         CYCLE_VERIFIED_WRAP_ROUNDS,
@@ -2592,11 +2713,54 @@ pub fn prove_next_recursive_cycle_with_real_vk<
     NEXT_STEP_STMT_LEN,
     NEXT_WRAP_STMT_LEN,
 > {
+    prove_next_recursive_cycle_with_real_vk_and_app::<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+        WRAP_PROOF_ROUNDS,
+        NEXT_STEP_STMT_LEN,
+        NEXT_STEP_PROOF_ROUNDS,
+        NEXT_WRAP_STMT_LEN,
+    >(previous, app_state.clone(), app_state, None)
+}
+
+/// [`prove_next_recursive_cycle_with_real_vk`] with an optional application
+/// embedded in the new step.
+pub fn prove_next_recursive_cycle_with_real_vk_and_app<
+    const CYCLE_PREV_ROUNDS: usize,
+    const CYCLE_VERIFIED_WRAP_ROUNDS: usize,
+    const PREV_STEP_PROOF_ROUNDS: usize,
+    const PREV_STEP_STMT_LEN: usize,
+    const PREV_WRAP_STMT_LEN: usize,
+    const WRAP_PROOF_ROUNDS: usize,
+    const NEXT_STEP_STMT_LEN: usize,
+    const NEXT_STEP_PROOF_ROUNDS: usize,
+    const NEXT_WRAP_STMT_LEN: usize,
+>(
+    previous: &RecursiveCycleProof<
+        CYCLE_PREV_ROUNDS,
+        CYCLE_VERIFIED_WRAP_ROUNDS,
+        PREV_STEP_PROOF_ROUNDS,
+        PREV_STEP_STMT_LEN,
+        PREV_WRAP_STMT_LEN,
+    >,
+    prev_app_state: Vec<Fp>,
+    new_app_state: Vec<Fp>,
+    app: Option<EmbeddedAppMain>,
+) -> RecursiveCycleProof<
+    PREV_STEP_PROOF_ROUNDS,
+    WRAP_PROOF_ROUNDS,
+    NEXT_STEP_PROOF_ROUNDS,
+    NEXT_STEP_STMT_LEN,
+    NEXT_WRAP_STMT_LEN,
+> {
     // Break the step↔wrap VK cycle exactly like the base-case two-pass build.
     // The bootstrap determines the verification key of the wrap circuit that
     // will be paired with this new step (not the key of `previous.wrap`).
     let bootstrap_vk = crate::api::wrap_verification_key_points(&previous.wrap.verifier);
-    let bootstrap = prove_next_recursive_cycle::<
+    let bootstrap = prove_next_recursive_cycle_with_app::<
         CYCLE_PREV_ROUNDS,
         CYCLE_VERIFIED_WRAP_ROUNDS,
         PREV_STEP_PROOF_ROUNDS,
@@ -2606,9 +2770,14 @@ pub fn prove_next_recursive_cycle_with_real_vk<
         NEXT_STEP_STMT_LEN,
         NEXT_STEP_PROOF_ROUNDS,
         NEXT_WRAP_STMT_LEN,
-    >(previous, bootstrap_vk, app_state.clone());
+    >(
+        previous,
+        bootstrap_vk,
+        prev_app_state.clone(),
+        app.clone().map(|main| (main, new_app_state.clone())),
+    );
     let next_wrap_vk = crate::api::wrap_verification_key_points(&bootstrap.wrap.verifier);
-    let final_cycle = prove_next_recursive_cycle::<
+    let final_cycle = prove_next_recursive_cycle_with_app::<
         CYCLE_PREV_ROUNDS,
         CYCLE_VERIFIED_WRAP_ROUNDS,
         PREV_STEP_PROOF_ROUNDS,
@@ -2618,7 +2787,12 @@ pub fn prove_next_recursive_cycle_with_real_vk<
         NEXT_STEP_STMT_LEN,
         NEXT_STEP_PROOF_ROUNDS,
         NEXT_WRAP_STMT_LEN,
-    >(previous, next_wrap_vk.clone(), app_state);
+    >(
+        previous,
+        next_wrap_vk.clone(),
+        prev_app_state,
+        app.map(|main| (main, new_app_state)),
+    );
     assert_eq!(
         crate::api::wrap_verification_key_points(&final_cycle.wrap.verifier),
         next_wrap_vk,

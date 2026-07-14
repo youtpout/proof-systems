@@ -3,11 +3,13 @@
 //! backend and its proof verified standalone against the side-loaded key.
 
 use mina_curves::pasta::Fp;
-use pickles::recorded::{
-    prove_recorded_base_case, LinComb, RecordedCircuit, RecordedCircuitError, RecordedConstraint,
-    RecordedProveError,
+use pickles::{
+    recorded::{
+        prove_recorded_base_case, LinComb, RecordedCircuit, RecordedCircuitError,
+        RecordedConstraint, RecordedProveError,
+    },
+    verify::{verify_side_loaded_base_case, StandaloneVerifyError},
 };
-use pickles::verify::{verify_side_loaded_base_case, StandaloneVerifyError};
 
 /// x0 = witness, x1 = x0², output = x1.
 fn square_circuit() -> RecordedCircuit {
@@ -156,8 +158,7 @@ fn recorded_ec_add_circuit_proves_and_verifies_standalone() {
 
 #[test]
 fn recorded_n1_cycle_proves_and_verifies_standalone() {
-    use pickles::recorded::prove_recorded_n1;
-    use pickles::verify::verify_side_loaded_with_step_vk;
+    use pickles::{recorded::prove_recorded_n1, verify::verify_side_loaded_with_step_vk};
 
     let witness = vec![Fp::from(8u64), Fp::from(64u64)];
     let proved = prove_recorded_n1(square_circuit(), witness).unwrap();
@@ -191,8 +192,7 @@ fn recorded_n1_cycle_proves_and_verifies_standalone() {
 
 #[test]
 fn recorded_stable_n1_chain_proves_and_verifies_standalone() {
-    use pickles::recorded::prove_recorded_stable_n1;
-    use pickles::verify::verify_side_loaded_with_step_vk;
+    use pickles::{recorded::prove_recorded_stable_n1, verify::verify_side_loaded_with_step_vk};
 
     let witness = vec![Fp::from(9u64), Fp::from(81u64)];
     let proved = prove_recorded_stable_n1(square_circuit(), witness, 1).unwrap();
@@ -230,8 +230,7 @@ fn recorded_n2_cycle_proves_and_verifies_standalone() {
         .name("recorded-n2-proof".to_string())
         .stack_size(128 * 1024 * 1024)
         .spawn(|| {
-            use pickles::recorded::prove_recorded_n2;
-            use pickles::verify::verify_side_loaded_with_step_vk;
+            use pickles::{recorded::prove_recorded_n2, verify::verify_side_loaded_with_step_vk};
 
             let first = vec![Fp::from(10u64), Fp::from(100u64)];
             let second = vec![Fp::from(11u64), Fp::from(121u64)];
@@ -271,8 +270,10 @@ fn recorded_n2_cycle_proves_and_verifies_standalone() {
 
 #[test]
 fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
-    use pickles::recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over};
-    use pickles::verify::verify_side_loaded_with_step_vk;
+    use pickles::{
+        recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over_keep},
+        verify::verify_side_loaded_with_step_vk,
+    };
 
     // Base proof: the square circuit, kept alive for chaining.
     let handle =
@@ -293,7 +294,8 @@ fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
         }],
     };
     let witness = vec![Fp::from(6u64), Fp::from(7u64), Fp::from(42u64)];
-    let proved = prove_recorded_n1_over(&handle, mul_circuit, witness).unwrap();
+    let first_handle = prove_recorded_n1_over_keep(&handle, mul_circuit, witness).unwrap();
+    let proved = first_handle.to_recorded_n1_proof().unwrap();
     assert_eq!(proved.app_state, vec![Fp::from(42u64)]);
 
     // The digest binds the *new* circuit's app state together with the
@@ -322,4 +324,27 @@ fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
         ),
         Err(StandaloneVerifyError::AppStateMismatch)
     ));
+
+    // The recursive handle can itself be consumed by another call without
+    // replaying either previous witness.
+    let second_handle = prove_recorded_n1_over_keep(
+        &first_handle,
+        square_circuit(),
+        vec![Fp::from(8u64), Fp::from(64u64)],
+    )
+    .unwrap();
+    let second = second_handle.to_recorded_n1_proof().unwrap();
+    assert_eq!(second.app_state, vec![Fp::from(64u64)]);
+    let vk = verify_side_loaded_with_step_vk(
+        &second.app_state,
+        Some(second.dlog_plonk_index.as_slice()),
+        &[second.challenge_polynomial_commitment],
+        &[second.old_bulletproof_challenges],
+        &second.proof,
+    )
+    .unwrap();
+    assert_eq!(
+        vk.proofs_verified,
+        pickles::composition_types::ProofsVerified::N1
+    );
 }

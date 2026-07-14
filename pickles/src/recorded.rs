@@ -1120,32 +1120,56 @@ pub fn prove_recorded_n2(
     )
 }
 
-/// A base-case proof kept alive for chaining: the full in-memory
-/// [`crate::api::BaseCaseProof`] (whose step proof the next recursive step
-/// re-finalizes — the network envelope alone is not enough), plus its
-/// application state and envelope. Host languages hold this as an opaque
-/// handle and feed it to [`prove_recorded_n1_over`].
-pub struct RecordedBaseHandle {
+/// A proof kept alive for recursive chaining. The network envelope is enough
+/// for standalone verification, but the next Pickles cycle also needs the
+/// full previous step/wrap proofs and their verifier indexes.
+pub struct RecordedProofHandle {
     pub app_state: Vec<Fp>,
     pub proof: MinaWrapProof,
-    inner: RecordedBaseInner,
+    inner: RecordedProofInner,
 }
 
-impl RecordedBaseHandle {
-    /// The envelope-only view of the kept proof (what
-    /// [`prove_recorded_base_case`] returns).
+/// Backward-compatible name for callers that only retain base proofs.
+pub type RecordedBaseHandle = RecordedProofHandle;
+
+impl RecordedProofHandle {
+    /// The envelope-only view of the kept proof.
     pub fn to_recorded_proof(&self) -> RecordedProof {
         RecordedProof {
             app_state: self.app_state.clone(),
             proof: self.proof.clone(),
         }
     }
+
+    /// Returns the recursive verification envelope, or `None` for a base
+    /// handle that has not entered a recursive cycle yet.
+    pub fn to_recorded_n1_proof(&self) -> Option<RecordedN1Proof> {
+        let RecordedProofInner::Recursive(cycle) = &self.inner else {
+            return None;
+        };
+        Some(RecordedN1Proof {
+            app_state: self.app_state.clone(),
+            proof: self.proof.clone(),
+            challenge_polynomial_commitment: cycle.step.verified_wrap_accumulator,
+            old_bulletproof_challenges: cycle.step.finalized_step_challenges.clone(),
+            dlog_plonk_index: cycle.step.messages_for_next_step_vk_pts.clone(),
+        })
+    }
 }
 
-enum RecordedBaseInner {
+type RecordedRecursiveCycle = crate::recursive_step::RecursiveCycleProof<
+    RECORDED_N1_STEP_ROUNDS,
+    RECORDED_BASE_WRAP_ROUNDS,
+    RECORDED_N1_STEP_ROUNDS,
+    RECORDED_N1_STEP_STMT_LEN,
+    RECORDED_N1_WRAP_STMT_LEN,
+>;
+
+enum RecordedProofInner {
     /// Proofs are always made over the full Tick SRS: 16 IPA rounds,
     /// 40-slot OCaml wrap statement.
     R16(crate::api::BaseCaseProof<RecordedApp, 16, 40>),
+    Recursive(RecordedRecursiveCycle),
 }
 
 macro_rules! prove_base_keep_at_rounds {
@@ -1170,10 +1194,10 @@ macro_rules! prove_base_keep_at_rounds {
                     let (base, encoded) = backend
                         .prove_with_mina_encoding(&$public, $witness)
                         .map_err(RecordedProveError::Backend)?;
-                    Ok(RecordedBaseHandle {
+                    Ok(RecordedProofHandle {
                         app_state: $public,
                         proof: encoded,
-                        inner: RecordedBaseInner::$variant(base),
+                        inner: RecordedProofInner::$variant(base),
                     })
                 }
             )+
@@ -1188,7 +1212,7 @@ macro_rules! prove_base_keep_at_rounds {
 pub fn prove_recorded_base_case_keep(
     circuit: RecordedCircuit,
     witness: Vec<Fp>,
-) -> Result<RecordedBaseHandle, RecordedProveError> {
+) -> Result<RecordedProofHandle, RecordedProveError> {
     circuit.validate()?;
     if witness.len() != circuit.aux_count as usize {
         return Err(RecordedProveError::Circuit(
@@ -1202,11 +1226,11 @@ pub fn prove_recorded_base_case_keep(
         (16, R16))
 }
 
-macro_rules! prove_n1_over_at_rounds {
+macro_rules! prove_n1_over_keep_at_rounds {
     ($handle:ident, $main:ident, $new_state:ident; $(($rounds:literal, $variant:ident)),+) => {
         match &$handle.inner {
             $(
-                RecordedBaseInner::$variant(base) => {
+                RecordedProofInner::$variant(base) => {
                     let wrap_vk_pts =
                         crate::api::wrap_verification_key_points(&base.wrap_verifier);
                     let cycle =
@@ -1234,22 +1258,42 @@ macro_rules! prove_n1_over_at_rounds {
                     let encoded = proof
                         .to_mina_network_proof()
                         .map_err(RecordedProveError::RecursiveBackend)?;
-                    Ok(RecordedN1Proof {
+                    Ok(RecordedProofHandle {
                         app_state: $new_state,
                         proof: encoded,
-                        challenge_polynomial_commitment: proof
-                            .cycle
-                            .step
-                            .verified_wrap_accumulator,
-                        old_bulletproof_challenges: proof
-                            .cycle
-                            .step
-                            .finalized_step_challenges
-                            .clone(),
-                        dlog_plonk_index: proof.wrap_vk_pts.clone(),
+                        inner: RecordedProofInner::Recursive(proof.cycle),
                     })
                 }
             )+
+            RecordedProofInner::Recursive(previous) => {
+                let cycle = crate::recursive_step::prove_next_recursive_cycle_with_real_vk_and_app::<
+                    RECORDED_N1_STEP_ROUNDS,
+                    RECORDED_BASE_WRAP_ROUNDS,
+                    RECORDED_N1_STEP_ROUNDS,
+                    RECORDED_N1_STEP_STMT_LEN,
+                    RECORDED_N1_WRAP_STMT_LEN,
+                    RECORDED_BASE_WRAP_ROUNDS,
+                    RECORDED_N1_STEP_STMT_LEN,
+                    RECORDED_N1_STEP_ROUNDS,
+                    RECORDED_N1_WRAP_STMT_LEN,
+                >(
+                    previous,
+                    $handle.app_state.clone(),
+                    $new_state.clone(),
+                    Some($main),
+                );
+                let step_domain_log2 =
+                    cycle.step.verifier.index.domain.log_size_of_group as u8;
+                let encoded = cycle
+                    .wrap
+                    .to_mina_network_proof(step_domain_log2)
+                    .map_err(RecordedProveError::RecursiveBackend)?;
+                Ok(RecordedProofHandle {
+                    app_state: $new_state,
+                    proof: encoded,
+                    inner: RecordedProofInner::Recursive(cycle),
+                })
+            }
         }
     };
 }
@@ -1268,10 +1312,23 @@ macro_rules! prove_n1_over_at_rounds {
 /// fixed 2^{[`RECORDED_N1_STEP_ROUNDS`]} step domain; a larger app panics in
 /// the wrap preparation today.
 pub fn prove_recorded_n1_over(
-    handle: &RecordedBaseHandle,
+    handle: &RecordedProofHandle,
     circuit: RecordedCircuit,
     witness: Vec<Fp>,
 ) -> Result<RecordedN1Proof, RecordedProveError> {
+    let handle = prove_recorded_n1_over_keep(handle, circuit, witness)?;
+    Ok(handle
+        .to_recorded_n1_proof()
+        .expect("N1 proving always returns a recursive handle"))
+}
+
+/// [`prove_recorded_n1_over`], retaining the complete recursive proof so the
+/// returned handle can be fed into another call without replaying witnesses.
+pub fn prove_recorded_n1_over_keep(
+    handle: &RecordedProofHandle,
+    circuit: RecordedCircuit,
+    witness: Vec<Fp>,
+) -> Result<RecordedProofHandle, RecordedProveError> {
     circuit.validate()?;
     if witness.len() != circuit.aux_count as usize {
         return Err(RecordedProveError::Circuit(
@@ -1281,8 +1338,8 @@ pub fn prove_recorded_n1_over(
     let new_state = circuit.state(&witness);
     let app = RecordedApp { circuit };
     let main: crate::recursive_step::EmbeddedAppMain =
-        Box::new(move |sys| app.main(sys, Some(&witness)));
-    prove_n1_over_at_rounds!(handle, main, new_state;
+        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+    prove_n1_over_keep_at_rounds!(handle, main, new_state;
         (16, R16))
 }
 
