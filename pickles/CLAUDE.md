@@ -2318,3 +2318,27 @@ native descend de **4,35 s** à **1,99 s** et le test N2 complet de **27,06 s**
 à **17,16 s** sur les mesures voisines. N0/N1/N2 et les 18 tests Snarky restent
 verts. En WASM, le lowering N1 dépasse encore la borne : ce correctif est réel
 mais une seconde source spécifique au frontend récursif reste à localiser.
+
+## Jalon 2026-07-14 — socle Wrap multibranche N0/N1/N2
+
+Le chemin récursif largeur deux utilise désormais les mêmes slots physiques
+pour les trois arités : N0 `[dummy, dummy]`, N1 `[dummy, real]` et N2
+`[real, real]`. Le point manquant était le masque de récursion côté prover :
+Kimchi savait déjà produire un proof transcript avec des accumulateurs
+optionnels, mais `recursive_step` appelait encore `prove_with_recursion` sans
+masque alors que le Wrap vérifiait avec ce masque. Le Step appelle maintenant
+`prove_with_recursion_mask`, avec les slots dummy désactivés.
+
+Le Wrap conserve deux `unfinalized` physiques pour toutes les branches. Les
+slots inactifs ont `should_finalize = false`, mais leurs challenges calculés
+restent présents dans le digest du prochain accumulateur, comme dans le
+vecteur de taille fixe OCaml. Le calcul de référence IPA applique également le
+masque au transcript et retire les commitments inactifs de la combinaison.
+
+Le test `program_wrap_index_is_shared_by_n0_n1_n2` compile trois Step VK,
+construit la sélection one-hot, puis prouve et vérifie successivement N0, N1
+et N2 avec exactement le même index Wrap de domaine Tock maximal. Les 102
+tests unitaires Pickles, le test N1 padded, le test N1 compilé réutilisable et
+les checks NAPI/WASM passent. Il reste à exposer ce compilateur de programme
+dans `recorded`/NAPI et à faire compiler `ZkProgram` en une seule opération au
+lieu de conserver les handles N0/N1/N2 séparés.

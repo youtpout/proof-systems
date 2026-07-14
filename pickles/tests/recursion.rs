@@ -18,11 +18,13 @@ use pickles::{
     composition_types::ProofsVerified,
     inductive_rule::{InductiveRule, PicklesProgram, ProgramExecutionError, RuleId},
     recursive_step::{
-        prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n1,
-        prepare_recursive_step_width2, prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
+        prepare_next_recursive_step, prepare_recursive_step, prepare_recursive_step_n0,
+        prepare_recursive_step_n1, prepare_recursive_step_width2, prepare_recursive_wrap_n0,
+        prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
         prove_direct_n1_stable_cycles_with_real_vk, prove_first_recursive_cycle,
-        prove_next_recursive_cycle, prove_recursive_step_width2, prove_recursive_wrap,
-        prove_stable_recursive_cycles, recursive_wrap_ipa_equation_holds, step_statement_len,
+        prove_next_recursive_cycle, prove_prepared_recursive_wrap, prove_recursive_step_width2,
+        prove_recursive_wrap,
+        recursive_wrap_ipa_equation_holds, step_statement_len,
         width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness, DirectN2Backend,
         DirectN2Witness, DirectRecursiveBackendError,
@@ -31,29 +33,25 @@ use pickles::{
 };
 
 /// step proof #1's IPA rounds / wrap statement length (see tests/e2e.rs).
-const ROUNDS: usize = 9;
-const STMT_LEN: usize = 13 + ROUNDS + 9;
+const ROUNDS: usize = pickles::common::TICK_ROUNDS;
+const STMT_LEN: usize = 13 + ROUNDS + 11;
 /// the wrap circuit's IPA rounds (its domain is 2^13 — matching pickles'
 /// `wrap_domains(0)`).
-const WROUNDS: usize = 13;
-const R2: usize = 14;
+const WROUNDS: usize = pickles::common::TOCK_ROUNDS;
+const R2: usize = pickles::common::TICK_ROUNDS;
 /// the width-1 step statement: 5 Type2 pairs (cip, b, zsl, zds, perm of the
 /// wrap proof), the wrap proof's sponge digest, beta/gamma, alpha/zeta/xi,
 /// WROUNDS bulletproof challenges, should_finalize, then the new
 /// messages_for_next_step digest and the messages_for_next_wrap digest.
 const K2: usize = width1_step_statement_len(WROUNDS);
-const WRAP2_STMT_LEN: usize = 13 + R2 + 9;
-const WRAP2_PROOF_ROUNDS: usize = 14;
+const WRAP2_STMT_LEN: usize = 13 + R2 + 11;
+const WRAP2_PROOF_ROUNDS: usize = pickles::common::TOCK_ROUNDS;
 const K3: usize = width1_step_statement_len(WRAP2_PROOF_ROUNDS);
-const R3: usize = 14;
-const WRAP3_STMT_LEN: usize = 13 + R3 + 9;
-const WRAP3_PROOF_ROUNDS: usize = 14;
-const K4: usize = width1_step_statement_len(WRAP3_PROOF_ROUNDS);
-const R4: usize = 14;
-const WRAP4_STMT_LEN: usize = 13 + R4 + 9;
+const R3: usize = pickles::common::TICK_ROUNDS;
+const WRAP3_STMT_LEN: usize = 13 + R3 + 11;
 const K_WIDTH2: usize = step_statement_len(2, WROUNDS);
 const WIDTH2_STEP_ROUNDS: usize = pickles::common::TICK_ROUNDS;
-const WIDTH2_WRAP_STMT_LEN: usize = 13 + WIDTH2_STEP_ROUNDS + 9;
+const WIDTH2_WRAP_STMT_LEN: usize = 13 + WIDTH2_STEP_ROUNDS + 11;
 
 #[derive(Clone, Copy)]
 struct SquareApp;
@@ -73,11 +71,20 @@ impl StepApp for SquareApp {
     }
 }
 
+fn test_wrap_vk() -> Vec<(Fp, Fp)> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    let generator = mina_curves::pasta::Pallas::generator().into_group();
+    (1..=28u64)
+        .map(|i| {
+            let point = (generator * mina_curves::pasta::Fq::from(i)).into_affine();
+            (point.x, point.y)
+        })
+        .collect()
+}
+
 #[test]
 fn pickles_recursive_step() {
-    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
-        .map(|i| (Fp::from(1000 + i), Fp::from(2000 + i)))
-        .collect();
+    let wrap_vk_pts = test_wrap_vk();
     let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
         SquareApp,
         Fp::from(7u64),
@@ -154,21 +161,14 @@ fn pickles_recursive_step() {
     assert_eq!(cycle2.step.statement.len(), K3);
     assert_eq!(cycle2.wrap.statement.len(), WRAP3_STMT_LEN);
 
-    let cycle3 = prove_stable_recursive_cycles::<R3, K3, WRAP3_STMT_LEN>(
-        cycle2,
-        1,
-        wrap_vk_pts,
-        vec![Fp::from(49u64)],
-    );
-    assert_eq!(cycle3.step.statement.len(), K4);
-    assert_eq!(cycle3.wrap.statement.len(), WRAP4_STMT_LEN);
+    // Tick and Tock use their full Mina SRS sizes (16 and 15 rounds), so the
+    // old equal-rounds test-only stable helper is no longer the right shape.
+    let _ = (cycle2, wrap_vk_pts);
 }
 
 #[test]
 fn pickles_recursive_step_width2() {
-    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
-        .map(|i| (Fp::from(3000 + i), Fp::from(4000 + i)))
-        .collect();
+    let wrap_vk_pts = test_wrap_vk();
     let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
         SquareApp,
         Fp::from(11u64),
@@ -234,9 +234,7 @@ fn pickles_recursive_step_width2() {
 
 #[test]
 fn pickles_recursive_step_n1_is_physically_padded() {
-    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
-        .map(|i| (Fp::from(5000 + i), Fp::from(6000 + i)))
-        .collect();
+    let wrap_vk_pts = test_wrap_vk();
     let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
         SquareApp,
         Fp::from(17u64),
@@ -268,11 +266,86 @@ fn pickles_recursive_step_n1_is_physically_padded() {
         WIDTH2_STEP_ROUNDS,
         WIDTH2_WRAP_STMT_LEN,
     >(&base, &step);
-    assert_eq!(prepared_wrap.data.unfinalized.len(), 1);
+    assert_eq!(prepared_wrap.data.unfinalized.len(), 2);
+    assert!(!prepared_wrap.data.unfinalized[0].should_finalize);
+    assert!(prepared_wrap.data.unfinalized[1].should_finalize);
     assert_eq!(prepared_wrap.data.sg_olds.len(), 2);
     assert!(recursive_wrap_ipa_equation_holds(&prepared_wrap));
     let wrapped = prove_recursive_wrap(prepared_wrap);
     assert_eq!(wrapped.proof.proof.lr.len(), pickles::common::TOCK_ROUNDS);
+}
+
+#[test]
+fn program_wrap_index_is_shared_by_n0_n1_n2() {
+    let wrap_vk_pts = test_wrap_vk();
+    let base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(19u64),
+        wrap_vk_pts.clone(),
+    );
+    let second_base = prove_base_case::<SquareApp, ROUNDS, STMT_LEN>(
+        SquareApp,
+        Fp::from(23u64),
+        wrap_vk_pts.clone(),
+    );
+    let prepare = |base, state| {
+        prepare_recursive_step::<SquareApp, ROUNDS, WROUNDS, STMT_LEN, K2>(
+            base,
+            wrap_vk_pts.clone(),
+            vec![Fp::from(state)],
+        )
+    };
+    let n0 = prepare_recursive_step_n0::<WROUNDS, K2, K_WIDTH2>(
+        prepare(&base, 361),
+        vec![Fp::from(1u64)],
+    );
+    let n1 = prepare_recursive_step_n1::<WROUNDS, K2, K_WIDTH2>(
+        prepare(&base, 361),
+        vec![Fp::from(2u64)],
+    );
+    let n2 = prepare_recursive_step_width2::<WROUNDS, K2, K_WIDTH2>(
+        prepare(&base, 361),
+        prepare(&second_base, 529),
+        vec![Fp::from(3u64)],
+    );
+    let n0_step = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(n0);
+    let n1_step = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(n1);
+    let n2_step = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(n2);
+    let branches = vec![
+        pickles::api::WrapBranchData::from_step_verifier(&n0_step.verifier.index, 0),
+        pickles::api::WrapBranchData::from_step_verifier(&n1_step.verifier.index, 1),
+        pickles::api::WrapBranchData::from_step_verifier(&n2_step.verifier.index, 2),
+    ];
+    let mut n0_wrap = prepare_recursive_wrap_n0::<
+        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
+        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+    >(&base, &n0_step);
+    let mut n1_wrap = prepare_recursive_wrap_n1::<
+        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
+        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+    >(&base, &n1_step);
+    let mut n2_wrap = prepare_recursive_wrap_width2::<
+        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
+        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+    >([&base, &second_base], &n2_step);
+    for (which, wrap) in [&mut n0_wrap, &mut n1_wrap, &mut n2_wrap]
+        .into_iter()
+        .enumerate()
+    {
+        wrap.data.which_branch = which;
+        wrap.data.branches = branches.clone();
+        wrap.domain_log2 = pickles::common::TOCK_ROUNDS as u32;
+    }
+    assert!(recursive_wrap_ipa_equation_holds(&n0_wrap));
+    eprintln!("proving shared Wrap N0");
+    let (n0_proof, indexes) = prove_prepared_recursive_wrap(n0_wrap, None);
+    eprintln!("proving shared Wrap N1");
+    let (n1_proof, indexes) = prove_prepared_recursive_wrap(n1_wrap, Some(indexes));
+    eprintln!("proving shared Wrap N2");
+    let (n2_proof, _) = prove_prepared_recursive_wrap(n2_wrap, Some(indexes));
+    let generic = n0_proof.verifier.index.generic_comm.clone();
+    assert_eq!(n1_proof.verifier.index.generic_comm, generic);
+    assert_eq!(n2_proof.verifier.index.generic_comm, generic);
 }
 
 #[test]

@@ -409,6 +409,44 @@ pub fn rust_pickles_prove_recorded_base_keep_compiled_bytes(
 }
 
 #[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n2_over_base_handles(
+    first: &WasmRecordedBaseHandle,
+    second: &WasmRecordedBaseHandle,
+    circuit_json: String,
+    witness_decimal: Vec<String>,
+) -> Result<String, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let proved = crate::rayon::run_in_pool(|| {
+        pickles::recorded::prove_recorded_n2_over_base_handles(
+            &first.0, &second.0, circuit, witness,
+        )
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
+    recorded_n2_envelope(proved)
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n2_over_base_handles_bytes(
+    first: &WasmRecordedBaseHandle,
+    second: &WasmRecordedBaseHandle,
+    circuit_json: String,
+    witness_bytes: &[u8],
+) -> Result<String, JsError> {
+    let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
+        .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let proved = crate::rayon::run_in_pool(|| {
+        pickles::recorded::prove_recorded_n2_over_base_handles(
+            &first.0, &second.0, circuit, witness,
+        )
+    })
+    .map_err(|err| JsError::new(&format!("rust pickles N2 prove failed: {err:?}")))?;
+    recorded_n2_envelope(proved)
+}
+
+#[wasm_bindgen]
 pub fn rust_pickles_compile_recorded_n1(
     previous: &WasmRecordedBaseHandle,
     circuit_json: String,
@@ -490,6 +528,48 @@ pub fn rust_pickles_prove_recorded_n1_compiled_bytes(
     let proved = handle
         .to_recorded_n1_proof()
         .ok_or_else(|| JsError::new("compiled N1 did not return a recursive proof"))?;
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        &proved.challenge_polynomial_commitment,
+        &proved.old_bulletproof_challenges,
+        &proved.dlog_plonk_index,
+        None,
+    )
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n1_compiled_keep(
+    compiled: &mut WasmRecordedCompiledN1,
+    previous: &WasmRecordedBaseHandle,
+    witness_decimal: Vec<String>,
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_decimals(witness_decimal, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(&previous.0, witness))
+        .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_prove_recorded_n1_compiled_keep_bytes(
+    compiled: &mut WasmRecordedCompiledN1,
+    previous: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| compiled.0.prove_keep(&previous.0, witness))
+        .map_err(|err| JsError::new(&format!("rust pickles N1 prove failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_n1_envelope(
+    handle: &WasmRecordedBaseHandle,
+) -> Result<String, JsError> {
+    let proved = handle
+        .0
+        .to_recorded_n1_proof()
+        .ok_or_else(|| JsError::new("proof handle is not recursive"))?;
     recorded_n1_envelope(
         &proved.app_state,
         &proved.proof,

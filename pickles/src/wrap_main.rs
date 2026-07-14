@@ -102,6 +102,7 @@ pub fn wrap_main<F, C, W>(
     // this statement's accumulator digest
     messages_for_next_wrap_proof_digest: &FieldVar<F>,
     new_acc_dummy_challenges: &[Vec<F>],
+    is_base_case: &Boolean<F>,
     // constants
     group_map_params: &groupmap::BWParameters<C>,
     endo_base: F,
@@ -176,7 +177,6 @@ where
     let (openings, messages) = witness_proof(sys)?;
 
     // == commit to the step statement and fully verify the step proof ==
-    let is_base_case: Boolean<F> = Boolean::create_unsafe(FieldVar::constant(F::zero()));
     // The dynamic proofs-verified mask, aligned to the physical sg_old
     // layout. `Util.ones_vector` marks the ACTIVE slots first
     // ([true; active] ++ [false; inactive]) while our physical padding puts
@@ -212,7 +212,7 @@ where
         advice,
         xi,
         claimed,
-        &is_base_case,
+        is_base_case,
         group_map_params,
         endo_base,
         endo_scalar,
@@ -568,6 +568,7 @@ mod tests {
                 &claimed,
                 &msgs_wrap_digest,
                 std::slice::from_ref(&self.new_acc_dummies),
+                &Boolean::false_(),
                 &params,
                 crate::endo::tock::base(),
                 <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,

@@ -303,7 +303,59 @@ pub struct WrapUnfinalizedWitnessData {
 }
 
 #[derive(Clone)]
+pub struct WrapBranchData {
+    pub proofs_verified: usize,
+    pub step_domain_log2: u8,
+    pub generic: (Fq, Fq),
+    pub psm: (Fq, Fq),
+    pub complete_add: (Fq, Fq),
+    pub mul: (Fq, Fq),
+    pub emul: (Fq, Fq),
+    pub endomul_scalar: (Fq, Fq),
+    pub coefficients: Vec<(Fq, Fq)>,
+    pub sigma_init: Vec<(Fq, Fq)>,
+    pub sigma_last: Vec<(Fq, Fq)>,
+}
+
+impl WrapBranchData {
+    pub fn from_step_verifier(
+        index: &kimchi::verifier_index::VerifierIndex<
+            FULL_ROUNDS,
+            Vesta,
+            poly_commitment::ipa::SRS<Vesta>,
+        >,
+        proofs_verified: usize,
+    ) -> Self {
+        let point = |commitment: &poly_commitment::commitment::PolyComm<Vesta>| {
+            let point = commitment.chunks[0];
+            (point.x, point.y)
+        };
+        Self {
+            proofs_verified,
+            step_domain_log2: index.domain.log_size_of_group as u8,
+            generic: point(&index.generic_comm),
+            psm: point(&index.psm_comm),
+            complete_add: point(&index.complete_add_comm),
+            mul: point(&index.mul_comm),
+            emul: point(&index.emul_comm),
+            endomul_scalar: point(&index.endomul_scalar_comm),
+            coefficients: index.coefficients_comm.iter().map(point).collect(),
+            sigma_init: index.sigma_comm[..PERMUTS - 1]
+                .iter()
+                .map(point)
+                .collect(),
+            sigma_last: vec![point(&index.sigma_comm[PERMUTS - 1])],
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct WrapWitnessData {
+    /// Branch selected by the step proof being wrapped. A one-branch circuit
+    /// keeps the historical branch-zero layout byte-for-byte; a program Wrap
+    /// supplies every branch here and selects one with a checked one-hot.
+    pub which_branch: usize,
+    pub branches: Vec<WrapBranchData>,
     pub step_domain_log2: u8,
     pub step_vk_digest: Fq,
     pub generic: (Fq, Fq),
@@ -476,34 +528,80 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // selects the branch width/domain through `Pseudo.choose`, even for a
         // single-branch o1js program.  Mirror that shape instead of folding the
         // branch data to a pure constant.
-        let which_branch: FieldVar<Fq> = sys.compute(loc!(), |_| Fq::from(0u64))?;
-        let branch0 = other_field_equal(sys, &which_branch, Fq::from(0u64), true)?;
+        let which_branch_value = w.which_branch;
+        let which_branch: FieldVar<Fq> =
+            sys.compute(loc!(), move |_| Fq::from(which_branch_value as u64))?;
+        let branch_count = w.branches.len().max(1);
+        let mut branches = Vec::with_capacity(branch_count);
+        for index in 0..branch_count {
+            branches.push(other_field_equal(
+                sys,
+                &which_branch,
+                Fq::from(index as u64),
+                true,
+            )?);
+        }
+        let branch0 = branches[0].clone();
         // `One_hot_vector.of_index` finishes with `Boolean.Assert.any`.  Even
         // for a single branch Snarky implements that assertion as
         // `assert_non_zero(sum bits)`: witness the inverse and constrain
         // `inverse * branch0 = 1`.  A linear `branch0 = 1` is logically
         // equivalent, but does not emit OCaml's `Checked.inv` R1CS half and
         // shifts the first verifier-index Poseidon train by one Generic row.
-        let branch0_field = branch0.to_field_var();
-        let branch0_for_witness = branch0_field.clone();
-        let branch0_inv: FieldVar<Fq> = sys.compute(loc!(), move |env| {
-            env.read_var(&branch0_for_witness)
+        let branch_sum = branches
+            .iter()
+            .fold(FieldVar::zero(), |sum, branch| sum + branch.to_field_var());
+        let branch_sum_for_witness = branch_sum.clone();
+        let branch_sum_inv: FieldVar<Fq> = sys.compute(loc!(), move |env| {
+            env.read_var(&branch_sum_for_witness)
                 .inverse()
                 .unwrap_or_else(|| Fq::from(0u64))
         })?;
         sys.assert_r1cs(
             Some("one-hot any".into()),
             loc!(),
-            branch0_field.clone(),
-            branch0_inv,
+            branch_sum.clone(),
+            branch_sum_inv,
             FieldVar::constant(Fq::from(1u64)),
         )?;
-        let proofs_verified = branch0_field.mul(
-            &FieldVar::constant(Fq::from(w.unfinalized.len() as u64)),
-            Some("choose proofs_verified".into()),
-            loc!(),
-            sys,
-        )?;
+        let branch_definitions = if w.branches.is_empty() {
+            vec![WrapBranchData {
+                proofs_verified: w
+                    .unfinalized
+                    .iter()
+                    .filter(|entry| entry.should_finalize)
+                    .count(),
+                step_domain_log2: w.step_domain_log2,
+                generic: w.generic,
+                psm: w.psm,
+                complete_add: w.complete_add,
+                mul: w.mul,
+                emul: w.emul,
+                endomul_scalar: w.endomul_scalar,
+                coefficients: w.coefficients.clone(),
+                sigma_init: w.sigma_init.clone(),
+                sigma_last: w.sigma_last.clone(),
+            }]
+        } else {
+            w.branches.clone()
+        };
+        let proofs_verified = if branch_count == 1 {
+            branch0.to_field_var().mul(
+                &FieldVar::constant(Fq::from(branch_definitions[0].proofs_verified as u64)),
+                Some("choose proofs_verified".into()),
+                loc!(),
+                sys,
+            )?
+        } else {
+            branches.iter().zip(&branch_definitions).fold(
+                FieldVar::zero(),
+                |sum, (branch, definition)| {
+                    sum + branch
+                        .to_field_var()
+                        .scale(Fq::from(definition.proofs_verified as u64))
+                },
+            )
+        };
         // `actual_proofs_verified_mask = Wrap_verifier.mask (which_branch,
         // step_widths)` (wrap_main.ml:165): `Util.ones_vector` with
         // `first_zero = Pseudo.choose(which_branch, step_widths)` — emitted
@@ -522,12 +620,23 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             }
             mask
         };
-        let domain_log2 = branch0.to_field_var().mul(
-            &FieldVar::constant(Fq::from(u64::from(w.step_domain_log2))),
-            Some("choose domain_log2".into()),
-            loc!(),
-            sys,
-        )?;
+        let domain_log2 = if branch_count == 1 {
+            branch0.to_field_var().mul(
+                &FieldVar::constant(Fq::from(u64::from(branch_definitions[0].step_domain_log2))),
+                Some("choose domain_log2".into()),
+                loc!(),
+                sys,
+            )?
+        } else {
+            branches.iter().zip(&branch_definitions).fold(
+                FieldVar::zero(),
+                |sum, (branch, definition)| {
+                    sum + branch
+                        .to_field_var()
+                        .scale(Fq::from(u64::from(definition.step_domain_log2)))
+                },
+            )
+        };
         let expected_branch_data = &domain_log2.scale(Fq::from(4u64)) + &proofs_verified;
         branch_data.assert_equals(
             sys,
@@ -621,18 +730,32 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // check is emitted for the selected key: the jsoo dump has NO c=5
         // markers wired to the index-sponge absorbs (its pre-sponge markers
         // all belong to the openings/messages witnesses).
-        let choose_pt = |sys: &mut RunState<Fq>, p: (Fq, Fq)| -> SnarkyResult<Point<Fq>> {
-            let y = branch0.to_field_var().scale(p.1).seal(sys, loc!())?;
+        let choose_pt = |sys: &mut RunState<Fq>, points: Vec<(Fq, Fq)>| -> SnarkyResult<Point<Fq>> {
+            let choose_coordinate = |coordinate: usize| {
+                branches.iter().zip(&points).fold(
+                    FieldVar::zero(),
+                    |sum, (branch, point)| {
+                        let value = if coordinate == 0 { point.0 } else { point.1 };
+                        sum + branch.to_field_var().scale(value)
+                    },
+                )
+            };
+            let y = choose_coordinate(1).seal(sys, loc!())?;
             // `Double.map` constructs an OCaml pair.  Its tuple components
             // are evaluated right-to-left, so the y-coordinate seal is
             // emitted before the x-coordinate seal.
-            let x = branch0.to_field_var().scale(p.0).seal(sys, loc!())?;
+            let x = choose_coordinate(0).seal(sys, loc!())?;
             Ok(Point::new(x, y))
         };
-        let choose_pts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
-            let mut out = Vec::with_capacity(ps.len());
-            for &p in ps.iter().rev() {
-                out.push(choose_pt(sys, p)?);
+        let choose_pts = |sys: &mut RunState<Fq>, points: Vec<Vec<(Fq, Fq)>>| -> SnarkyResult<Vec<Point<Fq>>> {
+            let point_count = points[0].len();
+            assert!(points.iter().all(|branch| branch.len() == point_count));
+            let mut out = Vec::with_capacity(point_count);
+            for index in (0..point_count).rev() {
+                out.push(choose_pt(
+                    sys,
+                    points.iter().map(|branch| branch[index]).collect(),
+                )?);
             }
             out.reverse();
             Ok(out)
@@ -641,15 +764,33 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // right to left. Its vector map also invokes `f` from the last element
         // to the first. Allocate in that exact order, then assemble the Rust
         // record without adding constraints.
-        let endomul_scalar = choose_pt(sys, w.endomul_scalar)?;
-        let emul = choose_pt(sys, w.emul)?;
-        let mul = choose_pt(sys, w.mul)?;
-        let complete_add = choose_pt(sys, w.complete_add)?;
-        let psm = choose_pt(sys, w.psm)?;
-        let generic = choose_pt(sys, w.generic)?;
-        let coefficients = choose_pts(sys, &w.coefficients)?;
-        let sigma_last = choose_pts(sys, &w.sigma_last)?;
-        let sigma_init = choose_pts(sys, &w.sigma_init)?;
+        let endomul_scalar = choose_pt(
+            sys,
+            branch_definitions.iter().map(|branch| branch.endomul_scalar).collect(),
+        )?;
+        let emul = choose_pt(sys, branch_definitions.iter().map(|branch| branch.emul).collect())?;
+        let mul = choose_pt(sys, branch_definitions.iter().map(|branch| branch.mul).collect())?;
+        let complete_add = choose_pt(
+            sys,
+            branch_definitions.iter().map(|branch| branch.complete_add).collect(),
+        )?;
+        let psm = choose_pt(sys, branch_definitions.iter().map(|branch| branch.psm).collect())?;
+        let generic = choose_pt(
+            sys,
+            branch_definitions.iter().map(|branch| branch.generic).collect(),
+        )?;
+        let coefficients = choose_pts(
+            sys,
+            branch_definitions.iter().map(|branch| branch.coefficients.clone()).collect(),
+        )?;
+        let sigma_last = choose_pts(
+            sys,
+            branch_definitions.iter().map(|branch| branch.sigma_last.clone()).collect(),
+        )?;
+        let sigma_init = choose_pts(
+            sys,
+            branch_definitions.iter().map(|branch| branch.sigma_init.clone()).collect(),
+        )?;
         let vk = VerificationKeyComm {
             generic,
             psm,
@@ -853,6 +994,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
+        let is_base_case = proofs_verified.equal(
+            sys,
+            loc!(),
+            &FieldVar::constant(Fq::from(0u64)),
+        )?;
         let _out = wrap_main::<Fq, VestaParameters, _>(
             sys,
             loc!(),
@@ -869,6 +1015,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             &claimed,
             &msgs_wrap_digest,
             &w.new_acc_dummies,
+            &is_base_case,
             &params,
             crate::endo::tock::base(),
             <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
@@ -1622,6 +1769,8 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         .map(|rc| co(&rc.comm.chunks[0]))
         .collect();
     let wdata = WrapWitnessData {
+        which_branch: 0,
+        branches: vec![],
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),

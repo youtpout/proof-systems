@@ -1345,6 +1345,7 @@ impl RecordedCompiledBase {
 /// Reusable indexes for the first N1 transition over a retained base proof.
 pub struct RecordedCompiledN1 {
     circuit: RecordedCircuit,
+    wrap_branches: Vec<crate::api::WrapBranchData>,
     step_indexes: Option<
         crate::recursive_step::RecursiveStepIndexes<
             16,
@@ -1405,6 +1406,10 @@ impl RecordedCompiledN1 {
             RECORDED_N1_STEP_STMT_LEN,
         >(&prepared, Some(main.clone()));
         let step_compiled_at = std::time::Instant::now();
+        let wrap_branches = vec![
+            crate::api::WrapBranchData::from_step_verifier(&base.step_verifier.index, 0),
+            crate::api::WrapBranchData::from_step_verifier(&step_indexes.1.index, 1),
+        ];
         if profile {
             let step_domain = step_indexes.1.index.domain.log_size_of_group;
             eprintln!(
@@ -1416,6 +1421,7 @@ impl RecordedCompiledN1 {
         }
         Ok(Self {
             circuit,
+            wrap_branches,
             step_indexes: Some(step_indexes),
             wrap_indexes: None,
         })
@@ -1462,7 +1468,7 @@ impl RecordedCompiledN1 {
             Some(step_indexes),
         );
         self.step_indexes = Some(step_indexes);
-        let prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
             RecordedApp,
             16,
             RECORDED_BASE_WRAP_ROUNDS,
@@ -1471,6 +1477,8 @@ impl RecordedCompiledN1 {
             RECORDED_N1_STEP_STMT_LEN,
             RECORDED_N1_WRAP_STMT_LEN,
         >(base, &step);
+        prepared_wrap.data.which_branch = 1;
+        prepared_wrap.data.branches = self.wrap_branches.clone();
         let wrap_indexes = self.wrap_indexes.take();
         let (wrap, wrap_indexes) =
             crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, wrap_indexes);
