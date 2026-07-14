@@ -1580,6 +1580,101 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
     };
     let svi = &step_ver.index;
 
+    // Compiling a program must not require a satisfying application witness.
+    // The Wrap constraint shape depends only on the fixed proof dimensions
+    // and Step index layout, not on a concrete Step proof. Build that shape
+    // directly instead of proving a disposable (and potentially invalid)
+    // application execution merely to obtain proof-shaped values.
+    if !prove_wrap {
+        use ark_ec::{AffineRepr, CurveGroup};
+        let generator = Vesta::generator().into_group().into_affine();
+        let point = (generator.x, generator.y);
+        let co = |p: &Vesta| (p.x, p.y);
+        let dummy_wrap_chals = {
+            let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+            let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+            crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
+        };
+        let lgr = svi.srs().get_lagrange_basis(svi.domain);
+        let l0 = lgr[0].chunks[0];
+        let correction = crate::public_input::lagrange_correction(&l0, 255);
+        drop(lgr);
+        let wdata = WrapWitnessData {
+            which_branch: 0,
+            branches: vec![],
+            step_domain_log2: svi.domain.log_size_of_group as u8,
+            step_vk_digest: svi.digest::<VestaBase>(),
+            generic: co(&svi.generic_comm.chunks[0]),
+            psm: co(&svi.psm_comm.chunks[0]),
+            complete_add: co(&svi.complete_add_comm.chunks[0]),
+            mul: co(&svi.mul_comm.chunks[0]),
+            emul: co(&svi.emul_comm.chunks[0]),
+            endomul_scalar: co(&svi.endomul_scalar_comm.chunks[0]),
+            coefficients: svi
+                .coefficients_comm
+                .iter()
+                .map(|c| co(&c.chunks[0]))
+                .collect(),
+            sigma_init: svi.sigma_comm[..PERMUTS - 1]
+                .iter()
+                .map(|c| co(&c.chunks[0]))
+                .collect(),
+            sigma_last: vec![co(&svi.sigma_comm[PERMUTS - 1].chunks[0])],
+            w_comm: vec![point; COLUMNS],
+            z_comm: point,
+            // Kimchi's quotient commitment has seven chunks when the Step
+            // index uses the full Tick SRS (one max-sized polynomial chunk).
+            t_comm: vec![point; 7],
+            lr: vec![(point, point); crate::common::TICK_ROUNDS],
+            delta: point,
+            sg: point,
+            z1_repr: Fq::from(0u64),
+            z2_repr: Fq::from(0u64),
+            sg_olds: vec![],
+            unfinalized: vec![],
+            step_statement: vec![WrapStepStatementSlot::Packed {
+                value: Fq::from(0u64),
+                num_bits: 255,
+            }],
+            step_statement_lagranges: vec![(co(&l0), co(&correction))],
+            h: (svi.srs().h.x, svi.srs().h.y),
+            new_acc_dummies: dummy_wrap_chals,
+        };
+        let circuit = WrapCircuit::<ROUNDS, STMT_LEN> {
+            w: Some(wdata.clone()),
+        };
+        let (wrap_prover, wrap_verifier) = match wrap_indexes {
+            Some(indexes) => indexes,
+            None => match cached_wrap_index {
+                Some(index) => snarky::api::ProverIndexWrapper::from_cached_index(
+                    circuit,
+                    0,
+                    index,
+                )
+                .unwrap_or_else(|_| {
+                    WrapCircuit::<ROUNDS, STMT_LEN> { w: Some(wdata) }
+                        .compile_to_indexes_with_domain_and_srs(
+                            0,
+                            Some(crate::common::TOCK_ROUNDS as u32),
+                        )
+                        .unwrap()
+                }),
+                None => circuit
+                    .compile_to_indexes_with_domain_and_srs(
+                        0,
+                        Some(crate::common::TOCK_ROUNDS as u32),
+                    )
+                    .unwrap(),
+            },
+        };
+        return BaseCaseBuild::Compiled {
+            step_prover: step_pi,
+            step_verifier: step_ver,
+            wrap_prover,
+            wrap_verifier,
+        };
+    }
+
     let digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
         Vesta::sponge_params(),
         &wrap_vk_pts,

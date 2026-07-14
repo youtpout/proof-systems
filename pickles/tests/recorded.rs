@@ -92,6 +92,22 @@ fn recorded_compiled_base_reuses_indexes_across_witnesses() {
 }
 
 #[test]
+fn recorded_compilation_does_not_require_a_satisfying_witness() {
+    // ZkProgram.compile() analyzes arbitrary methods with placeholder values.
+    // Compilation must therefore depend on the constraint shape, not on those
+    // values satisfying the application circuit.
+    let mut compiled = pickles::recorded::RecordedCompiledBase::compile(
+        square_circuit(),
+        vec![Fp::from(6u64), Fp::from(35u64)],
+    )
+    .unwrap();
+    let proved = compiled
+        .prove_keep(vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    verify_side_loaded_base_case(&proved.app_state, &proved.proof).unwrap();
+}
+
+#[test]
 fn recorded_compiled_base_cache_round_trips_and_rejects_corruption() {
     use pickles::recorded::RecordedCompiledBase;
 
