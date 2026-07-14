@@ -1359,6 +1359,19 @@ pub struct RecordedCompiledN1 {
             RECORDED_N1_WRAP_STMT_LEN,
         >,
     >,
+    stable_step_indexes: Option<
+        crate::recursive_step::RecursiveStepIndexes<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >,
+    >,
+    stable_wrap_indexes: Option<
+        crate::recursive_step::RecursiveWrapIndexes<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >,
+    >,
 }
 
 impl RecordedCompiledN1 {
@@ -1416,7 +1429,7 @@ impl RecordedCompiledN1 {
         let (bootstrap_step, step_indexes) =
             crate::recursive_step::prove_prepared_recursive_step(
                 prepared,
-                Some(main),
+                Some(main.clone()),
                 Some(step_indexes),
             );
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
@@ -1431,6 +1444,62 @@ impl RecordedCompiledN1 {
         prepared_wrap.data.which_branch = 1;
         prepared_wrap.data.branches = wrap_branches.clone();
         let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        let (bootstrap_wrap, wrap_indexes) =
+            crate::recursive_step::prove_prepared_recursive_wrap(
+                prepared_wrap,
+                Some(wrap_indexes),
+            );
+        let bootstrap_cycle = crate::recursive_step::RecursiveCycleProof {
+            step: bootstrap_step,
+            wrap: bootstrap_wrap,
+        };
+
+        // The first transition verifies a base proof. Later transitions
+        // verify the stable recursive shape, which has a distinct Step
+        // constraint system even though its domains are identical. Compile
+        // that second shape now as well so no later prove call discovers an
+        // index lazily.
+        let stable_wrap_vk = crate::api::wrap_verification_key_points(
+            &bootstrap_cycle.wrap.verifier,
+        );
+        let stable_prepared = crate::recursive_step::prepare_next_recursive_step_with_state::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            &bootstrap_cycle,
+            stable_wrap_vk,
+            new_state.clone(),
+            new_state,
+        );
+        let stable_step_indexes = crate::recursive_step::compile_prepared_recursive_step::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(&stable_prepared, Some(main.clone()));
+        let (stable_step, stable_step_indexes) =
+            crate::recursive_step::prove_prepared_recursive_step(
+                stable_prepared,
+                Some(main),
+                Some(stable_step_indexes),
+            );
+        let stable_prepared_wrap = crate::recursive_step::prepare_next_recursive_wrap::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(&bootstrap_cycle, &stable_step);
+        let stable_wrap_indexes =
+            crate::recursive_step::compile_prepared_recursive_wrap(&stable_prepared_wrap);
         if profile {
             let step_domain = step_indexes.1.index.domain.log_size_of_group;
             eprintln!(
@@ -1445,6 +1514,8 @@ impl RecordedCompiledN1 {
             wrap_branches,
             step_indexes: Some(step_indexes),
             wrap_indexes: Some(wrap_indexes),
+            stable_step_indexes: Some(stable_step_indexes),
+            stable_wrap_indexes: Some(stable_wrap_indexes),
         })
     }
 
@@ -1458,17 +1529,77 @@ impl RecordedCompiledN1 {
                 RecordedCircuitError::WrongWitnessLength(witness.len()),
             ));
         }
-        let RecordedProofInner::R16(base) = &previous.inner else {
-            return Err(RecordedProveError::RecursiveBackend(
-                crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
-            ));
-        };
         let new_state = self.circuit.state(&witness);
         let app = RecordedApp {
             circuit: self.circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
             std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        if let RecordedProofInner::Recursive(previous_cycle) = &previous.inner {
+            let stable_wrap_indexes = self
+                .stable_wrap_indexes
+                .take()
+                .expect("compiled stable N1 Wrap indexes");
+            let wrap_vk_pts = crate::api::wrap_verification_key_points(
+                &stable_wrap_indexes.1,
+            );
+            let prepared = crate::recursive_step::prepare_next_recursive_step_with_state::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N1_WRAP_STMT_LEN,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+            >(
+                previous_cycle,
+                wrap_vk_pts,
+                previous.app_state.clone(),
+                new_state.clone(),
+            );
+            let stable_step_indexes = self
+                .stable_step_indexes
+                .take()
+                .expect("compiled stable N1 Step indexes");
+            let (step, stable_step_indexes) =
+                crate::recursive_step::prove_prepared_recursive_step(
+                    prepared,
+                    Some(main),
+                    Some(stable_step_indexes),
+                );
+            self.stable_step_indexes = Some(stable_step_indexes);
+            let prepared_wrap = crate::recursive_step::prepare_next_recursive_wrap::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N1_WRAP_STMT_LEN,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_N1_WRAP_STMT_LEN,
+            >(previous_cycle, &step);
+            let (wrap, stable_wrap_indexes) =
+                crate::recursive_step::prove_prepared_recursive_wrap(
+                    prepared_wrap,
+                    Some(stable_wrap_indexes),
+                );
+            self.stable_wrap_indexes = Some(stable_wrap_indexes);
+            let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
+            let step_domain_log2 = cycle.step.verifier.index.domain.log_size_of_group as u8;
+            let proof = cycle
+                .wrap
+                .to_mina_network_proof(step_domain_log2)
+                .map_err(RecordedProveError::RecursiveBackend)?;
+            return Ok(RecordedProofHandle {
+                app_state: new_state,
+                proof,
+                inner: RecordedProofInner::Recursive(cycle),
+            });
+        }
+        let RecordedProofInner::R16(base) = &previous.inner else {
+            unreachable!("all recorded proof variants handled")
+        };
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
         let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,

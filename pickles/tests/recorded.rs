@@ -281,6 +281,17 @@ fn recorded_compiled_n1_reuses_step_and_wrap_indexes() {
         )
         .unwrap();
     }
+
+    // The stable recursive shape is compiled eagerly alongside the first
+    // base-to-recursive transition and can be reused without falling back to
+    // a compile-on-prove path.
+    let first = compiled
+        .prove_keep(&base, vec![Fp::from(9u64), Fp::from(81u64)])
+        .unwrap();
+    let second = compiled
+        .prove_keep(&first, vec![Fp::from(10u64), Fp::from(100u64)])
+        .unwrap();
+    assert_eq!(second.app_state, vec![Fp::from(100u64)]);
 }
 
 #[test]
