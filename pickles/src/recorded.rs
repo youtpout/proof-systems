@@ -1343,6 +1343,59 @@ pub fn prove_recorded_n1_over_keep(
         (16, R16))
 }
 
+/// Proves a width-2 recursive step that verifies two retained base proofs and
+/// executes a new recorded application circuit in the same step.
+pub fn prove_recorded_n2_over_base_handles(
+    first: &RecordedProofHandle,
+    second: &RecordedProofHandle,
+    circuit: RecordedCircuit,
+    witness: Vec<Fp>,
+) -> Result<RecordedN2Proof, RecordedProveError> {
+    circuit.validate()?;
+    if witness.len() != circuit.aux_count as usize {
+        return Err(RecordedProveError::Circuit(
+            RecordedCircuitError::WrongWitnessLength(witness.len()),
+        ));
+    }
+    let (RecordedProofInner::R16(first_base), RecordedProofInner::R16(second_base)) =
+        (&first.inner, &second.inner)
+    else {
+        return Err(RecordedProveError::RecursiveBackend(
+            crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
+        ));
+    };
+    let new_state = circuit.state(&witness);
+    let app = RecordedApp { circuit };
+    let main: crate::recursive_step::EmbeddedAppMain =
+        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+    let proof = crate::recursive_step::prove_direct_n2_with_app::<
+        RecordedApp,
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        { 13 + RECORDED_N1_STEP_ROUNDS + 11 },
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+        RECORDED_N2_STEP_ROUNDS,
+        RECORDED_N2_WRAP_STMT_LEN,
+    >(
+        [first_base, second_base],
+        [first.app_state.clone(), second.app_state.clone()],
+        new_state.clone(),
+        Some(main),
+    )
+    .map_err(RecordedProveError::RecursiveBackend)?;
+    let encoded = proof
+        .to_mina_network_proof()
+        .map_err(RecordedProveError::RecursiveBackend)?;
+    Ok(RecordedN2Proof {
+        app_state: new_state,
+        proof: encoded,
+        challenge_polynomial_commitments: proof.accumulators,
+        old_bulletproof_challenges: proof.challenges,
+        dlog_plonk_index: proof.wrap_vk_pts,
+    })
+}
+
 macro_rules! wrap_dump_at_rounds {
     ($app:ident, $witness:ident; $($rounds:literal),+) => {
         match measure_step_rounds($app.clone())

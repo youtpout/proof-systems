@@ -2093,3 +2093,19 @@ deux casse la finalisation du digest du cycle consommé.
 Validation : `cargo check -p pickles` et `cargo test -p pickles --test
 recorded --release` : **9/9**, avec un test réel base → N1 → N1 et vérification
 standalone du dernier résultat.
+
+## Jalon 2026-07-14 — application N2 sur deux handles de base
+
+Le circuit step width-2 accepte maintenant une `EmbeddedAppMain` et exécute
+donc réellement les contraintes du nouvel appel, au lieu de seulement hasher
+un `app_state` fourni par l'hôte. `prove_direct_n2_with_app` factorise ce chemin
+et `prove_recorded_n2_over_base_handles` l'expose pour deux preuves de base
+retenues compatibles.
+
+La première portée N2 exige deux handles de base dont les wrap VK sont
+identiques. Le résultat est une preuve N2 sérialisable et vérifiable ; il n'est
+pas encore retenu comme entrée d'un cycle N2 suivant.
+
+Validation ciblée : deux preuves `square` retenues sont vérifiées par un step
+N2 qui exécute un nouveau circuit `6 * 7 = 42`, puis la preuve finale est
+vérifiée standalone avec `ProofsVerified::N2`.

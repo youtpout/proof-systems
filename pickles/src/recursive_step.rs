@@ -497,6 +497,7 @@ pub struct RecursiveStepWidth2Circuit<
     pub proofs: [RecursiveStepData; 2],
     pub dummy_slots: [bool; 2],
     pub app_state: Vec<Fp>,
+    pub app: Option<EmbeddedAppMain>,
     pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
 }
 
@@ -913,6 +914,61 @@ impl<
     }
 }
 
+/// Proves a width-2 recursive cycle over two retained base proofs, optionally
+/// executing a new application in the recursive step.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_direct_n2_with_app<
+    A: StepApp,
+    const R: usize,
+    const WR: usize,
+    const BS: usize,
+    const W1S: usize,
+    const SS: usize,
+    const SR: usize,
+    const WS: usize,
+>(
+    bases: [&BaseCaseProof<A, R, BS>; 2],
+    previous_app_states: [Vec<Fp>; 2],
+    public: Vec<Fp>,
+    app: Option<EmbeddedAppMain>,
+) -> Result<DirectN2Proof<R, WR, W1S, SS, SR, WS>, DirectRecursiveBackendError> {
+    let vk0 = crate::api::wrap_verification_key_points(&bases[0].wrap_verifier);
+    let vk1 = crate::api::wrap_verification_key_points(&bases[1].wrap_verifier);
+    if vk0 != vk1 {
+        return Err(DirectRecursiveBackendError::InvalidProof);
+    }
+    let first = prepare_recursive_step::<A, R, WR, BS, W1S>(
+        bases[0],
+        vk0.clone(),
+        previous_app_states[0].clone(),
+    );
+    let second = prepare_recursive_step::<A, R, WR, BS, W1S>(
+        bases[1],
+        vk0.clone(),
+        previous_app_states[1].clone(),
+    );
+    let accumulators = [
+        first.verified_wrap_accumulator,
+        second.verified_wrap_accumulator,
+    ];
+    let challenges = [
+        first.finalized_step_challenges.clone(),
+        second.finalized_step_challenges.clone(),
+    ];
+    let prepared = prepare_recursive_step_width2::<WR, W1S, SS>(first, second, public);
+    let step = prove_recursive_step_width2_with_app::<R, WR, W1S, SS>(prepared, app);
+    let prepared_wrap =
+        prepare_recursive_wrap_width2::<A, R, BS, R, WR, W1S, SS, SR, WS>(bases, &step);
+    let wrap = prove_recursive_wrap(prepared_wrap);
+    Ok(DirectN2Proof {
+        step,
+        wrap,
+        wrap_vk_pts: vk0,
+        accumulators,
+        challenges,
+    })
+}
+
 impl<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>
     RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN>
 {
@@ -1040,43 +1096,12 @@ impl<
         public: &Vec<Fp>,
         witness: Self::Witness,
     ) -> Result<Self::Proof, Self::Error> {
-        let vk0 = crate::api::wrap_verification_key_points(&witness.bases[0].wrap_verifier);
-        let vk1 = crate::api::wrap_verification_key_points(&witness.bases[1].wrap_verifier);
-        if vk0 != vk1 {
-            return Err(DirectRecursiveBackendError::InvalidProof);
-        }
-        let first = prepare_recursive_step::<A, R, WR, BS, W1S>(
-            &witness.bases[0],
-            vk0.clone(),
-            witness.previous_app_states[0].clone(),
-        );
-        let second = prepare_recursive_step::<A, R, WR, BS, W1S>(
-            &witness.bases[1],
-            vk0.clone(),
-            witness.previous_app_states[1].clone(),
-        );
-        let accumulators = [
-            first.verified_wrap_accumulator,
-            second.verified_wrap_accumulator,
-        ];
-        let challenges = [
-            first.finalized_step_challenges.clone(),
-            second.finalized_step_challenges.clone(),
-        ];
-        let prepared = prepare_recursive_step_width2::<WR, W1S, SS>(first, second, public.clone());
-        let step = prove_recursive_step_width2::<R, WR, W1S, SS>(prepared);
-        let prepared_wrap = prepare_recursive_wrap_width2::<A, R, BS, R, WR, W1S, SS, SR, WS>(
+        prove_direct_n2_with_app::<A, R, WR, BS, W1S, SS, SR, WS>(
             [&witness.bases[0], &witness.bases[1]],
-            &step,
-        );
-        let wrap = prove_recursive_wrap(prepared_wrap);
-        Ok(DirectN2Proof {
-            step,
-            wrap,
-            wrap_vk_pts: vk0,
-            accumulators,
-            challenges,
-        })
+            witness.previous_app_states,
+            public.clone(),
+            None,
+        )
     }
 
     fn verify(&self, public: &Vec<Fp>, proof: &Self::Proof) -> Result<(), Self::Error> {
@@ -1711,6 +1736,21 @@ pub fn prove_recursive_step_width2<
 >(
     prepared: PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
 ) -> RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    prove_recursive_step_width2_with_app(prepared, None)
+}
+
+/// [`prove_recursive_step_width2`] with application constraints embedded in
+/// the width-2 step. The host-computed `app_state` remains the public digest
+/// input and the circuit proves that the application produces it.
+pub fn prove_recursive_step_width2_with_app<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+) -> RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
     let statement = prepared.statement;
     let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
     let circuit = RecursiveStepWidth2Circuit::<
@@ -1722,6 +1762,7 @@ pub fn prove_recursive_step_width2<
         proofs: prepared.proofs,
         dummy_slots: prepared.dummy_slots,
         app_state: prepared.app_state,
+        app,
         messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts,
     };
     let (mut prover, verifier) = circuit
@@ -3363,11 +3404,14 @@ impl<
             emul_comm: next_it.next().unwrap(),
             endomul_scalar_comm: next_it.next().unwrap(),
         };
-        let app_state = self
-            .app_state
-            .iter()
-            .map(|&value| sys.compute(loc!(), move |_| value))
-            .collect::<SnarkyResult<Vec<_>>>()?;
+        let app_state = match &self.app {
+            Some(app_main) => app_main(sys)?,
+            None => self
+                .app_state
+                .iter()
+                .map(|&value| sys.compute(loc!(), move |_| value))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         let digest = step_main::<Fp, PallasParameters>(
             sys,

@@ -269,6 +269,62 @@ fn recorded_n2_cycle_proves_and_verifies_standalone() {
 }
 
 #[test]
+fn recorded_n2_over_two_kept_bases_executes_the_new_application() {
+    std::thread::Builder::new()
+        .name("recorded-n2-over-kept-bases".to_string())
+        .stack_size(128 * 1024 * 1024)
+        .spawn(|| {
+            use pickles::{
+                recorded::{prove_recorded_base_case_keep, prove_recorded_n2_over_base_handles},
+                verify::verify_side_loaded_with_step_vk,
+            };
+
+            let first = prove_recorded_base_case_keep(
+                square_circuit(),
+                vec![Fp::from(3u64), Fp::from(9u64)],
+            )
+            .unwrap();
+            let second = prove_recorded_base_case_keep(
+                square_circuit(),
+                vec![Fp::from(4u64), Fp::from(16u64)],
+            )
+            .unwrap();
+            let app = RecordedCircuit {
+                aux_count: 3,
+                output: vec![LinComb::var(2)],
+                constraints: vec![RecordedConstraint::R1cs {
+                    a: LinComb::var(0),
+                    b: LinComb::var(1),
+                    c: LinComb::var(2),
+                }],
+            };
+            let proved = prove_recorded_n2_over_base_handles(
+                &first,
+                &second,
+                app,
+                vec![Fp::from(6u64), Fp::from(7u64), Fp::from(42u64)],
+            )
+            .unwrap();
+            assert_eq!(proved.app_state, [Fp::from(42u64)]);
+            let vk = verify_side_loaded_with_step_vk(
+                &proved.app_state,
+                Some(proved.dlog_plonk_index.as_slice()),
+                &proved.challenge_polynomial_commitments,
+                &proved.old_bulletproof_challenges,
+                &proved.proof,
+            )
+            .unwrap();
+            assert_eq!(
+                vk.proofs_verified,
+                pickles::composition_types::ProofsVerified::N2
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
     use pickles::{
         recorded::{prove_recorded_base_case_keep, prove_recorded_n1_over_keep},
