@@ -1410,6 +1410,27 @@ impl RecordedCompiledN1 {
             crate::api::WrapBranchData::from_step_verifier(&base.step_verifier.index, 0),
             crate::api::WrapBranchData::from_step_verifier(&step_indexes.1.index, 1),
         ];
+        // Compile the Wrap eagerly as part of `compile`, matching
+        // `Pickles.compile`: the first call to `prove` must only generate a
+        // witness and run the two provers, never discover another index.
+        let (bootstrap_step, step_indexes) =
+            crate::recursive_step::prove_prepared_recursive_step(
+                prepared,
+                Some(main),
+                Some(step_indexes),
+            );
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(base, &bootstrap_step);
+        prepared_wrap.data.which_branch = 1;
+        prepared_wrap.data.branches = wrap_branches.clone();
+        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
         if profile {
             let step_domain = step_indexes.1.index.domain.log_size_of_group;
             eprintln!(
@@ -1423,7 +1444,7 @@ impl RecordedCompiledN1 {
             circuit,
             wrap_branches,
             step_indexes: Some(step_indexes),
-            wrap_indexes: None,
+            wrap_indexes: Some(wrap_indexes),
         })
     }
 
