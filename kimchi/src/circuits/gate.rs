@@ -123,7 +123,7 @@ pub enum CircuitGateError {
 pub type CircuitGateResult<T> = core::result::Result<T, CircuitGateError>;
 
 #[serde_as]
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// A single gate in a circuit.
 pub struct CircuitGate<F: PrimeField> {
     /// type of the gate

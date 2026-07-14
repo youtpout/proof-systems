@@ -63,6 +63,69 @@ impl<Circuit> ProverIndexWrapper<Circuit>
 where
     Circuit: SnarkyCircuit,
 {
+    /// Reattaches a previously serialized Kimchi index to a freshly compiled
+    /// Snarky witness generator. The exact constraint system is checked before
+    /// the cached commitments are accepted, so cache data cannot substitute a
+    /// different circuit.
+    pub fn from_cached_index(
+        circuit: Circuit,
+        minimum_domain_log2: u32,
+        index: ProverIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
+    ) -> Result<(Self, VerifierIndexWrapper<Circuit>), String>
+    where
+        <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
+    {
+        let mut compiled_circuit = compile(circuit).map_err(|err| err.to_string())?;
+        if minimum_domain_log2 > 0 {
+            let target_domain_size = 1usize << minimum_domain_log2;
+            let target_gate_count =
+                target_domain_size - usize::try_from(ZK_ROWS_BY_DEFAULT).unwrap();
+            if compiled_circuit.gates.len() < target_gate_count {
+                let pad = target_gate_count - compiled_circuit.gates.len();
+                compiled_circuit.gates.extend(
+                    (compiled_circuit.gates.len()..target_gate_count).map(|row| {
+                        CircuitGate::zero(std::array::from_fn(|column| Wire {
+                            row,
+                            col: WIRES[column],
+                        }))
+                    }),
+                );
+                compiled_circuit
+                    .gate_labels
+                    .extend(std::iter::repeat_n(String::from("pad"), pad));
+            }
+        }
+        let expected_cs = ConstraintSystem::create(compiled_circuit.gates.clone())
+            .public(compiled_circuit.public_input_size)
+            .prev_challenges(Circuit::PREV_CHALLENGES)
+            .build()
+            .map_err(|err| format!("failed to rebuild cached constraint system: {err}"))?;
+        if index.cs.public != expected_cs.public
+            || index.cs.prev_challenges != expected_cs.prev_challenges
+            || index.cs.domain.d1.log_size_of_group
+                != expected_cs.domain.d1.log_size_of_group
+            || index.cs.domain.d1.group_gen != expected_cs.domain.d1.group_gen
+            || index.cs.gates != expected_cs.gates
+        {
+            return Err("cached prover index does not match the compiled circuit".into());
+        }
+        if minimum_domain_log2 > 0
+            && index.cs.domain.d1.log_size_of_group < minimum_domain_log2
+        {
+            return Err("cached prover index has a smaller domain than requested".into());
+        }
+        let verifier_index = index.verifier_index();
+        Ok((
+            Self {
+                compiled_circuit,
+                index,
+            },
+            VerifierIndexWrapper {
+                index: verifier_index,
+            },
+        ))
+    }
+
     /// Debug-only: per-gate emission labels aligned 1:1 with the compiled
     /// gates (and hence with `self.index.cs.gates`), for parity tooling.
     pub fn gate_labels(&self) -> &[String] {

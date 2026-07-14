@@ -2235,3 +2235,17 @@ change.
 Le profil N1 natif passe de **9,386 s** à **9,155 s** sur la compilation froide
 mesurée, avec Step/Wrap et preuve standalone inchangés. Cette optimisation
 évite surtout les allocations répétées lors des chaînes récursives.
+
+## Jalon 2026-07-14 — validation sûre des index restaurés
+
+En préparation du cache persistant, Snarky sait maintenant rattacher un index
+désérialisé à son générateur de witness seulement après avoir recompilé et
+comparé exactement public inputs, récursion, domaine, gates, wiring et
+coefficients. Un test positif prouve avec l'index restauré et un test négatif
+rejette un coefficient de gate modifié.
+
+L'encodage persistant du witness de compilation Wrap doit utiliser un format
+canonique dédié : la tentative serde directe a été retirée, car les champs et
+domaines Arkworks ne l'implémentent volontairement pas. Ne pas contourner cette
+propriété avec une sérialisation mémoire brute ; restaurer les index seuls et
+reconstruire les données auxiliaires est la voie retenue.
