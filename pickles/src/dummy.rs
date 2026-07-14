@@ -9,15 +9,41 @@
 
 use ark_ff::PrimeField;
 use kimchi::proof::{PointEvaluations, ProofEvaluations};
+use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
+use std::sync::OnceLock;
 
 use crate::all_evals::AllEvals;
 use crate::ro::Ro;
 
 /// The dummy IPA challenges of one side: raw 128-bit prechallenges and their
 /// endo field images (`Dummy.Ipa.{Step,Wrap}.challenges[_computed]`).
+#[derive(Clone)]
 pub struct DummyIpa<F: PrimeField> {
     pub prechallenges: Vec<F>,
     pub challenges_computed: Vec<F>,
+}
+
+/// Protocol-fixed Pasta dummy challenges, initialized once per process.
+pub fn pasta_ipa_wrap_and_step() -> &'static (DummyIpa<Fq>, DummyIpa<Fp>) {
+    static DUMMY: OnceLock<(DummyIpa<Fq>, DummyIpa<Fp>)> = OnceLock::new();
+    DUMMY.get_or_init(|| {
+        use kimchi::curve::KimchiCurve;
+        ipa_wrap_and_step::<Fq, Fp>(
+            <Pallas as KimchiCurve<{ crate::common::FULL_ROUNDS }>>::endos().1,
+            <Vesta as KimchiCurve<{ crate::common::FULL_ROUNDS }>>::endos().1,
+        )
+    })
+}
+
+/// Commitment to the protocol-fixed dummy Wrap challenge polynomial.
+pub fn pasta_dummy_wrap_sg() -> Pallas {
+    static SG: OnceLock<Pallas> = OnceLock::new();
+    *SG.get_or_init(|| {
+        compute_sg(
+            crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS).as_ref(),
+            &pasta_ipa_wrap_and_step().0.challenges_computed,
+        )
+    })
 }
 
 /// One challenge-polynomial accumulator entry: the commitment to `b_poly` and

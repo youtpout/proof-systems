@@ -2222,3 +2222,16 @@ compilation. Le bénéfice est surtout une frontière JS/WASM sans chaînes ni
 allocations par élément pour les circuits à gros witness. Validation : build
 NAPI/WASM, preuve N0/N1 complète sur AddZkProgram, smoke o1js et rejet explicite
 d'un bloc Fp non canonique.
+
+## Jalon 2026-07-14 — pré-calculs Pasta immuables partagés
+
+Les challenges IPA dummy Wrap/Step et leur commitment `sg` sont désormais
+initialisés une seule fois avec `OnceLock`. Les chemins N1 padded et le witness
+du Wrap réutilisent aussi le SRS Tock partagé au lieu de recréer 2^15 points
+dans plusieurs gadgets. Les valeurs exposées sont immuables et restent dérivées
+des mêmes constantes de protocole ; aucun transcript ni entrée publique ne
+change.
+
+Le profil N1 natif passe de **9,386 s** à **9,155 s** sur la compilation froide
+mesurée, avec Step/Wrap et preuve standalone inchangés. Cette optimisation
+évite surtout les allocations répétées lors des chaînes récursives.

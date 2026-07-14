@@ -1537,10 +1537,10 @@ fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
         crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
     };
     let dummy_wrap_raw_chals: Vec<Vec<Fq>> = {
-        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let (wrap, _) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
-        vec![wrap.prechallenges.clone(); crate::common::MAX_PROOFS_VERIFIED]
+        vec![
+            crate::dummy::pasta_ipa_wrap_and_step().0.prechallenges.clone();
+            crate::common::MAX_PROOFS_VERIFIED
+        ]
     };
     let sg_pt = step_proof.proof.sg;
     let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(

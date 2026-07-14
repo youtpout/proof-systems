@@ -1731,17 +1731,13 @@ pub fn prepare_recursive_step_n1<
     real: PreparedRecursiveStep<WIDTH1_INPUT_LEN>,
     app_state: Vec<Fp>,
 ) -> PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
-    use poly_commitment::{commitment::PolyComm, ipa::SRS, SRS as _};
+    use poly_commitment::commitment::PolyComm;
 
     assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
     assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
 
-    let (dummy_wrap, dummy_step) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(
-        <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
-        <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
-    );
-    let wrap_srs = SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
-    let dummy_wrap_sg = crate::dummy::compute_sg(&wrap_srs, &dummy_wrap.challenges_computed);
+    let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
+    let dummy_wrap_sg = crate::dummy::pasta_dummy_wrap_sg();
     let dummy_accumulator = (dummy_wrap_sg.x, dummy_wrap_sg.y);
 
     let combined_digest = crate::hash_messages::hash_messages_for_next_step_proof_ref(
@@ -1767,7 +1763,7 @@ pub fn prepare_recursive_step_n1<
     let step_srs = SRS::<Vesta>::create(1 << crate::common::TICK_ROUNDS);
     let dummy_step_sg = crate::dummy::compute_sg(&step_srs, &dummy_step.challenges_computed);
     let dummy_recursion = kimchi::proof::RecursionChallenge {
-        chals: dummy_step.challenges_computed,
+        chals: dummy_step.challenges_computed.clone(),
         comm: PolyComm {
             chunks: vec![dummy_step_sg],
         },
@@ -1775,7 +1771,7 @@ pub fn prepare_recursive_step_n1<
     let messages_for_next_step_proof = crate::mina_bin_prot::StepMessagesForNextProofV1 {
         challenge_polynomial_commitments: vec![dummy_accumulator, real.verified_wrap_accumulator],
         old_bulletproof_challenges: vec![
-            dummy_step.prechallenges,
+            dummy_step.prechallenges.clone(),
             real.messages_for_next_step_proof.old_bulletproof_challenges[0].clone(),
         ],
     };
@@ -2013,10 +2009,10 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     let next_wrap_dummy_challenges =
         padded_wrap_challenges[..crate::common::MAX_PROOFS_VERIFIED - new_chals.len()].to_vec();
     let next_wrap_dummy_raw_challenges = {
-        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
-        let (wrap, _) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(endo_wrap, endo_step);
-        vec![wrap.prechallenges; next_wrap_dummy_challenges.len()]
+        vec![
+            crate::dummy::pasta_ipa_wrap_and_step().0.prechallenges.clone();
+            next_wrap_dummy_challenges.len()
+        ]
     };
     let msgs_wrap_digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
         Pallas::sponge_params(),
@@ -3344,19 +3340,15 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         h_generator: h.clone(),
     };
     let (next_step_accumulator, next_step_challenges) = if dummy_slot {
-        use poly_commitment::SRS as _;
-        let (dummy_wrap, dummy_step) = crate::dummy::ipa_wrap_and_step::<Fq, Fp>(
-            <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
-            <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
-        );
-        let srs = poly_commitment::ipa::SRS::<Pallas>::create(1 << crate::common::TOCK_ROUNDS);
-        let sg = crate::dummy::compute_sg(&srs, &dummy_wrap.challenges_computed);
+        let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
+        let sg = crate::dummy::pasta_dummy_wrap_sg();
         (
             cpt((sg.x, sg.y)),
             Some(
                 dummy_step
                     .challenges_computed
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(FieldVar::constant)
                     .collect(),
             ),
