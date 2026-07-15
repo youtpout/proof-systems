@@ -582,6 +582,12 @@ pub trait SnarkyCircuit: Sized {
     {
         let started = crate::wasm_instant::Instant::now();
         let mut compiled_circuit = compile(self)?;
+        if std::env::var_os("SNARKY_PROFILE_INDEX").is_some() {
+            eprintln!(
+                "  [index detail] raw gates={} (pre-padding)",
+                compiled_circuit.gates.len()
+            );
+        }
         if minimum_domain_log2 > 0 {
             let target_domain_size = 1usize << minimum_domain_log2;
             let target_gate_count =
@@ -656,9 +662,10 @@ pub trait SnarkyCircuit: Sized {
         let verifier_index = prover_index.verifier_index();
         if std::env::var_os("SNARKY_PROFILE_INDEX").is_some() {
             eprintln!(
-                "  [index detail] create={:.0?} verifier_index={:.0?}",
+                "  [index detail] create={:.0?} verifier_index={:.0?} domain=2^{} ",
                 t_vi - t_create,
-                t_vi.elapsed()
+                t_vi.elapsed(),
+                prover_index.cs.domain.d1.log_size_of_group,
             );
         }
         let prover_index_at = crate::wasm_instant::Instant::now();

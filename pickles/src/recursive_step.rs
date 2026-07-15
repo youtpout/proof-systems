@@ -2316,6 +2316,24 @@ pub fn compile_prepared_recursive_step_width2<
     prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
     app: Option<EmbeddedAppMain>,
 ) -> RecursiveStepWidth2Indexes<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    compile_prepared_recursive_step_width2_with_min_domain(prepared, app, 0)
+}
+
+/// [`compile_prepared_recursive_step_width2`] with an explicit minimum
+/// domain. The per-method N2 flow uses the natural domain (jsoo's width-2
+/// merge step fits 2^15; forcing 2^16 doubled the prover cost). The legacy
+/// program flow still pins the full-SRS domain until the shared-wrap
+/// migration revisits its assumptions.
+pub fn compile_prepared_recursive_step_width2_with_min_domain<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+    minimum_domain_log2: u32,
+) -> RecursiveStepWidth2Indexes<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
     RecursiveStepWidth2Circuit::<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN, 2> {
         proofs: prepared.proofs.clone(),
         dummy_slots: prepared.dummy_slots,
@@ -2324,7 +2342,7 @@ pub fn compile_prepared_recursive_step_width2<
         messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
     }
     .compile_to_indexes_with_domain_and_srs(
-        crate::common::TICK_ROUNDS as u32,
+        minimum_domain_log2,
         Some(crate::common::TICK_ROUNDS as u32),
     )
     .unwrap()

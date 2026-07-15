@@ -2007,6 +2007,13 @@ impl RecordedCompiledN2 {
             &prepared,
             step_indexes.1.clone(),
         );
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            eprintln!(
+                "pickles compile N2: step domain=2^{} rows={}",
+                step_indexes.1.index.domain.log_size_of_group,
+                step_indexes.0.index.cs.gates.len(),
+            );
+        }
         let wrap_branches = vec![crate::api::WrapBranchData::from_step_verifier(
             &step_indexes.1.index,
             2,
@@ -2091,8 +2098,24 @@ impl RecordedCompiledN2 {
             RECORDED_N1_STEP_STMT_LEN,
             RECORDED_N2_STEP_STMT_LEN,
         >(first_prepared, second_prepared, app_state);
-        let (step, step_indexes) =
-            crate::recursive_step::prove_prepared_recursive_step_width2(prepared, Some(main), None);
+        let step_indexes = crate::recursive_step::compile_prepared_recursive_step_width2::<
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(&prepared, Some(main.clone()));
+        let (step, step_indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
+            prepared,
+            Some(main),
+            Some(step_indexes),
+        );
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            eprintln!(
+                "pickles compile N2: step domain=2^{} rows={}",
+                step_indexes.1.index.domain.log_size_of_group,
+                step_indexes.0.index.cs.gates.len(),
+            );
+        }
         let wrap_branches = vec![crate::api::WrapBranchData::from_step_verifier(
             &step_indexes.1.index,
             2,
@@ -2398,12 +2421,17 @@ fn compile_recorded_program_step_branch(
             let witness = branch.witness.clone();
             let main: crate::recursive_step::EmbeddedAppMain =
                 std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
-            crate::recursive_step::compile_prepared_recursive_step_width2::<
+            // TODO(shared-wrap): natural domain once the wrap selects the
+            // x_hat Lagrange commitments per branch (OCaml wrap_verifier's
+            // `lagrange ~domain:(which_branch, step_domains)`); the shared
+            // wrap currently embeds a single Lagrange set, so every program
+            // step must share one domain.
+            crate::recursive_step::compile_prepared_recursive_step_width2_with_min_domain::<
                 RECORDED_N1_STEP_ROUNDS,
                 RECORDED_BASE_WRAP_ROUNDS,
                 RECORDED_N1_STEP_STMT_LEN,
                 RECORDED_N2_STEP_STMT_LEN,
-            >(&prepared, Some(main))
+            >(&prepared, Some(main), crate::common::TICK_ROUNDS as u32)
         }
     }
 }
