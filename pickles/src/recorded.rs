@@ -1376,7 +1376,186 @@ pub struct RecordedCompiledN1 {
 }
 
 impl RecordedCompiledN1 {
+    /// Digest of every compiled index (step, wrap, stable step, stable wrap)
+    /// plus the branch VK data. Exposed for the proof-free/bootstrap-proof
+    /// equivalence test.
+    #[doc(hidden)]
+    pub fn index_fingerprint_for_tests(&self) -> Vec<String> {
+        type VestaBase = mina_poseidon::sponge::DefaultFqSponge<
+            mina_curves::pasta::VestaParameters,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >;
+        type PallasBase = mina_poseidon::sponge::DefaultFqSponge<
+            mina_curves::pasta::PallasParameters,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >;
+        let mut out = vec![format!("{:?}", self.wrap_branches)];
+        if let Some((_, v)) = &self.step_indexes {
+            out.push(format!("{}", v.index.digest::<VestaBase>()));
+        }
+        if let Some((_, v)) = &self.wrap_indexes {
+            out.push(format!("{}", v.index.digest::<PallasBase>()));
+        }
+        if let Some((_, v)) = &self.stable_step_indexes {
+            out.push(format!("{}", v.index.digest::<VestaBase>()));
+        }
+        if let Some((_, v)) = &self.stable_wrap_indexes {
+            out.push(format!("{}", v.index.digest::<PallasBase>()));
+        }
+        out
+    }
+
     pub fn compile(
+        previous: &RecordedProofHandle,
+        circuit: RecordedCircuit,
+        witness: Vec<Fp>,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness.len() != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let RecordedProofInner::R16(base) = &previous.inner else {
+            return Err(RecordedProveError::RecursiveBackend(
+                crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
+            ));
+        };
+        let profile = std::env::var_os("PICKLES_PROFILE").is_some();
+        let started = snarky::wasm_instant::Instant::now();
+        let new_state = circuit.state(&witness);
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        let main: crate::recursive_step::EmbeddedAppMain =
+            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
+        let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            base,
+            wrap_vk_pts,
+            previous.app_state.clone(),
+            new_state.clone(),
+        );
+        let prepared_at = snarky::wasm_instant::Instant::now();
+        let step_indexes = crate::recursive_step::compile_prepared_recursive_step::<
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(&prepared, Some(main.clone()));
+        let step_compiled_at = snarky::wasm_instant::Instant::now();
+        let wrap_branches = vec![
+            crate::api::WrapBranchData::from_step_verifier(&base.step_verifier.index, 0),
+            crate::api::WrapBranchData::from_step_verifier(&step_indexes.1.index, 1),
+        ];
+        // Compile the Wrap eagerly as part of `compile`, matching
+        // `Pickles.compile`: the first call to `prove` must only generate a
+        // witness and run the two provers, never discover another index.
+        let bootstrap_step =
+            crate::recursive_step::dummy_recursive_step_proof(&prepared, step_indexes.1.clone());
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(base, &bootstrap_step);
+        prepared_wrap.data.which_branch = 1;
+        prepared_wrap.data.branches = wrap_branches.clone();
+        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        let bootstrap_wrap =
+            crate::recursive_step::dummy_recursive_wrap_proof(&prepared_wrap, wrap_indexes.1.clone());
+        // The next prepare asserts `sg == commit(b_poly(chals))` over the
+        // challenges materialized in the wrap statement; make the donor
+        // consistent (values stay witness-only either way).
+        let mut bootstrap_step = bootstrap_step;
+        bootstrap_step.proof.proof.sg = crate::dummy::compute_sg(
+            bootstrap_step.verifier.index.srs(),
+            &crate::recursive_step::statement_challenges_to_field::<RECORDED_N1_STEP_ROUNDS>(
+                &prepared_wrap.statement,
+            ),
+        );
+        let bootstrap_cycle = crate::recursive_step::RecursiveCycleProof {
+            step: bootstrap_step,
+            wrap: bootstrap_wrap,
+        };
+
+        // The first transition verifies a base proof. Later transitions
+        // verify the stable recursive shape, which has a distinct Step
+        // constraint system even though its domains are identical. Compile
+        // that second shape now as well so no later prove call discovers an
+        // index lazily.
+        let stable_wrap_vk =
+            crate::api::wrap_verification_key_points(&bootstrap_cycle.wrap.verifier);
+        let stable_prepared = crate::recursive_step::prepare_next_recursive_step_with_state::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            &bootstrap_cycle,
+            stable_wrap_vk,
+            new_state.clone(),
+            new_state,
+        );
+        let stable_step_indexes = crate::recursive_step::compile_prepared_recursive_step::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(&stable_prepared, Some(main.clone()));
+        let stable_step = crate::recursive_step::dummy_recursive_step_proof(
+            &stable_prepared,
+            stable_step_indexes.1.clone(),
+        );
+        let _ = main;
+        let stable_prepared_wrap = crate::recursive_step::prepare_next_recursive_wrap::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_WRAP_STMT_LEN,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_WRAP_STMT_LEN,
+        >(&bootstrap_cycle, &stable_step);
+        let stable_wrap_indexes =
+            crate::recursive_step::compile_prepared_recursive_wrap(&stable_prepared_wrap);
+        if profile {
+            let step_domain = step_indexes.1.index.domain.log_size_of_group;
+            eprintln!(
+                "pickles compile N1: domain=2^{step_domain} prepare={:?} step_index={:?} total={:?}",
+                prepared_at - started,
+                step_compiled_at - prepared_at,
+                started.elapsed(),
+            );
+        }
+        Ok(Self {
+            circuit,
+            wrap_branches,
+            step_indexes: Some(step_indexes),
+            wrap_indexes: Some(wrap_indexes),
+            stable_step_indexes: Some(stable_step_indexes),
+            stable_wrap_indexes: Some(stable_wrap_indexes),
+        })
+    }
+
+    /// The historical N1 compile that ran three bootstrap proofs. Kept as
+    /// the reference the proof-free `compile` is tested against.
+    #[doc(hidden)]
+    pub fn compile_with_bootstrap_proofs_reference(
         previous: &RecordedProofHandle,
         circuit: RecordedCircuit,
         witness: Vec<Fp>,
@@ -1673,7 +1852,123 @@ pub struct RecordedCompiledN2 {
 }
 
 impl RecordedCompiledN2 {
+    /// See [`RecordedCompiledN1::index_fingerprint_for_tests`].
+    #[doc(hidden)]
+    pub fn index_fingerprint_for_tests(&self) -> Vec<String> {
+        type VestaBase = mina_poseidon::sponge::DefaultFqSponge<
+            mina_curves::pasta::VestaParameters,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >;
+        type PallasBase = mina_poseidon::sponge::DefaultFqSponge<
+            mina_curves::pasta::PallasParameters,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >;
+        let mut out = vec![format!("{:?}", self.wrap_branches)];
+        if let Some((_, v)) = &self.step_indexes {
+            out.push(format!("{}", v.index.digest::<VestaBase>()));
+        }
+        if let Some((_, v)) = &self.wrap_indexes {
+            out.push(format!("{}", v.index.digest::<PallasBase>()));
+        }
+        out
+    }
+
     pub fn compile(
+        first: &RecordedProofHandle,
+        second: &RecordedProofHandle,
+        circuit: RecordedCircuit,
+        witness: Vec<Fp>,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness.len() != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let (RecordedProofInner::R16(first_base), RecordedProofInner::R16(second_base)) =
+            (&first.inner, &second.inner)
+        else {
+            return Err(RecordedProveError::RecursiveBackend(
+                crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
+            ));
+        };
+        let app_state = circuit.state(&witness);
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        let main: crate::recursive_step::EmbeddedAppMain =
+            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&first_base.wrap_verifier);
+        let first_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            first_base,
+            wrap_vk_pts.clone(),
+            first.app_state.clone(),
+            app_state.clone(),
+        );
+        let second_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            second_base,
+            wrap_vk_pts,
+            second.app_state.clone(),
+            app_state.clone(),
+        );
+        let prepared = crate::recursive_step::prepare_recursive_step_width2::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(first_prepared, second_prepared, app_state);
+        let step_indexes = crate::recursive_step::compile_prepared_recursive_step_width2::<
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(&prepared, Some(main));
+        let step = crate::recursive_step::dummy_recursive_step_width2_proof(
+            &prepared,
+            step_indexes.1.clone(),
+        );
+        let wrap_branches = vec![crate::api::WrapBranchData::from_step_verifier(
+            &step_indexes.1.index,
+            2,
+        )];
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_width2::<
+            RecordedApp,
+            16,
+            40,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+            RECORDED_N2_STEP_ROUNDS,
+            RECORDED_N2_WRAP_STMT_LEN,
+        >([first_base, second_base], &step);
+        prepared_wrap.data.branches = wrap_branches.clone();
+        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        Ok(Self {
+            circuit,
+            wrap_branches,
+            step_indexes: Some(step_indexes),
+            wrap_indexes: Some(wrap_indexes),
+        })
+    }
+
+    /// The historical N2 compile that ran a bootstrap width-2 proof. Kept
+    /// as the reference the proof-free `compile` is tested against.
+    #[doc(hidden)]
+    pub fn compile_with_bootstrap_proofs_reference(
         first: &RecordedProofHandle,
         second: &RecordedProofHandle,
         circuit: RecordedCircuit,

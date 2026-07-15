@@ -615,3 +615,53 @@ fn program_single_pass_matches_multipass_reference() {
         "shared wrap verification key diverged from the multi-pass reference"
     );
 }
+
+/// The proof-free N1 compile (dummy shape donors, OCaml-style) must produce
+/// exactly the same compiled indexes as the historical variant that ran three
+/// bootstrap proofs.
+#[test]
+fn n1_proof_free_compile_matches_bootstrap_reference() {
+    use pickles::recorded::{RecordedCompiledBase, RecordedCompiledN1};
+    let circuit = square_circuit();
+    let witness = vec![Fp::from(6u64), Fp::from(36u64)];
+    let mut base = RecordedCompiledBase::compile(circuit.clone(), witness.clone()).expect("base");
+    let previous = base.prove_keep(witness.clone()).expect("base proof");
+    let proof_free =
+        RecordedCompiledN1::compile(&previous, circuit.clone(), witness.clone()).expect("N1");
+    let reference = RecordedCompiledN1::compile_with_bootstrap_proofs_reference(
+        &previous,
+        circuit.clone(),
+        witness.clone(),
+    )
+    .expect("N1 reference");
+    assert_eq!(
+        proof_free.index_fingerprint_for_tests(),
+        reference.index_fingerprint_for_tests(),
+        "N1 compiled indexes diverged from the bootstrap-proof reference"
+    );
+}
+
+/// Same equivalence for the width-2 (N2) compile.
+#[test]
+fn n2_proof_free_compile_matches_bootstrap_reference() {
+    use pickles::recorded::{RecordedCompiledBase, RecordedCompiledN2};
+    let circuit = square_circuit();
+    let witness = vec![Fp::from(6u64), Fp::from(36u64)];
+    let mut base = RecordedCompiledBase::compile(circuit.clone(), witness.clone()).expect("base");
+    let previous = base.prove_keep(witness.clone()).expect("base proof");
+    let proof_free =
+        RecordedCompiledN2::compile(&previous, &previous, circuit.clone(), witness.clone())
+            .expect("N2");
+    let reference = RecordedCompiledN2::compile_with_bootstrap_proofs_reference(
+        &previous,
+        &previous,
+        circuit.clone(),
+        witness.clone(),
+    )
+    .expect("N2 reference");
+    assert_eq!(
+        proof_free.index_fingerprint_for_tests(),
+        reference.index_fingerprint_for_tests(),
+        "N2 compiled indexes diverged from the bootstrap-proof reference"
+    );
+}

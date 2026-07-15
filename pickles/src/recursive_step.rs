@@ -4918,3 +4918,214 @@ mod tests {
         ));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time proof donors (OCaml `Pickles.compile` never proves)
+// ---------------------------------------------------------------------------
+
+/// A proof-SHAPED kimchi proof whose values are protocol-meaningless.
+///
+/// OCaml Pickles never runs a prover during `compile`: index compilation only
+/// needs proof-shaped witness donors, because proof values land exclusively
+/// in witness slots — never in circuit constants (the invariant established
+/// and tested by `program_single_pass_matches_multipass_reference`). The
+/// commitments are small generator multiples (valid curve points, so all
+/// downstream EC math is total) and the scalars are small nonzero constants
+/// (so transcript/inversion math is non-degenerate).
+fn dummy_kimchi_proof_vesta(
+    rounds: usize,
+    t_chunks: usize,
+    prev_challenges: Vec<kimchi::proof::RecursionChallenge<Vesta>>,
+) -> kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    let g = Vesta::generator().into_group();
+    let pt = |k: u64| (g * Fp::from(k + 2)).into_affine();
+    let comm = |k: u64| PolyComm::new(vec![pt(k)]);
+    let ev = |k: u64| kimchi::proof::PointEvaluations {
+        zeta: vec![Fp::from(2 * k + 3)],
+        zeta_omega: vec![Fp::from(2 * k + 5)],
+    };
+    kimchi::proof::ProverProof {
+        commitments: kimchi::proof::ProverCommitments {
+            w_comm: std::array::from_fn(|i| comm(i as u64)),
+            z_comm: comm(20),
+            t_comm: PolyComm::new((0..t_chunks).map(|i| pt(30 + i as u64)).collect()),
+            lookup: None,
+        },
+        proof: IpaProof {
+            lr: (0..rounds)
+                .map(|i| (pt(50 + 2 * i as u64), pt(51 + 2 * i as u64)))
+                .collect(),
+            delta: pt(100),
+            z1: Fp::from(7u64),
+            z2: Fp::from(11u64),
+            sg: pt(101),
+        },
+        evals: kimchi::proof::ProofEvaluations {
+            public: Some(ev(200)),
+            w: std::array::from_fn(|i| ev(210 + i as u64)),
+            z: ev(230),
+            s: std::array::from_fn(|i| ev(240 + i as u64)),
+            coefficients: std::array::from_fn(|i| ev(250 + i as u64)),
+            generic_selector: ev(270),
+            poseidon_selector: ev(271),
+            complete_add_selector: ev(272),
+            mul_selector: ev(273),
+            emul_selector: ev(274),
+            endomul_scalar_selector: ev(275),
+            range_check0_selector: None,
+            range_check1_selector: None,
+            foreign_field_add_selector: None,
+            foreign_field_mul_selector: None,
+            xor_selector: None,
+            rot_selector: None,
+            lookup_aggregation: None,
+            lookup_table: None,
+            lookup_sorted: std::array::from_fn(|_| None),
+            runtime_lookup_table: None,
+            runtime_lookup_table_selector: None,
+            xor_lookup_selector: None,
+            lookup_gate_lookup_selector: None,
+            range_check_lookup_selector: None,
+            foreign_field_mul_lookup_selector: None,
+        },
+        ft_eval1: Fp::from(13u64),
+        prev_challenges,
+    }
+}
+
+/// Pallas twin of [`dummy_kimchi_proof_vesta`].
+fn dummy_kimchi_proof_pallas(
+    rounds: usize,
+    t_chunks: usize,
+    prev_challenges: Vec<kimchi::proof::RecursionChallenge<Pallas>>,
+) -> kimchi::proof::ProverProof<Pallas, IpaProof<Pallas, FULL_ROUNDS>, FULL_ROUNDS> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    let g = Pallas::generator().into_group();
+    let pt = |k: u64| (g * Fq::from(k + 2)).into_affine();
+    let comm = |k: u64| PolyComm::new(vec![pt(k)]);
+    let ev = |k: u64| kimchi::proof::PointEvaluations {
+        zeta: vec![Fq::from(2 * k + 3)],
+        zeta_omega: vec![Fq::from(2 * k + 5)],
+    };
+    kimchi::proof::ProverProof {
+        commitments: kimchi::proof::ProverCommitments {
+            w_comm: std::array::from_fn(|i| comm(i as u64)),
+            z_comm: comm(20),
+            t_comm: PolyComm::new((0..t_chunks).map(|i| pt(30 + i as u64)).collect()),
+            lookup: None,
+        },
+        proof: IpaProof {
+            lr: (0..rounds)
+                .map(|i| (pt(50 + 2 * i as u64), pt(51 + 2 * i as u64)))
+                .collect(),
+            delta: pt(100),
+            z1: Fq::from(7u64),
+            z2: Fq::from(11u64),
+            sg: pt(101),
+        },
+        evals: kimchi::proof::ProofEvaluations {
+            public: Some(ev(200)),
+            w: std::array::from_fn(|i| ev(210 + i as u64)),
+            z: ev(230),
+            s: std::array::from_fn(|i| ev(240 + i as u64)),
+            coefficients: std::array::from_fn(|i| ev(250 + i as u64)),
+            generic_selector: ev(270),
+            poseidon_selector: ev(271),
+            complete_add_selector: ev(272),
+            mul_selector: ev(273),
+            emul_selector: ev(274),
+            endomul_scalar_selector: ev(275),
+            range_check0_selector: None,
+            range_check1_selector: None,
+            foreign_field_add_selector: None,
+            foreign_field_mul_selector: None,
+            xor_selector: None,
+            rot_selector: None,
+            lookup_aggregation: None,
+            lookup_table: None,
+            lookup_sorted: std::array::from_fn(|_| None),
+            runtime_lookup_table: None,
+            runtime_lookup_table_selector: None,
+            xor_lookup_selector: None,
+            lookup_gate_lookup_selector: None,
+            range_check_lookup_selector: None,
+            foreign_field_mul_lookup_selector: None,
+        },
+        ft_eval1: Fq::from(13u64),
+        prev_challenges,
+    }
+}
+
+/// Assembles a [`RecursiveStepProof`] shape donor from prepared data and a
+/// compiled verifier index, without running the prover. See
+/// [`dummy_kimchi_proof_vesta`] for why this is sound at compile time.
+pub fn dummy_recursive_step_proof<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStep<PUBLIC_INPUT_LEN>,
+    verifier: snarky::api::VerifierIndexWrapper<
+        RecursiveStepCircuit<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN>,
+    >,
+) -> RecursiveStepProof<PREV_ROUNDS, WRAP_ROUNDS, PUBLIC_INPUT_LEN> {
+    RecursiveStepProof {
+        statement: prepared.statement,
+        proof: dummy_kimchi_proof_vesta(
+            crate::common::TICK_ROUNDS,
+            7,
+            vec![prepared.recursion.clone()],
+        ),
+        verifier,
+        verified_wrap_accumulator: prepared.verified_wrap_accumulator,
+        finalized_step_challenges: prepared.finalized_step_challenges.clone(),
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+        messages_for_next_step_proof: prepared.messages_for_next_step_proof.clone(),
+    }
+}
+
+/// Assembles a [`RecursiveWrapProof`] shape donor from prepared data and a
+/// compiled verifier index, without running the prover.
+pub fn dummy_recursive_wrap_proof<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
+    prepared: &PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
+    verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<STEP_ROUNDS, WRAP_STMT_LEN>>,
+) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
+    RecursiveWrapProof {
+        statement: prepared.statement,
+        stable_statement: prepared.stable_statement.clone(),
+        proof: dummy_kimchi_proof_pallas(
+            crate::common::TOCK_ROUNDS,
+            7,
+            prepared.recursions.clone(),
+        ),
+        verifier,
+        next_wrap_old_challenges: prepared.next_wrap_old_challenges.clone(),
+        next_wrap_dummy_challenges: prepared.next_wrap_dummy_challenges.clone(),
+    }
+}
+
+/// Width-2 twin of [`dummy_recursive_step_proof`].
+pub fn dummy_recursive_step_width2_proof<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    verifier: snarky::api::VerifierIndexWrapper<
+        RecursiveStepWidth2Circuit<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    >,
+) -> RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
+    RecursiveStepWidth2Proof {
+        statement: prepared.statement,
+        proof: dummy_kimchi_proof_vesta(
+            crate::common::TICK_ROUNDS,
+            7,
+            prepared.recursions.to_vec(),
+        ),
+        verifier,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+        messages_for_next_step_proof: prepared.messages_for_next_step_proof.clone(),
+    }
+}
