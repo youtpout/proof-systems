@@ -10,8 +10,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-num-bigint.workspace = true
-num-traits = "0.2"
 ark-ec.workspace = true
 ark-ff.workspace = true
 ark-poly.workspace = true
@@ -20,16 +18,18 @@ base64.workspace = true
 blake2.workspace = true
 groupmap.workspace = true
 kimchi.workspace = true
-mina-curves.workspace = true
 mina-base58.workspace = true
+mina-curves.workspace = true
 mina-poseidon.workspace = true
+num-bigint.workspace = true
+num-traits = "0.2"
 o1-utils.workspace = true
 poly-commitment.workspace = true
+rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rmp-serde.workspace = true
-snarky.workspace = true
 sha2.workspace = true
+snarky.workspace = true
 
 [dev-dependencies]
 rand = { workspace = true, features = ["std_rng"] }
