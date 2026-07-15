@@ -137,6 +137,28 @@ pub fn warm_recursion_caches(recursive: bool) {
     );
 }
 
+/// Extension for exporting a cached Lagrange basis as rmp bytes (the wasm
+/// host persists them since wasm itself has no filesystem).
+pub trait LagrangeBasisExport {
+    fn cached_lagrange_basis_bytes(&self, domain_size: usize) -> Vec<u8>;
+}
+
+impl<G> LagrangeBasisExport for SRS<G>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G: ark_serialize::CanonicalSerialize + ark_serialize::CanonicalDeserialize,
+{
+    fn cached_lagrange_basis_bytes(&self, domain_size: usize) -> Vec<u8> {
+        if !self.lagrange_bases().contains_key(&domain_size) {
+            return Vec::new();
+        }
+        let basis = self
+            .lagrange_bases()
+            .get_or_generate(domain_size, || unreachable!("checked contains_key"));
+        rmp_serde::to_vec(&*basis).unwrap_or_default()
+    }
+}
+
 fn cache_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("PICKLES_CACHE_DIR") {
         return Some(std::path::PathBuf::from(dir));

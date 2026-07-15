@@ -440,6 +440,149 @@ pub fn rust_pickles_recorded_base_vk_envelope(
         .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
 }
 
+/// Seeds the in-memory Lagrange-basis cache from precomputed bytes (the
+/// rmp-encoded `Vec<PolyComm>` the native side persists in
+/// `~/.cache/pickles-rs`). wasm has no filesystem: the JS host reads the
+/// cache files and passes them in. Returns false on any mismatch (the basis
+/// is then recomputed on demand — never trusted blindly for size).
+#[wasm_bindgen]
+pub fn rust_pickles_seed_lagrange_basis(
+    curve: String,
+    domain_log2: u32,
+    bytes: &[u8],
+) -> bool {
+    let domain_size = 1usize << domain_log2;
+    match curve.as_str() {
+        "vesta" => {
+            let Ok(basis) = rmp_serde::from_slice::<
+                Vec<poly_commitment::commitment::PolyComm<mina_curves::pasta::Vesta>>,
+            >(bytes) else {
+                return false;
+            };
+            if basis.len() != domain_size {
+                return false;
+            }
+            pickles::common::tick_srs(1 << pickles::common::TICK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        "pallas" => {
+            let Ok(basis) = rmp_serde::from_slice::<
+                Vec<poly_commitment::commitment::PolyComm<mina_curves::pasta::Pallas>>,
+            >(bytes) else {
+                return false;
+            };
+            if basis.len() != domain_size {
+                return false;
+            }
+            pickles::common::tock_srs(1 << pickles::common::TOCK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Exports a computed Lagrange basis as the same rmp encoding, so the JS host
+/// can persist it for the next process. Returns an empty vector if the basis
+/// is not (yet) in the cache.
+#[wasm_bindgen]
+pub fn rust_pickles_export_lagrange_basis(curve: String, domain_log2: u32) -> Vec<u8> {
+    let domain_size = 1usize << domain_log2;
+    use pickles::common::LagrangeBasisExport as _;
+    match curve.as_str() {
+        "vesta" => pickles::common::tick_srs(1 << pickles::common::TICK_ROUNDS)
+            .as_ref()
+            .cached_lagrange_basis_bytes(domain_size),
+        "pallas" => pickles::common::tock_srs(1 << pickles::common::TOCK_ROUNDS)
+            .as_ref()
+            .cached_lagrange_basis_bytes(domain_size),
+        _ => Vec::new(),
+    }
+}
+
+/// Compiles every method of a recorded program in one call, running the
+/// per-branch compilations in PARALLEL inside the wasm rayon pool (the
+/// per-method entries serialize across wasm calls). `branches_json` is
+/// `[{"circuit": ..., "witness": ["dec", ...], "proofsVerified": 0|1|2}]`.
+/// Returns a flat JS array of `[base, n1|null, n2|null]` triplets per branch.
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_program(
+    branches_json: String,
+) -> Result<js_sys::Array, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(&branches_json)
+        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = parse_fp_decimals(branch.witness, "witness")?;
+        parsed.push((branch.circuit, witness, branch.proofs_verified));
+    }
+    type Compiled = (
+        pickles::recorded::RecordedCompiledBase,
+        Option<pickles::recorded::RecordedCompiledN1>,
+        Option<pickles::recorded::RecordedCompiledN2>,
+    );
+    let compiled: Vec<Result<Compiled, String>> = crate::rayon::run_in_pool(|| {
+        use rayon::prelude::*;
+        parsed
+            .into_par_iter()
+            .map(|(circuit, witness, proofs_verified)| {
+                let base = pickles::recorded::RecordedCompiledBase::compile(
+                    circuit.clone(),
+                    witness.clone(),
+                )
+                .map_err(|err| format!("base compile: {err:?}"))?;
+                let template = (proofs_verified > 0)
+                    .then(|| base.donor_handle(&witness))
+                    .transpose()
+                    .map_err(|err| format!("donor template: {err:?}"))?;
+                let n1 = (proofs_verified == 1)
+                    .then(|| {
+                        pickles::recorded::RecordedCompiledN1::compile(
+                            template.as_ref().expect("template"),
+                            circuit.clone(),
+                            witness.clone(),
+                        )
+                    })
+                    .transpose()
+                    .map_err(|err| format!("N1 compile: {err:?}"))?;
+                let n2 = (proofs_verified == 2)
+                    .then(|| {
+                        pickles::recorded::RecordedCompiledN2::compile(
+                            template.as_ref().expect("template"),
+                            template.as_ref().expect("template"),
+                            circuit,
+                            witness,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|err| format!("N2 compile: {err:?}"))?;
+                Ok((base, n1, n2))
+            })
+            .collect()
+    });
+    let out = js_sys::Array::new();
+    for entry in compiled {
+        let (base, n1, n2) =
+            entry.map_err(|err| JsError::new(&format!("program compile failed: {err}")))?;
+        let triple = js_sys::Array::new();
+        triple.push(&JsValue::from(WasmRecordedCompiledBase(base)));
+        triple.push(&n1.map_or(JsValue::NULL, |n1| JsValue::from(WasmRecordedCompiledN1(n1))));
+        triple.push(&n2.map_or(JsValue::NULL, |n2| JsValue::from(WasmRecordedCompiledN2(n2))));
+        out.push(&triple);
+    }
+    Ok(out)
+}
+
 #[wasm_bindgen]
 pub fn rust_pickles_prove_recorded_n2_over_base_handles(
     first: &WasmRecordedBaseHandle,

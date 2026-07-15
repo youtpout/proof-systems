@@ -68,7 +68,7 @@ impl<Key: Hash + Eq, Value> HashMapCache<Key, Value> {
     /// # Panics
     ///
     /// Panics if the internal mutex is poisoned.
-    pub(crate) fn get_or_generate<F: FnOnce() -> Value>(
+    pub fn get_or_generate<F: FnOnce() -> Value>(
         &self,
         key: Key,
         generator: F,
@@ -94,7 +94,7 @@ impl<Key: Hash + Eq, Value> HashMapCache<Key, Value> {
 }
 
 /// Owning handle to an initialized cache entry.
-pub(crate) struct CacheRef<Value>(Arc<OnceLock<Value>>);
+pub struct CacheRef<Value>(Arc<OnceLock<Value>>);
 
 impl<Value> Deref for CacheRef<Value> {
     type Target = Value;
