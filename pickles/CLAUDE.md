@@ -2558,3 +2558,26 @@ HEAD (`npm run build:wasm:node:rust` côté o1js), le diff wrap affiche
 **32 rows wiring-only** : PI rows 13-28 (les 16 challenges bulletproof du
 statement) + une row par round IPA (4332+74k). À bisecter : représentation
 du dump vs vrai écart de wiring. Step reste FULL MATCH.
+
+### Suite session 2026-07-15 — compile sans preuves (modèle OCaml)
+OCaml `Pickles.compile` ne prouve JAMAIS (dummies précalculés `Dummy.Ipa`).
+Porté : donneurs de preuve « shape-only » (`dummy_kimchi_proof_vesta/pallas`,
+`dummy_recursive_step_proof`, `dummy_recursive_wrap_proof`,
+`dummy_base_case_proof` dans recursive_step.rs) — points multiples du
+générateur, scalaires non nuls, challenges/statements réels depuis les
+prepared. Les 4 preuves compile-time éliminées : template base (`donor_handle`),
+bootstrap step/wrap N1, stable step N1, width-2 N2. Chaque élimination est
+prouvée index-équivalente par un test (recorded.rs tests: n1/n2_proof_free_*,
+donor_template_matches_real_template). Deux subtilités de FORME découvertes
+par les tests : le wrap de base porte 2 RecursionChallenges (padding
+Wrap_hack) ; l'assert `sg == commit(b_poly(chals))` (recursion_challenge) se
+satisfait en patchant le sg du donneur depuis les challenges matérialisés du
+wrap statement.
+
+Bench compile 3 méthodes : rust-native 24.1→10.3s (jsoo-native 8.0s),
+rust-wasm 56.5→37.2s (jsoo-wasm 16.3s). Prove/verify rust déjà devant.
+**Gap restant = architectural** : le chemin per-méthode compile ~10 index
+(base + N1 4 + N2 2 + wraps par méthode) vs OCaml 3 steps + 1 wrap partagé.
+Le chemin programme partagé existe (`RecordedCompiledProgram`, single-pass,
+lui aussi encore 3 preuves compile-time à donner) — migrer o1js/mina-runtime
+dessus est la suite qui ferme le gap wasm.
