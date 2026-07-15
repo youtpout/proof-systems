@@ -2610,3 +2610,26 @@ gates+wires ; trouver la valeur constante fautive ; la witnesser. Ensuite la
 VK rust == VK jsoo (les 28 commitments), et il restera l'enveloppe
 ('mina-runtime-v1:' vs side-loaded base64) + le hash pour que
 verificationKey.hash soit identique dans zkapp-rust.
+
+## JALON 2026-07-15 (suite) — VK rust == VK jsoo, hash on-chain compris
+
+Chaîne complète verte pour les programmes single-method non-récursifs :
+- wrap σ0/σ6 : fausse alerte (build wasm périmé) — **VK PARITY: FULL MATCH
+  28/28 commitments** après rebuild.
+- `SideLoadedVerificationKeyV2::mina_hash()` : Random_oracle salt
+  "MinaSideLoadedVk****" + pack_to_fields (56 coords puis les 6 bits one-hot
+  packés gauche→droite dans UN field) — validé == verificationKey.hash jsoo.
+- Enveloppe canonique exposée partout : pickles
+  `RecordedCompiledBase::verification_key_envelope()`, napi/wasm
+  `rust_pickles_recorded_base_vk_envelope`, mina-runtime
+  CompileCircuitResponse{verificationKeyBase64,verificationKeyHash} ; o1js
+  zkprogram (rust) retourne la VK canonique pour les programmes 1-méthode
+  pv=0.
+- **Gate zkapp-rust `test:vk-parity` : les 4 backends (jsoo/rust ×
+  wasm/native) retournent le MÊME hash** pour le programme Square :
+  7366579521807958688380708523943536275961244156544953379731585537782625645675.
+
+Reste pour la parité totale (programmes multi-méthodes/récursifs) : le wrap
+PROGRAMME partagé (un seul wrap par programme, sélection which_branch, comme
+OCaml) côté o1js/mina-runtime + sa parité gate width>0 — le gate 'add' du
+test vk-parity reste rouge en attendant et sert de critère.
