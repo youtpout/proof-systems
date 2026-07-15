@@ -3523,3 +3523,74 @@ pub fn dump_recorded_wrap_circuit(
     let app = RecordedApp { circuit };
     wrap_dump_at_rounds!(app, witness; 16)
 }
+
+#[cfg(test)]
+mod wrap_wdata_independence_tests {
+    use super::*;
+    use mina_curves::pasta::Fq;
+
+    /// Probe: the wrap index compiled with the BOOTSTRAP wdata (generator
+    /// points, zero scalars — `CompiledBaseCase::compile`) must be identical
+    /// to the one compiled with the REAL wdata
+    /// (`prove_base_case_with_wrap_dump`). The side-loaded VK parity harness
+    /// shows sigma[0]/sigma[6] diverging between those two paths.
+    #[test]
+    fn wrap_index_is_wdata_value_independent() {
+        let circuit = RecordedCircuit {
+            aux_count: 2,
+            output: vec![LinComb::var(1)],
+            constraints: vec![RecordedConstraint::Square {
+                v: LinComb::var(0),
+                square: LinComb::var(1),
+            }],
+        };
+        let witness = vec![Fp::from(6u64), Fp::from(36u64)];
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+
+        // Path A: compile with the bootstrap wdata; grab its wrap gates.
+        let compiled = RecordedCompiledBase::compile(circuit, witness.clone()).expect("compile");
+        let a_gates: Vec<kimchi::circuits::gate::CircuitGate<Fq>> = compiled
+            .compiled
+            .wrap_indexes
+            .as_ref()
+            .expect("wrap indexes")
+            .0
+            .index
+            .cs
+            .gates
+            .to_vec();
+        let actual_points =
+            crate::api::wrap_verification_key_points(&compiled.compiled.wrap_indexes.as_ref().unwrap().1);
+
+        // Path B: full dump path — wrap compiled fresh with the REAL wdata.
+        let (_, dump) = crate::api::prove_base_case_with_wrap_dump::<RecordedApp, 16, 40>(
+            app,
+            witness,
+            actual_points,
+        );
+
+        assert_eq!(a_gates.len(), dump.gates.len(), "gate count");
+        let mut diverging = vec![];
+        for (i, (a, b)) in a_gates.iter().zip(&dump.gates).enumerate() {
+            let typ = a.typ != b.typ;
+            let coeffs = a.coeffs != b.coeffs;
+            let wires = a.wires != b.wires;
+            if typ || coeffs || wires {
+                diverging.push((i, typ, coeffs, wires));
+            }
+        }
+        for &(i, typ, coeffs, wires) in diverging.iter().take(30) {
+            eprintln!(
+                "row {i}: typ={typ} coeffs={coeffs} wires={wires}\n  A wires: {:?}\n  B wires: {:?}",
+                a_gates[i].wires, dump.gates[i].wires
+            );
+        }
+        assert!(
+            diverging.is_empty(),
+            "{} rows diverge between bootstrap-wdata and real-wdata wrap indexes",
+            diverging.len()
+        );
+    }
+}
