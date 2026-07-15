@@ -2448,3 +2448,50 @@ deux slots physiques de même typ/cvar pour N0/N1/N2, avec sélection/masquage
 protocolaires, puis vérifier gate+wiring+nombre de variables identiques avant
 de réexposer `prove_n1`. Le gabarit de compilation peut être insatisfaisant,
 comme chez OCaml, mais toute preuve runtime doit satisfaire l'index partagé.
+
+## Handoff 2026-07-15 — audit OCaml du dummy multibranche
+
+Les essais N1/N2 ont de nouveau été entièrement retirés des sources après
+diagnostic ; le jalon fonctionnel reste N0 partagé. Le test baseline
+`recorded_program_compiles_n0_n1_n2_with_one_wrap_key` et `cargo check -p
+pickles` repassent.
+
+L'audit en lecture seule de Mina précise le modèle à porter :
+
+- `compile.ml::max_local_max_proofs_verifieds` calcule une largeur maximale
+  par slot. Pour un programme autorisant N0/N1/N2 et se référençant lui-même,
+  les largeurs physiques sont `[2; 2]`, y compris sur une branche N0 ;
+- `step_main.ml` étend les slots absents avec `Unfinalized.dummy ()` ; ce
+  dummy n'est pas un clone d'un proof de base ;
+- `unfinalized.ml::Constant.dummy` construit des challenges, évaluations et
+  valeurs Plonk déterministes avec le domaine Wrap `proofs_verified:2`, puis
+  fixe `should_finalize=false` ;
+- `wrap_main.ml` témoigne `old_bp_chals` avec le typ fixe calculé par slot ;
+  `Wrap_hack.Checked.hash_messages_for_next_wrap_proof` démarre depuis l'état
+  de sponge pré-calculé correspondant au padding et n'absorbe que la largeur
+  locale réelle.
+
+Résultats expérimentaux importants :
+
+- rejouer le masque Kimchi, filtrer `finalize_prev_challenges`, utiliser les
+  challenges calculés et compiler les Step depuis un cycle structurel ferme
+  bien l'écart du Step N1 ;
+- remplacer seulement les challenges constants du hash N0 par deux vecteurs
+  témoins rend le nombre de variables, les gates, leurs coefficients et le
+  wiring Wrap N0/N1 strictement identiques (`first gate difference: None`) ;
+- malgré cela, le générateur de witness compilé depuis le faux dummy de base
+  rejette N1 avec `DisconnectedWires`, et le générateur compilé depuis N1
+  rejette symétriquement N0 (wire publique row 2 vers environ row 9803) ;
+- injecter artificiellement les deux vecteurs dans le transcript de
+  finalisation est incorrect : l'assertion `wrap_main: finalize unfinalized`
+  échoue, comme elle doit le faire ;
+- remplacer le faux dummy par un proof structurel cloné ne suffit pas non
+  plus. Le calendrier interne reste dépendant de la construction du witness.
+
+Conclusion : la divergence vient bien de notre modèle multibranche incomplet,
+pas d'un bypass à ajouter dans Snarky. La prochaine implémentation doit porter
+fidèlement `Unfinalized.Constant.dummy`, le typ/request `old_bp_chals` de
+largeur fixe et les états pré-calculés de `Wrap_hack`; ne pas synthétiser le
+dummy depuis un proof existant. Le critère d'acceptation reste une chaîne
+réelle N0 -> N1 -> N2 prouvée avec le même index Wrap et vérifiée standalone
+après chaque branche, sans recompilation pendant le proving.
