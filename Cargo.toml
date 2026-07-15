@@ -74,7 +74,7 @@ itertools = { version = "0.12.1", default-features = false, features = [
   "use_alloc",
 ] }
 js-sys = "=0.3.83"
-kimchi = { path = "./kimchi", features = ["bn254"] }
+kimchi = { path = "./kimchi", features = ["bn254", "parallel"] }
 kimchi-msm = { path = "./msm" }
 kimchi-stubs = { path = "./kimchi-stubs" }
 kimchi-visu = { path = "./tools/kimchi-visu" }

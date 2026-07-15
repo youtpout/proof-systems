@@ -4472,6 +4472,13 @@ impl<
     type PublicInput = [FieldVar<Fp>; PUBLIC_INPUT_LEN];
     type PublicOutput = ();
 
+    fn srs(size: usize) -> std::sync::Arc<poly_commitment::ipa::SRS<Vesta>> {
+        // The process-wide cached Tick SRS: the default trait impl would
+        // recreate a fresh 2^16 SRS (and recompute its Lagrange bases) on
+        // every compile.
+        crate::common::tick_srs(size)
+    }
+
     fn circuit(
         &self,
         sys: &mut RunState<Fp>,

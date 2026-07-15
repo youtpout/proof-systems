@@ -1310,6 +1310,7 @@ impl RecordedCompiledBase {
         let app = RecordedApp {
             circuit: circuit.clone(),
         };
+        crate::common::warm_recursion_caches(false);
         let domain_log2 = measure_step_rounds(app.clone())
             .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?;
         if domain_log2 != 16 {
@@ -1486,6 +1487,7 @@ impl RecordedCompiledN1 {
                 crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
             ));
         };
+        crate::common::warm_recursion_caches(true);
         let profile = std::env::var_os("PICKLES_PROFILE").is_some();
         let started = snarky::wasm_instant::Instant::now();
         let new_state = circuit.state(&witness);
@@ -1634,6 +1636,7 @@ impl RecordedCompiledN1 {
                 crate::recursive_step::DirectRecursiveBackendError::InvalidProof,
             ));
         };
+        crate::common::warm_recursion_caches(true);
         let profile = std::env::var_os("PICKLES_PROFILE").is_some();
         let started = snarky::wasm_instant::Instant::now();
         let new_state = circuit.state(&witness);
@@ -1950,6 +1953,7 @@ impl RecordedCompiledN2 {
                 RecordedCircuitError::WrongWitnessLength(witness.len()),
             ));
         }
+        crate::common::warm_recursion_caches(true);
         let (RecordedProofInner::R16(first_base), RecordedProofInner::R16(second_base)) =
             (&first.inner, &second.inner)
         else {
@@ -2043,6 +2047,7 @@ impl RecordedCompiledN2 {
                 RecordedCircuitError::WrongWitnessLength(witness.len()),
             ));
         }
+        crate::common::warm_recursion_caches(true);
         let (RecordedProofInner::R16(first_base), RecordedProofInner::R16(second_base)) =
             (&first.inner, &second.inner)
         else {
@@ -2119,6 +2124,7 @@ impl RecordedCompiledN2 {
         second: &RecordedProofHandle,
         witness: Vec<Fp>,
     ) -> Result<RecordedN2Proof, RecordedProveError> {
+        crate::common::warm_recursion_caches(true);
         let (RecordedProofInner::R16(first_base), RecordedProofInner::R16(second_base)) =
             (&first.inner, &second.inner)
         else {
@@ -2662,6 +2668,7 @@ impl RecordedCompiledProgram {
             }};
         }
 
+        crate::common::warm_recursion_caches(true);
         // A protocol-only valid proof supplies proof-shaped values while Step
         // indexes are compiled from the real application circuits. No user
         // witness has to satisfy its constraints during program compilation.

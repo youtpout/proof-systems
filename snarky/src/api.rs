@@ -647,11 +647,20 @@ pub trait SnarkyCircuit: Sized {
         let endo_q =
             <<Self as SnarkyCircuit>::Curve as KimchiCurve<FULL_ROUNDS>>::other_curve_endo();
 
+        let t_create = crate::wasm_instant::Instant::now();
         let prover_index =
             kimchi::prover_index::ProverIndex::<FULL_ROUNDS, Self::Curve, SrsOf<Self>>::create(
                 cs, *endo_q, srs, false,
             );
+        let t_vi = crate::wasm_instant::Instant::now();
         let verifier_index = prover_index.verifier_index();
+        if std::env::var_os("SNARKY_PROFILE_INDEX").is_some() {
+            eprintln!(
+                "  [index detail] create={:.0?} verifier_index={:.0?}",
+                t_vi - t_create,
+                t_vi.elapsed()
+            );
+        }
         let prover_index_at = crate::wasm_instant::Instant::now();
         profile.prover_index_micros = (prover_index_at - lagrange_at).as_micros() as u64;
         record_compile_profile(profile);

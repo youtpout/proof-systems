@@ -25,7 +25,7 @@ pub const TOCK_ROUNDS: usize = 15;
 /// `SnarkyCircuit` passes the circuit domain size here. That domain can be
 /// smaller than Mina's fixed proof SRS (for example the 512-row base Step
 /// circuit), so it must not be used as the SRS size or asserted to equal it.
-pub(crate) fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
+pub fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
     static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
     TICK_SRS
         .get_or_init(|| Arc::new(SRS::<Vesta>::create(1 << TICK_ROUNDS)))
@@ -33,7 +33,7 @@ pub(crate) fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
 }
 
 /// Returns Mina's full Tock SRS independently of the circuit domain size.
-pub(crate) fn tock_srs(_domain_size: usize) -> Arc<SRS<Pallas>> {
+pub fn tock_srs(_domain_size: usize) -> Arc<SRS<Pallas>> {
     static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
     TOCK_SRS
         .get_or_init(|| Arc::new(SRS::<Pallas>::create(1 << TOCK_ROUNDS)))
@@ -106,4 +106,39 @@ mod tests {
     fn actual_wrap_domain_size_rejects_other_domains() {
         let _ = actual_wrap_domain_size(12);
     }
+}
+
+/// Warms the process-wide SRS and Lagrange-basis caches in parallel.
+///
+/// jsoo loads precomputed SRS/Lagrange data from disk; computing them lazily
+/// inside the first compile serializes ~1s of SRS hashing per curve plus
+/// 0.3-1.9s of group-IFFT per domain on the critical path. The recursion
+/// domains are architecture constants, so warm them all concurrently up
+/// front. Guarded: each piece is a `OnceLock`/SRS-cache hit afterwards.
+pub fn warm_recursion_caches(recursive: bool) {
+    use ark_poly::EvaluationDomain as _;
+    use poly_commitment::SRS as _;
+    use rayon::prelude::*;
+    let tick_domains: &[u32] = if recursive { &[14, 15, 16] } else { &[] };
+    let tock_domains: &[u32] = if recursive { &[13, 15] } else { &[13] };
+    rayon::join(
+        || {
+            let srs = tick_srs(1 << TICK_ROUNDS);
+            tick_domains.par_iter().for_each(|&log2| {
+                let domain =
+                    ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fp>::new(1usize << log2)
+                        .expect("tick domain");
+                let _ = srs.get_lagrange_basis(domain);
+            });
+        },
+        || {
+            let srs = tock_srs(1 << TOCK_ROUNDS);
+            tock_domains.par_iter().for_each(|&log2| {
+                let domain =
+                    ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(1usize << log2)
+                        .expect("tock domain");
+                let _ = srs.get_lagrange_basis(domain);
+            });
+        },
+    );
 }
