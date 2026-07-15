@@ -72,6 +72,75 @@ The project is organized in the following way:
 - [tools/](tools/). Various tooling to help us work on kimchi.
 - [utils/](utils/). Collection of useful functions and traits.
 
+This fork additionally hosts the pure-Rust recursion stack that replaces the
+OCaml/`js_of_ocaml` proving backend in o1js:
+
+- [snarky/](snarky/). The Rust constraint-system DSL (`SnarkyCircuit`,
+  `RunState`) and gadgets (Poseidon/sponge, curve, group map, bits, Merkle),
+  gate-for-gate compatible with Mina's `plonk_constraint_system.ml`.
+- [pickles/](pickles/). The Rust port of Pickles (step/wrap circuits,
+  incremental verification, side-loaded keys). This is the crate under active
+  gate-level parity work against the jsoo reference.
+- [kimchi-napi/](kimchi-napi/). Node N-API bindings that expose the prover and
+  the constraint system to JavaScript.
+- [kimchi-wasm/](kimchi-wasm/). WebAssembly bindings for the browser.
+
+## Building the Rust proof-system backend
+
+These crates are the bottom layer of the new o1js proving stack:
+
+```text
+o1js  ->  mina-runtime (mina-rust)  ->  proof-systems (this repo)
+```
+
+### Toolchain
+
+The workspace pins its Rust version in [`rust-toolchain.toml`](rust-toolchain.toml)
+(currently stable `1.92`); `rustup` selects it automatically. The WebAssembly
+targets additionally require the nightly toolchain declared in the
+[`Makefile`](Makefile) (`NIGHTLY_RUST_VERSION`, currently
+`nightly-2025-12-11`) with the `wasm32-unknown-unknown` target.
+
+### Prover crates (native)
+
+Build and test the recursion crates directly:
+
+```sh
+# Constraint system DSL and gadgets
+cargo build -p snarky --release
+cargo test  -p snarky --release
+
+# Pickles (step/wrap recursion)
+cargo build -p pickles --release
+cargo test  -p pickles --release --lib            # unit tests (101)
+cargo test  -p pickles --release --test recorded  # end-to-end N0/N1/N2 (9)
+```
+
+### Node bindings (`kimchi-napi`)
+
+o1js drives this build through its own `build:native` script (see the
+"Building the Rust proof-system backend" section of the o1js `README-dev.md`),
+which invokes:
+
+```sh
+napi build --manifest-path Cargo.toml --package kimchi-napi \
+  --output-dir <out> --release --esm
+```
+
+You can also build the crate on its own with
+`cargo build -p kimchi-napi --release`. Node ≥ 22 is required for
+`@napi-rs/cli` 3.x.
+
+### Browser bindings (`kimchi-wasm`)
+
+```sh
+make build-nodejs   # WebAssembly for Node   -> target/nodejs
+make build-web      # WebAssembly for the browser -> target/web
+```
+
+Both targets shell out to the nightly toolchain and `wasm-bindgen`; run
+`rustup target add wasm32-unknown-unknown` first if it is not installed.
+
 ## Contributing
 
 Check [CONTRIBUTING.md](CONTRIBUTING.md) if you are interested in contributing
