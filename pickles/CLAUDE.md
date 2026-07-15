@@ -2633,3 +2633,21 @@ Reste pour la parité totale (programmes multi-méthodes/récursifs) : le wrap
 PROGRAMME partagé (un seul wrap par programme, sélection which_branch, comme
 OCaml) côté o1js/mina-runtime + sa parité gate width>0 — le gate 'add' du
 test vk-parity reste rouge en attendant et sert de critère.
+
+## Perf compile 2026-07-15 (soir) — rust-native DEVANT jsoo
+
+Trois fixes en chaîne (commits 2e276f1c2d, f848594525, 7994c3a72b) :
+1. `RecursiveStepCircuit` (width-1) n'overridait pas `srs()` → SRS 2^16
+   recréé + lagrange recalculée À CHAQUE compile N1 (~2.5s). → tick_srs
+   partagé. N1 compile 5.2→2.5s.
+2. `HashMapCache::get_or_generate` calculait SOUS le mutex global → toutes
+   les générations lagrange sérialisées entre elles et bloquant les lookups.
+   → OnceLock par clé, générations concurrentes, dédup par clé.
+3. Cache DISQUE des bases de Lagrange (~/.cache/pickles-rs, PICKLES_CACHE_DIR)
+   chargé/écrit par warm_recursion_caches — l'équivalent du SRS pré-calculé
+   que jsoo charge du disque. + kimchi feature "parallel" activée workspace.
+
+Bench AddZkProgram natif (cache lagrange chaud, comme jsoo) :
+compile 24.1→**5.7s** (jsoo 8.3) ; prove N0 1.4 (jsoo 2.5) ; N1 2.6 (3.9) ;
+N2 5.1-5.5 (5.6) ; verify ~3× plus rapide partout. Gate VK square toujours
+vert après tout ça.
