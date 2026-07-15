@@ -2651,3 +2651,22 @@ Bench AddZkProgram natif (cache lagrange chaud, comme jsoo) :
 compile 24.1→**5.7s** (jsoo 8.3) ; prove N0 1.4 (jsoo 2.5) ; N1 2.6 (3.9) ;
 N2 5.1-5.5 (5.6) ; verify ~3× plus rapide partout. Gate VK square toujours
 vert après tout ça.
+
+### Perf wasm (commit a6690d3b52) + LE chantier restant
+- Batch compile wasm (`rust_pickles_compile_recorded_program`, une seule
+  traversée wasm, branches en parallèle dans le pool) + seed/persist des
+  bases de Lagrange par l'hôte JS (wasm n'a pas de fs) : compile rust-wasm
+  31.4→18.4s (jsoo-wasm 16.6).
+- **Le reste (N2 wasm 9.7 vs 7.1 jsoo ; compile wasm -2s ; VK de l'Add
+  différente) converge sur UN SEUL chantier : le wrap PROGRAMME partagé.**
+  jsoo : 3 steps + 1 wrap partagé (width-2, sélection which_branch) ; nous :
+  ~10 compilations d'index et un wrap par méthode. Le wrap partagé réduit le
+  travail absolu (wasm bat jsoo partout) ET donne UNE VK par programme —
+  mais la parité VK multi-méthodes exige AUSSI la parité gate des STEPS
+  RÉCURSIFS (les VK steps sont des constantes du wrap) et du wrap width-2 :
+  nouvelles surfaces de diff à construire (le FULL MATCH actuel couvre
+  step base + wrap width-0). Ordre suggéré : (1) harnais de diff du step
+  récursif width-2 vs jsoo, (2) parité step récursif, (3) harnais + parité
+  wrap width-2 programme, (4) migration o1js/mina-runtime vers
+  RecordedCompiledProgram (single-pass + donors déjà prêts), (5) VK
+  canonique multi-méthodes → gate 'add' vert.
