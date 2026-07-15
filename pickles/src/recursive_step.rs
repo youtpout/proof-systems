@@ -5129,3 +5129,65 @@ pub fn dummy_recursive_step_width2_proof<
         messages_for_next_step_proof: prepared.messages_for_next_step_proof.clone(),
     }
 }
+
+/// Assembles a proof-SHAPED base-case donor from compiled indexes, without
+/// running either prover — the compile-time template for the recursive
+/// compiles (OCaml `Pickles.compile` never proves). The statement carries the
+/// protocol-fixed dummy step challenges and the step `sg` is the matching
+/// `Dummy.Ipa.Step.sg` commitment, so every downstream chals/sg consistency
+/// derivation holds by construction.
+pub fn dummy_base_case_proof<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
+    step_verifier: snarky::api::VerifierIndexWrapper<crate::api::StepCircuit<A>>,
+    wrap_verifier: snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+) -> crate::api::BaseCaseProof<A, ROUNDS, STMT_LEN> {
+    let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_verifier);
+    let step_dummies = &crate::dummy::pasta_ipa_wrap_and_step().1;
+    let mut statement = vec![Fq::from(0u64); STMT_LEN];
+    for (slot, &raw) in statement[13..13 + ROUNDS]
+        .iter_mut()
+        .zip(&step_dummies.prechallenges)
+    {
+        *slot = embed_fp_to_fq(raw);
+    }
+    let mut step_proof = dummy_kimchi_proof_vesta(crate::common::TICK_ROUNDS, 7, vec![]);
+    let step_sg = crate::dummy::pasta_dummy_step_sg();
+    step_proof.proof.sg = step_sg;
+    let wrap_sg = crate::dummy::pasta_dummy_wrap_sg();
+    // The real base wrap proof carries the two Wrap_hack padding accumulators
+    // as recursion challenges; their count shapes downstream witness vectors.
+    let wrap_recursions: Vec<kimchi::proof::RecursionChallenge<Pallas>> = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
+            .into_iter()
+            .map(|chals| kimchi::proof::RecursionChallenge {
+                chals,
+                comm: PolyComm {
+                    chunks: vec![wrap_sg],
+                },
+            })
+            .collect()
+    };
+    let proof = dummy_kimchi_proof_pallas(crate::common::TOCK_ROUNDS, 7, wrap_recursions);
+    let stable_statement = crate::mina_bin_prot::WrapStatementMinimalV1::from_flattened(
+        statement.clone(),
+        crate::mina_bin_prot::WrapMessagesForNextWrapProofV1 {
+            challenge_polynomial_commitment: (step_sg.x, step_sg.y),
+            old_bulletproof_challenges: vec![statement[13..13 + ROUNDS].to_vec()],
+        },
+        crate::mina_bin_prot::StepMessagesForNextProofV1 {
+            challenge_polynomial_commitments: vec![(wrap_sg.x, wrap_sg.y)],
+            old_bulletproof_challenges: vec![step_dummies.prechallenges.clone()],
+        },
+    )
+    .expect("dummy base statement is well-shaped");
+    crate::api::BaseCaseProof {
+        statement,
+        stable_statement,
+        proof,
+        step_proof,
+        step_verifier,
+        wrap_verifier,
+        wrap_vk_pts,
+    }
+}

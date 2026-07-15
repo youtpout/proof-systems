@@ -1321,6 +1321,37 @@ impl RecordedCompiledBase {
         })
     }
 
+    /// A proof-SHAPED base handle assembled from the compiled indexes
+    /// without running either prover — the compile-time template donor for
+    /// the recursive compiles. Its values are protocol-meaningless dummies;
+    /// they only ever land in witness slots.
+    pub fn donor_handle(&self, witness: &[Fp]) -> Result<RecordedProofHandle, RecordedProveError> {
+        let app_state = self.circuit.state(witness);
+        let step_verifier = self
+            .compiled
+            .step_indexes
+            .as_ref()
+            .expect("compiled Step indexes")
+            .1
+            .clone();
+        let wrap_verifier = self
+            .compiled
+            .wrap_indexes
+            .as_ref()
+            .expect("compiled Wrap indexes")
+            .1
+            .clone();
+        let base = crate::recursive_step::dummy_base_case_proof(step_verifier, wrap_verifier);
+        let proof = base
+            .to_mina_network_proof()
+            .map_err(RecordedProveError::Backend)?;
+        Ok(RecordedProofHandle {
+            app_state,
+            proof,
+            inner: RecordedProofInner::R16(base),
+        })
+    }
+
     pub fn prove_keep(
         &mut self,
         witness: Vec<Fp>,

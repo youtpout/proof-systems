@@ -665,3 +665,36 @@ fn n2_proof_free_compile_matches_bootstrap_reference() {
         "N2 compiled indexes diverged from the bootstrap-proof reference"
     );
 }
+
+/// The compile-time template only donates proof-shaped VALUES: compiling N1
+/// and N2 against the proof-free donor handle must produce exactly the same
+/// indexes as compiling against a real base proof.
+#[test]
+fn donor_template_matches_real_template_for_recursive_compiles() {
+    use pickles::recorded::{RecordedCompiledBase, RecordedCompiledN1, RecordedCompiledN2};
+    let circuit = square_circuit();
+    let witness = vec![Fp::from(6u64), Fp::from(36u64)];
+    let mut base = RecordedCompiledBase::compile(circuit.clone(), witness.clone()).expect("base");
+    let donor = base.donor_handle(&witness).expect("donor handle");
+    let real = base.prove_keep(witness.clone()).expect("base proof");
+
+    let n1_donor =
+        RecordedCompiledN1::compile(&donor, circuit.clone(), witness.clone()).expect("N1 donor");
+    let n1_real =
+        RecordedCompiledN1::compile(&real, circuit.clone(), witness.clone()).expect("N1 real");
+    assert_eq!(
+        n1_donor.index_fingerprint_for_tests(),
+        n1_real.index_fingerprint_for_tests(),
+        "N1 indexes depend on template values"
+    );
+
+    let n2_donor = RecordedCompiledN2::compile(&donor, &donor, circuit.clone(), witness.clone())
+        .expect("N2 donor");
+    let n2_real =
+        RecordedCompiledN2::compile(&real, &real, circuit.clone(), witness).expect("N2 real");
+    assert_eq!(
+        n2_donor.index_fingerprint_for_tests(),
+        n2_real.index_fingerprint_for_tests(),
+        "N2 indexes depend on template values"
+    );
+}
