@@ -2410,3 +2410,41 @@ utiliser les messages authentiques du handle précédent. Vérifier d'abord que
 le nombre de variables/contraintes du Step compilé est identique au Step N1
 réel, puis relancer le test complet N0 -> N1 -> N2. Une fois vert seulement,
 exposer le handle partagé dans NAPI/WASM et `mina-runtime`.
+
+## Handoff 2026-07-15 — audit du gabarit programme N1 (essais revertés)
+
+Le dépôt a été remis au dernier jalon vert `a82b053792` après les essais :
+aucune API N1 expérimentale ni aucun contournement d'index n'est conservé.
+
+Résultats établis :
+
+- rejouer le masque Kimchi physique du Step précédent et ne transmettre à
+  `finalize_prev_challenges` que les slots actifs dépasse bien l'ancien échec
+  `finalize: xi` ;
+- les challenges du digest précédent doivent être les challenges **calculés**
+  de `step.proof.prev_challenges`, pas les pré-challenges sérialisés de
+  `messages_for_next_step_proof.old_bulletproof_challenges` ; les confondre
+  produit un digest faux ;
+- compiler N1/N2 depuis un vrai couple Step-width-2/Wrap structurel, en donnant
+  comme `previous_messages_vk_pts` la VK du Wrap structurel effectivement
+  vérifié, ferme l'écart de trois variables lié à `share_index_sponge` et le
+  test de compilation N0/N1/N2 reste vert ;
+- un vrai proving N1 atteint alors le Wrap, mais l'index Wrap N0 partagé donne
+  `DisconnectedWires`. Une compilation fraîche du même Wrap N1 prouve, ce qui
+  localise le reste dans la **forme du Wrap partagé**, pas dans la preuve Step
+  ni dans une vérification Snarky à désactiver ;
+- comparaison directe : N0 et N1 ont 32768 gates, mais leur wiring diverge dès
+  la row publique 5. La cible de permutation passe approximativement de la row
+  8727 (N0) à 9091 (N1). La cause structurelle est le hash de l'accumulateur
+  précédent : le dummy de base utilise `hash_dummy_challenges` comme constantes,
+  tandis qu'un cycle programme utilise `hash_old_bulletproof_challenges` comme
+  variables. Les valeurs peuvent être identiques, mais le calendrier de cvars
+  et donc la permutation ne le sont pas.
+
+Conclusion de sécurité : ne PAS prouver avec un index Wrap N1 fraîchement
+recompilé, ne PAS ignorer `DisconnectedWires`, ne PAS relâcher les assertions
+des slots dummy. Il faut porter le modèle OCaml fixe des challenges padding :
+deux slots physiques de même typ/cvar pour N0/N1/N2, avec sélection/masquage
+protocolaires, puis vérifier gate+wiring+nombre de variables identiques avant
+de réexposer `prove_n1`. Le gabarit de compilation peut être insatisfaisant,
+comme chez OCaml, mais toute preuve runtime doit satisfaire l'index partagé.
