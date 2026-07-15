@@ -46,8 +46,7 @@ pub fn combine_commitments<F: PrimeField>(
     xi: &FieldVar<F>,
     endo_base: F,
 ) -> SnarkyResult<Point<F>> {
-    use crate::common::SCALAR_CHALLENGE_BITS;
-    use crate::plonk_curve_ops::add_fast;
+    use crate::{common::SCALAR_CHALLENGE_BITS, plonk_curve_ops::add_fast};
 
     struct CurveOpt<F: PrimeField> {
         point: Point<F>,
@@ -69,7 +68,14 @@ pub fn combine_commitments<F: PrimeField>(
             },
             // `scale_and_add` (wrap_verifier.ml:508-545).
             Some(a) => {
-                let scaled = endo(sys, loc.clone(), &a.point, xi, SCALAR_CHALLENGE_BITS, endo_base)?;
+                let scaled = endo(
+                    sys,
+                    loc.clone(),
+                    &a.point,
+                    xi,
+                    SCALAR_CHALLENGE_BITS,
+                    endo_base,
+                )?;
                 let added = add_fast(
                     sys,
                     Cow::Owned(format!("{loc} | combine_commitments add")),
@@ -117,8 +123,7 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::common::SCALAR_CHALLENGE_BITS;
-    use crate::plonk_curve_ops::add_fast;
+    use crate::{common::SCALAR_CHALLENGE_BITS, plonk_curve_ops::add_fast};
 
     assert_eq!(lr.len(), prechallenges.len());
     assert!(!lr.is_empty(), "bullet_reduce_terms: no rounds");
@@ -163,8 +168,7 @@ pub fn bullet_reduce_challenges<F: PrimeField>(
     sponge: &mut crate::sponge::PoseidonSponge<F>,
     lr: &[(crate::oracles::PointVar<F>, crate::oracles::PointVar<F>)],
 ) -> SnarkyResult<Vec<FieldVar<F>>> {
-    use crate::challenge::squeeze_scalar;
-    use crate::oracles::absorb_commitment;
+    use crate::{challenge::squeeze_scalar, oracles::absorb_commitment};
 
     let mut prechallenges = Vec::with_capacity(lr.len());
     for (l, r) in lr {
@@ -209,8 +213,7 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::challenge::squeeze_scalar;
-    use crate::oracles::absorb_commitment;
+    use crate::{challenge::squeeze_scalar, oracles::absorb_commitment};
     use snarky::gadgets::group_map::to_group;
 
     // absorb_shifted(combined_inner_product) — 1 or 2 elements per convention
@@ -293,8 +296,7 @@ pub fn check_bulletproof_equation_from_q<F: PrimeField>(
     endo_base: F,
     num_bits: usize,
 ) -> SnarkyResult<snarky::Boolean<F>> {
-    use crate::common::SCALAR_CHALLENGE_BITS;
-    use crate::plonk_curve_ops::add_fast;
+    use crate::{common::SCALAR_CHALLENGE_BITS, plonk_curve_ops::add_fast};
 
     let cq = endo(sys, loc.clone(), q, c, SCALAR_CHALLENGE_BITS, endo_base)?;
     let lhs = add_fast(
@@ -458,7 +460,8 @@ mod tests {
                 .map(|_| (Pallas::generator() * Fq::rand(&mut rng)).into_affine())
                 .collect();
             let xi = u128::rand(&mut rng);
-            let xi_field = crate::scalar_challenge::ScalarChallenge(Fq::from(xi)).to_field(*endo_scalar);
+            let xi_field =
+                crate::scalar_challenge::ScalarChallenge(Fq::from(xi)).to_field(*endo_scalar);
 
             // reference: acc = C_{n-1}; for i=n-2..0 { acc = C_i + xi_field*acc }
             let mut acc = comms[n - 1].into_group();
@@ -589,13 +592,14 @@ mod tests {
             _p: Self::PublicInput,
             _pr: Option<&Self::PrivateInput>,
         ) -> SnarkyResult<Self::PublicOutput> {
-            let mkpt =
-                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<crate::oracles::PointVar<Fp>> {
-                    Ok((
-                        sys.compute(loc!(), move |_| p.0)?,
-                        sys.compute(loc!(), move |_| p.1)?,
-                    ))
-                };
+            let mkpt = |sys: &mut RunState<Fp>,
+                        p: (Fp, Fp)|
+             -> SnarkyResult<crate::oracles::PointVar<Fp>> {
+                Ok((
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
             let mut lr = vec![];
             for &(l, r) in &self.lr {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
@@ -671,13 +675,14 @@ mod tests {
             _p: Self::PublicInput,
             _pr: Option<&Self::PrivateInput>,
         ) -> SnarkyResult<Self::PublicOutput> {
-            let mkpt =
-                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<crate::oracles::PointVar<Fp>> {
-                    Ok((
-                        sys.compute(loc!(), move |_| p.0)?,
-                        sys.compute(loc!(), move |_| p.1)?,
-                    ))
-                };
+            let mkpt = |sys: &mut RunState<Fp>,
+                        p: (Fp, Fp)|
+             -> SnarkyResult<crate::oracles::PointVar<Fp>> {
+                Ok((
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                ))
+            };
             let cip = crate::plonk_curve_ops::ShiftedScalar::Type1(
                 sys.compute(loc!(), |_| Fp::from(self.cip))?,
             );

@@ -18,27 +18,31 @@
 
 use ark_ff::{BigInteger, Field, One, PrimeField};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-use kimchi::curve::KimchiCurve;
+use kimchi::{
+    circuits::wires::{COLUMNS, PERMUTS},
+    curve::KimchiCurve,
+};
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
-use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-use poly_commitment::commitment::PolyComm;
-use poly_commitment::ipa::OpeningProof as IpaProof;
-use poly_commitment::SRS;
+use mina_poseidon::{
+    constants::PlonkSpongeConstantsKimchi,
+    sponge::{DefaultFqSponge, DefaultFrSponge},
+};
+use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
 use serde::{Deserialize, Serialize};
 use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::common::FULL_ROUNDS;
-use crate::composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified};
-use crate::finalize::{FinalizeParams, ShiftKind};
-use crate::incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm};
-use crate::inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId};
-use crate::plonk_curve_ops::ShiftedScalar;
-use crate::scalar_challenge::ScalarChallenge;
-use crate::side_loaded::{SideLoadedKeyWitness, SideLoadedVerificationKey};
-use crate::step_verifier::{Claimed, FinalizeEvals};
-use crate::wrap_main::{wrap_main, PerUnfinalized, StepStatementElement};
+use crate::{
+    common::FULL_ROUNDS,
+    composition_types::{plonk, BranchData, BulletproofChallenge, Features, ProofsVerified},
+    finalize::{FinalizeParams, ShiftKind},
+    incrementally_verify::{Advice, Messages, OpeningProof, VerificationKeyComm},
+    inductive_rule::{CompiledRuleBackend, InductiveRule, RuleId},
+    plonk_curve_ops::ShiftedScalar,
+    scalar_challenge::ScalarChallenge,
+    side_loaded::{SideLoadedKeyWitness, SideLoadedVerificationKey},
+    step_verifier::{Claimed, FinalizeEvals},
+    wrap_main::{wrap_main, PerUnfinalized, StepStatementElement},
+};
 
 type VestaBase = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 type VestaScalar = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
@@ -117,8 +121,10 @@ impl<A: StepApp> SnarkyCircuit for StepCircuit<A> {
         digest: Self::PublicInput,
         private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
-        use crate::composition_types::PlonkVerificationKeyEvals;
-        use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
+        use crate::{
+            composition_types::PlonkVerificationKeyEvals,
+            hash_messages::{hash_messages_for_next_step_proof, sponge_after_index},
+        };
         use snarky::gadgets::curve::Point;
 
         o1js_dummy_constraints(sys)?;
@@ -203,8 +209,10 @@ impl<A: StepApp> SnarkyCircuit for SideLoadedStepCircuit<A> {
         digest: Self::PublicInput,
         private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
-        use crate::composition_types::PlonkVerificationKeyEvals;
-        use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
+        use crate::{
+            composition_types::PlonkVerificationKeyEvals,
+            hash_messages::{hash_messages_for_next_step_proof, sponge_after_index},
+        };
         use snarky::gadgets::curve::Point;
 
         o1js_dummy_constraints(sys)?;
@@ -340,10 +348,7 @@ impl WrapBranchData {
             emul: point(&index.emul_comm),
             endomul_scalar: point(&index.endomul_scalar_comm),
             coefficients: index.coefficients_comm.iter().map(point).collect(),
-            sigma_init: index.sigma_comm[..PERMUTS - 1]
-                .iter()
-                .map(point)
-                .collect(),
+            sigma_init: index.sigma_comm[..PERMUTS - 1].iter().map(point).collect(),
             sigma_last: vec![point(&index.sigma_comm[PERMUTS - 1])],
         }
     }
@@ -455,36 +460,39 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             Ok(out)
         };
         let cpt = |p: (Fq, Fq)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
-        let other_field_equal =
-            |sys: &mut RunState<Fq>, lhs: &FieldVar<Fq>, rhs: Fq, reverse: bool| -> SnarkyResult<Boolean<Fq>> {
-                let rhs = FieldVar::constant(rhs);
-                let z = if reverse { &rhs - lhs } else { lhs - &rhs };
-                let z_for_witness = z.clone();
-                let (result, z_inv): (FieldVar<Fq>, FieldVar<Fq>) =
-                    sys.compute(loc!(), move |env| {
-                        let z = env.read_var(&z_for_witness);
-                        match z.inverse() {
-                            Some(inv) => (Fq::from(0u64), inv),
-                            None => (Fq::one(), Fq::from(0u64)),
-                        }
-                    })?;
-                // `Checked.assert_all` stores this pair in reverse order.
-                sys.assert_r1cs(
-                    Some("equals_2".into()),
-                    loc!(),
-                    result.clone(),
-                    z.clone(),
-                    FieldVar::zero(),
-                )?;
-                sys.assert_r1cs(
-                    Some("equals_1".into()),
-                    loc!(),
-                    z_inv,
-                    z,
-                    FieldVar::constant(Fq::one()) - &result,
-                )?;
-                Ok(Boolean::create_unsafe(result))
-            };
+        let other_field_equal = |sys: &mut RunState<Fq>,
+                                 lhs: &FieldVar<Fq>,
+                                 rhs: Fq,
+                                 reverse: bool|
+         -> SnarkyResult<Boolean<Fq>> {
+            let rhs = FieldVar::constant(rhs);
+            let z = if reverse { &rhs - lhs } else { lhs - &rhs };
+            let z_for_witness = z.clone();
+            let (result, z_inv): (FieldVar<Fq>, FieldVar<Fq>) =
+                sys.compute(loc!(), move |env| {
+                    let z = env.read_var(&z_for_witness);
+                    match z.inverse() {
+                        Some(inv) => (Fq::from(0u64), inv),
+                        None => (Fq::one(), Fq::from(0u64)),
+                    }
+                })?;
+            // `Checked.assert_all` stores this pair in reverse order.
+            sys.assert_r1cs(
+                Some("equals_2".into()),
+                loc!(),
+                result.clone(),
+                z.clone(),
+                FieldVar::zero(),
+            )?;
+            sys.assert_r1cs(
+                Some("equals_1".into()),
+                loc!(),
+                z_inv,
+                z,
+                FieldVar::constant(Fq::one()) - &result,
+            )?;
+            Ok(Boolean::create_unsafe(result))
+        };
         // destructure the statement (to_data order)
         let cip = stmt[0].clone();
         let b = stmt[1].clone();
@@ -519,9 +527,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 }
                 let eq_refs: Vec<&snarky::Boolean<Fq>> = eqs.iter().collect();
                 let any = snarky::Boolean::any(&eq_refs, sys, loc!())?;
-                any.not()
-                    .to_field_var()
-                    .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
+                any.not().to_field_var().assert_equals(
+                    sys,
+                    loc!(),
+                    &FieldVar::constant(Fq::from(1u64)),
+                )?;
             }
         }
         // OCaml always witnesses `which_branch`, builds a one-hot vector, and
@@ -610,11 +620,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             let mut mask = Vec::with_capacity(w.sg_olds.len());
             let mut keep = Boolean::true_();
             for i in 0..w.sg_olds.len() {
-                let is_first_zero = proofs_verified.equal(
-                    sys,
-                    loc!(),
-                    &FieldVar::constant(Fq::from(i as u64)),
-                )?;
+                let is_first_zero =
+                    proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fq::from(i as u64)))?;
                 keep = keep.and(&is_first_zero.not(), sys, loc!());
                 mask.push(keep.clone());
             }
@@ -638,11 +645,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             )
         };
         let expected_branch_data = &domain_log2.scale(Fq::from(4u64)) + &proofs_verified;
-        branch_data.assert_equals(
-            sys,
-            loc!(),
-            &expected_branch_data,
-        )?;
+        branch_data.assert_equals(sys, loc!(), &expected_branch_data)?;
         // OCaml `exists prev_proof_state` (wrap_main.ml:191, before
         // `choose_key`): the per-unfinalized DEFERRED VALUES — plonk
         // challenges, Type2 representatives, bulletproof challenges, sponge
@@ -730,66 +733,98 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // check is emitted for the selected key: the jsoo dump has NO c=5
         // markers wired to the index-sponge absorbs (its pre-sponge markers
         // all belong to the openings/messages witnesses).
-        let choose_pt = |sys: &mut RunState<Fq>, points: Vec<(Fq, Fq)>| -> SnarkyResult<Point<Fq>> {
-            let choose_coordinate = |coordinate: usize| {
-                branches.iter().zip(&points).fold(
-                    FieldVar::zero(),
-                    |sum, (branch, point)| {
-                        let value = if coordinate == 0 { point.0 } else { point.1 };
-                        sum + branch.to_field_var().scale(value)
-                    },
-                )
+        let choose_pt =
+            |sys: &mut RunState<Fq>, points: Vec<(Fq, Fq)>| -> SnarkyResult<Point<Fq>> {
+                let choose_coordinate = |coordinate: usize| {
+                    branches
+                        .iter()
+                        .zip(&points)
+                        .fold(FieldVar::zero(), |sum, (branch, point)| {
+                            let value = if coordinate == 0 { point.0 } else { point.1 };
+                            sum + branch.to_field_var().scale(value)
+                        })
+                };
+                let y = choose_coordinate(1).seal(sys, loc!())?;
+                // `Double.map` constructs an OCaml pair.  Its tuple components
+                // are evaluated right-to-left, so the y-coordinate seal is
+                // emitted before the x-coordinate seal.
+                let x = choose_coordinate(0).seal(sys, loc!())?;
+                Ok(Point::new(x, y))
             };
-            let y = choose_coordinate(1).seal(sys, loc!())?;
-            // `Double.map` constructs an OCaml pair.  Its tuple components
-            // are evaluated right-to-left, so the y-coordinate seal is
-            // emitted before the x-coordinate seal.
-            let x = choose_coordinate(0).seal(sys, loc!())?;
-            Ok(Point::new(x, y))
-        };
-        let choose_pts = |sys: &mut RunState<Fq>, points: Vec<Vec<(Fq, Fq)>>| -> SnarkyResult<Vec<Point<Fq>>> {
-            let point_count = points[0].len();
-            assert!(points.iter().all(|branch| branch.len() == point_count));
-            let mut out = Vec::with_capacity(point_count);
-            for index in (0..point_count).rev() {
-                out.push(choose_pt(
-                    sys,
-                    points.iter().map(|branch| branch[index]).collect(),
-                )?);
-            }
-            out.reverse();
-            Ok(out)
-        };
+        let choose_pts =
+            |sys: &mut RunState<Fq>, points: Vec<Vec<(Fq, Fq)>>| -> SnarkyResult<Vec<Point<Fq>>> {
+                let point_count = points[0].len();
+                assert!(points.iter().all(|branch| branch.len() == point_count));
+                let mut out = Vec::with_capacity(point_count);
+                for index in (0..point_count).rev() {
+                    out.push(choose_pt(
+                        sys,
+                        points.iter().map(|branch| branch[index]).collect(),
+                    )?);
+                }
+                out.reverse();
+                Ok(out)
+            };
         // OCaml evaluates the fields of the `Step.map` result record from
         // right to left. Its vector map also invokes `f` from the last element
         // to the first. Allocate in that exact order, then assemble the Rust
         // record without adding constraints.
         let endomul_scalar = choose_pt(
             sys,
-            branch_definitions.iter().map(|branch| branch.endomul_scalar).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.endomul_scalar)
+                .collect(),
         )?;
-        let emul = choose_pt(sys, branch_definitions.iter().map(|branch| branch.emul).collect())?;
-        let mul = choose_pt(sys, branch_definitions.iter().map(|branch| branch.mul).collect())?;
+        let emul = choose_pt(
+            sys,
+            branch_definitions
+                .iter()
+                .map(|branch| branch.emul)
+                .collect(),
+        )?;
+        let mul = choose_pt(
+            sys,
+            branch_definitions.iter().map(|branch| branch.mul).collect(),
+        )?;
         let complete_add = choose_pt(
             sys,
-            branch_definitions.iter().map(|branch| branch.complete_add).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.complete_add)
+                .collect(),
         )?;
-        let psm = choose_pt(sys, branch_definitions.iter().map(|branch| branch.psm).collect())?;
+        let psm = choose_pt(
+            sys,
+            branch_definitions.iter().map(|branch| branch.psm).collect(),
+        )?;
         let generic = choose_pt(
             sys,
-            branch_definitions.iter().map(|branch| branch.generic).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.generic)
+                .collect(),
         )?;
         let coefficients = choose_pts(
             sys,
-            branch_definitions.iter().map(|branch| branch.coefficients.clone()).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.coefficients.clone())
+                .collect(),
         )?;
         let sigma_last = choose_pts(
             sys,
-            branch_definitions.iter().map(|branch| branch.sigma_last.clone()).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.sigma_last.clone())
+                .collect(),
         )?;
         let sigma_init = choose_pts(
             sys,
-            branch_definitions.iter().map(|branch| branch.sigma_init.clone()).collect(),
+            branch_definitions
+                .iter()
+                .map(|branch| branch.sigma_init.clone())
+                .collect(),
         )?;
         let vk = VerificationKeyComm {
             generic,
@@ -919,55 +954,55 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // (via this closure) so their `exists` constraints land after the
         // finalize/hash-prev block, exactly as wrap_main.ml:440-477.
         let h_for_openings = h.clone();
-        let witness_proof = |sys: &mut RunState<Fq>| -> SnarkyResult<(
-            OpeningProof<Fq>,
-            Messages<Fq>,
-        )> {
-            let mut lr = vec![];
-            for &(l, r) in &w.lr {
-                lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-            }
-            let z1_repr = w1(sys, w.z1_repr)?;
-            let z2_repr = w1(sys, w.z2_repr)?;
-            // `Bulletproof.wrap_typ` checks the two Other_field.Packed
-            // representatives after witnessing `lr` and before witnessing
-            // delta / sg. This is the 14-row gap between the two pre-sponge
-            // on-curve marker groups in the jsoo circuit.
-            let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
-            for slot in [&z1_repr, &z2_repr] {
-                let mut eqs = Vec::with_capacity(forbidden.len());
-                for &value in &forbidden {
-                    eqs.push(other_field_equal(sys, slot, value, false)?);
+        let witness_proof =
+            |sys: &mut RunState<Fq>| -> SnarkyResult<(OpeningProof<Fq>, Messages<Fq>)> {
+                let mut lr = vec![];
+                for &(l, r) in &w.lr {
+                    lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
                 }
-                let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
-                let any = Boolean::any(&eq_refs, sys, loc!())?;
-                any.not()
-                    .to_field_var()
-                    .assert_equals(sys, loc!(), &FieldVar::constant(Fq::from(1u64)))?;
-            }
-            let openings = OpeningProof {
-                lr,
-                delta: mkpt(sys, w.delta)?,
-                z1: t1(z1_repr),
-                z2: t1(z2_repr),
-                challenge_polynomial_commitment: mkpt(sys, w.sg)?,
-                h_generator: h_for_openings.clone(),
+                let z1_repr = w1(sys, w.z1_repr)?;
+                let z2_repr = w1(sys, w.z2_repr)?;
+                // `Bulletproof.wrap_typ` checks the two Other_field.Packed
+                // representatives after witnessing `lr` and before witnessing
+                // delta / sg. This is the 14-row gap between the two pre-sponge
+                // on-curve marker groups in the jsoo circuit.
+                let forbidden = crate::shifted_value::forbidden_shifted_values_fq();
+                for slot in [&z1_repr, &z2_repr] {
+                    let mut eqs = Vec::with_capacity(forbidden.len());
+                    for &value in &forbidden {
+                        eqs.push(other_field_equal(sys, slot, value, false)?);
+                    }
+                    let eq_refs: Vec<&Boolean<Fq>> = eqs.iter().collect();
+                    let any = Boolean::any(&eq_refs, sys, loc!())?;
+                    any.not().to_field_var().assert_equals(
+                        sys,
+                        loc!(),
+                        &FieldVar::constant(Fq::from(1u64)),
+                    )?;
+                }
+                let openings = OpeningProof {
+                    lr,
+                    delta: mkpt(sys, w.delta)?,
+                    z1: t1(z1_repr),
+                    z2: t1(z2_repr),
+                    challenge_polynomial_commitment: mkpt(sys, w.sg)?,
+                    h_generator: h_for_openings.clone(),
+                };
+                let messages = Messages {
+                    w_comm: w
+                        .w_comm
+                        .iter()
+                        .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                        .collect::<SnarkyResult<Vec<_>>>()?,
+                    z_comm: vec![mkpt(sys, w.z_comm)?],
+                    t_comm: w
+                        .t_comm
+                        .iter()
+                        .map(|&p| mkpt(sys, p))
+                        .collect::<SnarkyResult<Vec<_>>>()?,
+                };
+                Ok((openings, messages))
             };
-            let messages = Messages {
-                w_comm: w
-                    .w_comm
-                    .iter()
-                    .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
-                z_comm: vec![mkpt(sys, w.z_comm)?],
-                t_comm: w
-                    .t_comm
-                    .iter()
-                    .map(|&p| mkpt(sys, p))
-                    .collect::<SnarkyResult<Vec<_>>>()?,
-            };
-            Ok((openings, messages))
-        };
         // The verifier-index digest is now computed inside
         // `incrementally_verify_proof` (`IndexDigest::ComputeFromVk`), exactly
         // as OCaml's "absorb verifier index" — no caller-side digest here.
@@ -994,11 +1029,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             .collect();
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
-        let is_base_case = proofs_verified.equal(
-            sys,
-            loc!(),
-            &FieldVar::constant(Fq::from(0u64)),
-        )?;
+        let is_base_case =
+            proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fq::from(0u64)))?;
         let _out = wrap_main::<Fq, VestaParameters, _>(
             sys,
             loc!(),
@@ -1227,27 +1259,24 @@ where
             })
             .collect()
     };
-    let (step_prover, step_verifier, bootstrap_verifier) = match build_base_case::<
-        A,
-        ROUNDS,
-        STMT_LEN,
-    >(
-        app.clone(),
-        witness.clone(),
-        bootstrap_points,
-        false,
-        None,
-        None,
-        None,
-    ) {
-        BaseCaseBuild::Compiled {
-            step_prover,
-            step_verifier,
-            wrap_prover: _,
-            wrap_verifier,
-        } => (step_prover, step_verifier, wrap_verifier),
-        BaseCaseBuild::Proof { .. } => unreachable!("bootstrap mode only compiles the wrap VK"),
-    };
+    let (step_prover, step_verifier, bootstrap_verifier) =
+        match build_base_case::<A, ROUNDS, STMT_LEN>(
+            app.clone(),
+            witness.clone(),
+            bootstrap_points,
+            false,
+            None,
+            None,
+            None,
+        ) {
+            BaseCaseBuild::Compiled {
+                step_prover,
+                step_verifier,
+                wrap_prover: _,
+                wrap_verifier,
+            } => (step_prover, step_verifier, wrap_verifier),
+            BaseCaseBuild::Proof { .. } => unreachable!("bootstrap mode only compiles the wrap VK"),
+        };
     let actual_points = wrap_verification_key_points(&bootstrap_verifier);
     let final_proof = match build_base_case::<A, ROUNDS, STMT_LEN>(
         app,
@@ -1441,11 +1470,8 @@ type WrapIndexes<const ROUNDS: usize, const STMT_LEN: usize> = (
     snarky::api::ProverIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
     snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
 );
-pub(crate) type RawWrapIndex = kimchi::prover_index::ProverIndex<
-    FULL_ROUNDS,
-    Pallas,
-    poly_commitment::ipa::SRS<Pallas>,
->;
+pub(crate) type RawWrapIndex =
+    kimchi::prover_index::ProverIndex<FULL_ROUNDS, Pallas, poly_commitment::ipa::SRS<Pallas>>;
 
 pub(crate) enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     Compiled {
@@ -1567,7 +1593,11 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
     wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
     cached_wrap_index: Option<RawWrapIndex>,
 ) -> BaseCaseBuild<A, ROUNDS, STMT_LEN> {
-    assert_eq!(STMT_LEN, 13 + ROUNDS + 11, "STMT_LEN mismatch (OCaml 40-slot layout)");
+    assert_eq!(
+        STMT_LEN,
+        13 + ROUNDS + 11,
+        "STMT_LEN mismatch (OCaml 40-slot layout)"
+    );
     // ---- step proof ----
     let app_state = app.state(&witness);
     // Mina proves over the full Tick SRS (2^16) regardless of the circuit's
@@ -1646,19 +1676,17 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         let (wrap_prover, wrap_verifier) = match wrap_indexes {
             Some(indexes) => indexes,
             None => match cached_wrap_index {
-                Some(index) => snarky::api::ProverIndexWrapper::from_cached_index(
-                    circuit,
-                    0,
-                    index,
-                )
-                .unwrap_or_else(|_| {
-                    WrapCircuit::<ROUNDS, STMT_LEN> { w: Some(wdata) }
-                        .compile_to_indexes_with_domain_and_srs(
-                            0,
-                            Some(crate::common::TOCK_ROUNDS as u32),
-                        )
-                        .unwrap()
-                }),
+                Some(index) => {
+                    snarky::api::ProverIndexWrapper::from_cached_index(circuit, 0, index)
+                        .unwrap_or_else(|_| {
+                            WrapCircuit::<ROUNDS, STMT_LEN> { w: Some(wdata) }
+                                .compile_to_indexes_with_domain_and_srs(
+                                    0,
+                                    Some(crate::common::TOCK_ROUNDS as u32),
+                                )
+                                .unwrap()
+                        })
+                }
                 None => circuit
                     .compile_to_indexes_with_domain_and_srs(
                         0,
@@ -1790,7 +1818,10 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
     };
     let dummy_wrap_raw_chals: Vec<Vec<Fq>> = {
         vec![
-            crate::dummy::pasta_ipa_wrap_and_step().0.prechallenges.clone();
+            crate::dummy::pasta_ipa_wrap_and_step()
+                .0
+                .prechallenges
+                .clone();
             crate::common::MAX_PROOFS_VERIFIED
         ]
     };

@@ -4,8 +4,9 @@ use mina_curves::pasta::Fp;
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use crate::pasta_fp_plonk_index::WasmPastaFpPlonkIndex;
-use crate::pasta_fq_plonk_index::WasmPastaFqPlonkIndex;
+use crate::{
+    pasta_fp_plonk_index::WasmPastaFpPlonkIndex, pasta_fq_plonk_index::WasmPastaFqPlonkIndex,
+};
 use mina_curves::pasta::Fq;
 
 #[derive(Serialize)]

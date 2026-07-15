@@ -639,13 +639,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         }) = self.pending_generic_gate.take()
         {
             let loc = Cow::Borrowed("");
-            self.add_row(
-                &[],
-                &loc,
-                vec![l, r, o],
-                GateType::Generic,
-                coeffs,
-            );
+            self.add_row(&[], &loc, vec![l, r, o], GateType::Generic, coeffs);
         }
     }
 

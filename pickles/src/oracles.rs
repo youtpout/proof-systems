@@ -28,9 +28,11 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
-use crate::challenge::{squeeze_challenge, squeeze_scalar};
-use crate::scalar_challenge::scalar_to_field;
-use crate::sponge::PoseidonSponge;
+use crate::{
+    challenge::{squeeze_challenge, squeeze_scalar},
+    scalar_challenge::scalar_to_field,
+    sponge::PoseidonSponge,
+};
 
 /// A commitment's affine coordinates `(x, y)` in the circuit field (a single
 /// chunk); the point at infinity is encoded as `(0, 0)`, matching
@@ -114,11 +116,10 @@ mod tests {
     use ark_ff::{AdditiveGroup, BigInteger, One, Zero};
     use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
-    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
-    use mina_poseidon::sponge::ScalarChallenge;
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
-        sponge::{DefaultFqSponge, DefaultFrSponge},
+        poseidon::{ArithmeticSponge, Sponge as _},
+        sponge::{DefaultFqSponge, DefaultFrSponge, ScalarChallenge},
     };
     use poly_commitment::ipa::OpeningProof;
     use snarky::{api::SnarkyCircuit, loc};
@@ -314,8 +315,7 @@ mod tests {
     fn fq_oracles_match_real_pallas_proof() {
         use ark_ff::One;
         use mina_curves::pasta::{Fq, Pallas};
-        use poly_commitment::commitment::PolyComm;
-        use poly_commitment::SRS;
+        use poly_commitment::{commitment::PolyComm, SRS};
 
         // 1. produce a real Pallas proof
         let mut pi = PallasCircuit {}.compile_to_indexes().unwrap().0;

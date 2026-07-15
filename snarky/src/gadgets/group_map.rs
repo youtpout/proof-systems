@@ -16,9 +16,8 @@ use ark_ff::PrimeField;
 use groupmap::BWParameters;
 
 use crate::{
-    constraint_system::BasicSnarkyConstraint,
-    runner::Constraint,
-    Boolean, FieldVar, RunState, SnarkyResult,
+    constraint_system::BasicSnarkyConstraint, runner::Constraint, Boolean, FieldVar, RunState,
+    SnarkyResult,
 };
 
 /// Finds the first quadratic non-residue of the field.
@@ -74,10 +73,7 @@ pub fn sqrt_exn<F: PrimeField>(
     // Encoding the same equation as a generic R1CS is sound but changes both
     // the Generic coefficients and how adjacent halves are packed.
     sys.add_constraint(
-        Constraint::BasicSnarkyConstraint(BasicSnarkyConstraint::Square(
-            y.clone(),
-            x.clone(),
-        )),
+        Constraint::BasicSnarkyConstraint(BasicSnarkyConstraint::Square(y.clone(), x.clone())),
         Some("sqrt_exn".into()),
         loc,
     )?;
@@ -116,12 +112,7 @@ where
     let t2 = t.mul(t, None, loc.clone(), sys)?;
 
     // alpha = 1 / (t2 * (t2 + fu))
-    let alpha_inv = (&t2 + &FieldVar::constant(params.fu)).mul(
-        &t2,
-        None,
-        loc.clone(),
-        sys,
-    )?;
+    let alpha_inv = (&t2 + &FieldVar::constant(params.fu)).mul(&t2, None, loc.clone(), sys)?;
     let alpha = div_unsafe(sys, loc.clone(), &FieldVar::constant(F::one()), &alpha_inv)?;
 
     // x1 = sqrt(-3u² - u/2) - t2² * alpha * sqrt(-3u²)

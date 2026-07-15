@@ -33,8 +33,8 @@ pub use snarky::gadgets::sponge::DuplexState as PoseidonSponge;
 
 /// The kimchi sponge parameters for the circuit field `F` (Fp → Vesta's,
 /// Fq → Pallas'), for generic code that needs an out-of-circuit sponge.
-pub fn params_for_field<F: PrimeField + 'static>(
-) -> &'static ArithmeticSpongeParams<F, FULL_ROUNDS> {
+pub fn params_for_field<F: PrimeField + 'static>() -> &'static ArithmeticSpongeParams<F, FULL_ROUNDS>
+{
     use core::any::TypeId;
     use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};

@@ -72,9 +72,7 @@ mod tests {
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge =
@@ -128,11 +126,7 @@ mod tests {
             .oracles::<BaseSponge, ScalarSponge, _>(vi, &public_comm, Some(&public_input))
             .unwrap();
 
-        let all = AllEvals::from_parts(
-            proof.evals.clone(),
-            o.public_evals.clone(),
-            proof.ft_eval1,
-        );
+        let all = AllEvals::from_parts(proof.evals.clone(), o.public_evals.clone(), proof.ft_eval1);
         let (at_zeta, at_zetaw) = all.factor();
 
         // public input split

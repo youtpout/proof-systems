@@ -128,9 +128,7 @@ impl SideLoadedVerificationKey {
         &self.commitments
     }
 
-    pub fn to_plonk_verification_key(
-        &self,
-    ) -> PlonkVerificationKeyEvals<(Fp, Fp)> {
+    pub fn to_plonk_verification_key(&self) -> PlonkVerificationKeyEvals<(Fp, Fp)> {
         crate::reduced_messages::plonk_verification_key_from_list(&self.commitments)
     }
 
@@ -153,9 +151,7 @@ impl SideLoadedVerificationKey {
     pub fn to_mina_field_elements(&self) -> Vec<Fp> {
         let mut fields = Vec::with_capacity(Self::MINA_PAYLOAD_FIELDS);
         let one_hot = |proofs: ProofsVerified| {
-            std::array::from_fn::<Fp, 3, _>(|index| {
-                Fp::from(u64::from(index == proofs.to_usize()))
-            })
+            std::array::from_fn::<Fp, 3, _>(|index| Fp::from(u64::from(index == proofs.to_usize())))
         };
         fields.extend(one_hot(self.max_proofs_verified));
         fields.extend(one_hot(self.proofs_verified));
@@ -199,9 +195,9 @@ impl SideLoadedVerificationKey {
             let bits = &fields[offset..offset + 3];
             (0..3)
                 .find(|&selected| {
-                    bits.iter().enumerate().all(|(index, value)| {
-                        *value == Fp::from(u64::from(index == selected))
-                    })
+                    bits.iter()
+                        .enumerate()
+                        .all(|(index, value)| *value == Fp::from(u64::from(index == selected)))
                 })
                 .map(ProofsVerified::from_usize)
                 .ok_or(SideLoadedKeyError::InvalidMetadataField(offset))
@@ -212,8 +208,7 @@ impl SideLoadedVerificationKey {
             .chunks_exact(2)
             .map(|point| (point[0], point[1]))
             .collect();
-        let wrap_domain_log2 =
-            crate::common::wrap_domain_log2(proofs_verified.to_usize()) as u8;
+        let wrap_domain_log2 = crate::common::wrap_domain_log2(proofs_verified.to_usize()) as u8;
         let mut key = Self::new(
             crate::common::TICK_ROUNDS as u8,
             wrap_domain_log2,
@@ -255,9 +250,7 @@ impl SideLoadedVerificationKey {
         Ok(key)
     }
 
-    pub fn to_stable_v2_base58(
-        &self,
-    ) -> Result<String, crate::mina_bin_prot::BinProtError> {
+    pub fn to_stable_v2_base58(&self) -> Result<String, crate::mina_bin_prot::BinProtError> {
         self.to_stable_v2().to_base58_check()
     }
 
@@ -265,8 +258,7 @@ impl SideLoadedVerificationKey {
         step_domain_log2: u8,
         value: &str,
     ) -> Result<Self, SideLoadedStableV2Error> {
-        let key =
-            crate::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(value)?;
+        let key = crate::mina_bin_prot::SideLoadedVerificationKeyV2::from_base58_check(value)?;
         Ok(Self::from_stable_v2(step_domain_log2, key)?)
     }
 }
@@ -333,8 +325,7 @@ mod tests {
         PlonkSpongeConstantsKimchi,
         FULL_ROUNDS,
     >;
-    type ScalarSponge =
-        DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+    type ScalarSponge = DefaultFrSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
     #[derive(Clone, Copy)]
     struct IdentityApp;
@@ -367,8 +358,8 @@ mod tests {
     #[test]
     fn validates_and_restores_the_canonical_vk_layout() {
         let points = valid_commitments();
-        let key = SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, points.clone())
-            .unwrap();
+        let key =
+            SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, points.clone()).unwrap();
         assert_eq!(
             key.to_plonk_verification_key()
                 .to_list()
@@ -390,21 +381,15 @@ mod tests {
         );
 
         assert!(matches!(
-            SideLoadedVerificationKey::new(
-                16,
-                13,
-                ProofsVerified::N2,
-                valid_commitments()
-            ),
+            SideLoadedVerificationKey::new(16, 13, ProofsVerified::N2, valid_commitments()),
             Err(SideLoadedKeyError::BranchDomainMismatch { .. })
         ));
     }
 
     #[test]
     fn rejects_wrong_arity_and_oversized_step_domain() {
-        let key =
-            SideLoadedVerificationKey::new(16, 15, ProofsVerified::N2, valid_commitments())
-                .unwrap();
+        let key = SideLoadedVerificationKey::new(16, 15, ProofsVerified::N2, valid_commitments())
+            .unwrap();
         assert!(matches!(
             key.ensure_compatible(ProofsVerified::N1),
             Err(SideLoadedKeyError::ProofsVerifiedMismatch { .. })
@@ -418,9 +403,8 @@ mod tests {
 
     #[test]
     fn mina_field_encoding_is_stable_and_round_trips() {
-        let key =
-            SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, valid_commitments())
-                .unwrap();
+        let key = SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, valid_commitments())
+            .unwrap();
         let bytes = key.to_mina_field_bytes();
         assert_eq!(bytes.len(), SideLoadedVerificationKey::MINA_PAYLOAD_BYTES);
         assert_eq!(&bytes[..4], &[0, 0, 0, 0]);
@@ -447,9 +431,8 @@ mod tests {
             SideLoadedKeyError::WrongSerializedLength(12)
         );
 
-        let key =
-            SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, valid_commitments())
-                .unwrap();
+        let key = SideLoadedVerificationKey::new(16, 14, ProofsVerified::N1, valid_commitments())
+            .unwrap();
         let mut bytes = key.to_mina_field_bytes();
         bytes[..SideLoadedVerificationKey::MINA_FIELD_BYTES].fill(0xff);
         assert_eq!(
@@ -460,14 +443,16 @@ mod tests {
 
     #[test]
     fn stable_v2_conversion_round_trips_through_mina_base58() {
-        let key =
-            SideLoadedVerificationKey::new(16, 15, ProofsVerified::N2, valid_commitments())
-                .unwrap();
+        let key = SideLoadedVerificationKey::new(16, 15, ProofsVerified::N2, valid_commitments())
+            .unwrap();
         let base58 = key.to_stable_v2_base58().unwrap();
         let decoded = SideLoadedVerificationKey::from_stable_v2_base58(16, &base58).unwrap();
 
         assert_eq!(decoded, key);
-        assert_eq!(decoded.to_mina_field_elements(), key.to_mina_field_elements());
+        assert_eq!(
+            decoded.to_mina_field_elements(),
+            key.to_mina_field_elements()
+        );
         assert_eq!(decoded.to_stable_v2(), key.to_stable_v2());
     }
 
@@ -488,8 +473,7 @@ mod tests {
     #[test]
     fn side_loaded_step_circuit_accepts_valid_key_and_rejects_tampering() {
         let key =
-            SideLoadedVerificationKey::new(9, 13, ProofsVerified::N0, valid_commitments())
-                .unwrap();
+            SideLoadedVerificationKey::new(9, 13, ProofsVerified::N0, valid_commitments()).unwrap();
         let rule = InductiveRule::new(RuleId(0), "base", ProofsVerified::N0, 9);
         let circuit = SideLoadedStepCircuit {
             app: IdentityApp,
@@ -506,36 +490,20 @@ mod tests {
         );
         let witness = SideLoadedKeyWitness::from(&key);
         let (proof, _) = prover
-            .prove::<BaseSponge, ScalarSponge>(
-                digest,
-                (Fp::from(42u64), witness.clone()),
-                true,
-            )
+            .prove::<BaseSponge, ScalarSponge>(digest, (Fp::from(42u64), witness.clone()), true)
             .unwrap();
         verifier.verify::<BaseSponge, ScalarSponge>(proof, digest, ());
 
         let mut invalid_point = witness.clone();
         invalid_point.commitments[0] = (Fp::from(1u64), Fp::from(1u64));
-        assert!(
-            prover
-                .prove::<BaseSponge, ScalarSponge>(
-                    digest,
-                    (Fp::from(42u64), invalid_point),
-                    true,
-                )
-                .is_err()
-        );
+        assert!(prover
+            .prove::<BaseSponge, ScalarSponge>(digest, (Fp::from(42u64), invalid_point), true,)
+            .is_err());
 
         let mut invalid_branch = witness;
         invalid_branch.proofs_verified = 1;
-        assert!(
-            prover
-                .prove::<BaseSponge, ScalarSponge>(
-                    digest,
-                    (Fp::from(42u64), invalid_branch),
-                    true,
-                )
-                .is_err()
-        );
+        assert!(prover
+            .prove::<BaseSponge, ScalarSponge>(digest, (Fp::from(42u64), invalid_branch), true,)
+            .is_err());
     }
 }

@@ -948,16 +948,18 @@ impl WrapStatementMinimalV1 {
         flattened[7] = alpha;
         flattened[8] = zeta;
         flattened[10] = sponge_digest;
-        flattened[13..13 + Self::MAX_BP_CHALLENGES]
-            .copy_from_slice(&bulletproof_challenges);
+        flattened[13..13 + Self::MAX_BP_CHALLENGES].copy_from_slice(&bulletproof_challenges);
         flattened[13 + Self::MAX_BP_CHALLENGES] = crate::composition_types::BranchData {
             proofs_verified,
             domain_log2,
         }
         .pack::<Fq>();
         for (slot, flag) in features.iter().enumerate() {
-            flattened[14 + Self::MAX_BP_CHALLENGES + slot] =
-                if *flag { Fq::from(1u64) } else { Fq::from(0u64) };
+            flattened[14 + Self::MAX_BP_CHALLENGES + slot] = if *flag {
+                Fq::from(1u64)
+            } else {
+                Fq::from(0u64)
+            };
         }
 
         Ok(Self {

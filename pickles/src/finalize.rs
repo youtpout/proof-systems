@@ -26,9 +26,11 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::fr_sponge::{squeeze_xi_r, FrSpongeInputs};
-use crate::ipa::{challenge_polynomial_circuit, combined_inner_product_circuit};
-use crate::scalar_challenge::scalar_to_field;
+use crate::{
+    fr_sponge::{squeeze_xi_r, FrSpongeInputs},
+    ipa::{challenge_polynomial_circuit, combined_inner_product_circuit},
+    scalar_challenge::scalar_to_field,
+};
 
 /// The result of the finalize arithmetic core: the derived field challenges and
 /// the reconstructed inner product, plus the `xi_correct` boolean.
@@ -323,8 +325,7 @@ fn column_eval<'a, F: PrimeField>(
     evals: &'a crate::fr_sponge::AbsorbEvalsVar<F>,
     col: &kimchi::circuits::berkeley_columns::Column,
 ) -> &'a crate::fr_sponge::PointEvalVar<F> {
-    use kimchi::circuits::berkeley_columns::Column;
-    use kimchi::circuits::gate::GateType;
+    use kimchi::circuits::{berkeley_columns::Column, gate::GateType};
     match col {
         Column::Witness(i) => &evals.w[*i],
         Column::Z => &evals.z,
@@ -356,11 +357,12 @@ pub fn finalize_deferred<F: PrimeField>(
     params: &FinalizeParams<'_, F>,
     witness: &FinalizeWitness<F>,
 ) -> SnarkyResult<FinalizedDeferred<F>> {
-    use crate::expr_eval::{eval_polish, PolishEnv};
-    use crate::ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar};
-    use crate::plonk_checks::ZK_ROWS;
-    use kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm;
-    use kimchi::circuits::gate::CurrOrNext;
+    use crate::{
+        expr_eval::{eval_polish, PolishEnv},
+        ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar},
+        plonk_checks::ZK_ROWS,
+    };
+    use kimchi::circuits::{berkeley_columns::BerkeleyChallengeTerm, gate::CurrOrNext};
 
     let evals = &witness.evals;
 
@@ -520,22 +522,26 @@ pub fn finalize_deferred<F: PrimeField>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fr_sponge::{AbsorbEvalsVar, PointEvalVar};
-    use crate::plonk_checks::ZK_ROWS;
+    use crate::{
+        fr_sponge::{AbsorbEvalsVar, PointEvalVar},
+        plonk_checks::ZK_ROWS,
+    };
     use ark_ff::{One, Zero};
     use ark_poly::Radix2EvaluationDomain as D;
-    use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
-    use kimchi::circuits::expr::PolishToken;
-    use kimchi::curve::KimchiCurve;
-    use kimchi::proof::PointEvaluations;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::{BerkeleyChallengeTerm, Column},
+            expr::PolishToken,
+        },
+        curve::KimchiCurve,
+        proof::PointEvaluations,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc};
 
     type BaseSponge =
@@ -744,9 +750,11 @@ mod tests {
     /// reference on challenges derived from real prechallenges.
     #[test]
     fn b_actual_matches_reference() {
-        use crate::common::TOCK_ROUNDS;
-        use crate::ipa::{challenge_polynomial, compute_challenges};
-        use crate::scalar_challenge::ScalarChallenge;
+        use crate::{
+            common::TOCK_ROUNDS,
+            ipa::{challenge_polynomial, compute_challenges},
+            scalar_challenge::ScalarChallenge,
+        };
         use ark_ff::UniformRand;
 
         let mut rng = o1_utils::tests::make_test_rng(None);
@@ -836,8 +844,7 @@ mod tests {
             z: (combined.z.zeta, combined.z.zeta_omega),
         };
         let ft_eval0_ooc = {
-            use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-            use kimchi::circuits::expr::Constants;
+            use kimchi::circuits::{berkeley_columns::BerkeleyChallenges, expr::Constants};
             let constants = Constants {
                 endo_coefficient: vi.endo,
                 mds: &Vesta::sponge_params().mds,

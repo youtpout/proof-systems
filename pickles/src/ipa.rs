@@ -7,8 +7,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
-use crate::composition_types::BulletproofChallenge;
-use crate::scalar_challenge::ScalarChallenge;
+use crate::{composition_types::BulletproofChallenge, scalar_challenge::ScalarChallenge};
 
 /// Converts an IPA prechallenge to its field form via the endomorphism
 /// (`Ipa.compute_challenge`).
@@ -150,10 +149,14 @@ mod tests {
 // combined_inner_product (the core of finalize_other_proof step 11)
 //
 
-use kimchi::circuits::berkeley_columns::Column;
-use kimchi::circuits::gate::GateType;
-use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-use kimchi::proof::ProofEvaluations;
+use kimchi::{
+    circuits::{
+        berkeley_columns::Column,
+        gate::GateType,
+        wires::{COLUMNS, PERMUTS},
+    },
+    proof::ProofEvaluations,
+};
 
 /// The mandatory columns combined by the inner product, in kimchi's exact
 /// order (the no-optional-gate, no-lookup subset used by a base step
@@ -211,17 +214,19 @@ mod cip_tests {
     use super::*;
     use crate::plonk_checks::{ft_eval0, scalars_env, Domain, Evals, ZK_ROWS};
     use ark_ff::{One, Zero};
-    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-    use kimchi::circuits::expr::{Constants, PolishToken};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::BerkeleyChallenges,
+            expr::{Constants, PolishToken},
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge =
@@ -370,17 +375,19 @@ mod cip_circuit_tests {
     use super::*;
     use crate::plonk_checks::{ft_eval0, scalars_env, Domain, Evals, ZK_ROWS};
     use ark_ff::{One, Zero};
-    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-    use kimchi::circuits::expr::{ColumnEvaluations, Constants, PolishToken};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::BerkeleyChallenges,
+            expr::{ColumnEvaluations, Constants, PolishToken},
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, RunState, SnarkyResult};
 
     type BaseSponge =

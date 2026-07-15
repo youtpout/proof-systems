@@ -201,11 +201,9 @@ where
         public_input: &dyn Any,
         witness: Box<dyn Any>,
     ) -> Result<Box<dyn Any>, HeterogeneousProgramError> {
-        let public_input = public_input
-            .downcast_ref::<B::PublicInput>()
-            .ok_or(HeterogeneousProgramError::PublicInputTypeMismatch(
-                self.rule_id,
-            ))?;
+        let public_input = public_input.downcast_ref::<B::PublicInput>().ok_or(
+            HeterogeneousProgramError::PublicInputTypeMismatch(self.rule_id),
+        )?;
         let witness = witness
             .downcast::<B::Witness>()
             .map_err(|_| HeterogeneousProgramError::WitnessTypeMismatch(self.rule_id))?;
@@ -220,11 +218,9 @@ where
         public_input: &dyn Any,
         proof: &dyn Any,
     ) -> Result<(), HeterogeneousProgramError> {
-        let public_input = public_input
-            .downcast_ref::<B::PublicInput>()
-            .ok_or(HeterogeneousProgramError::PublicInputTypeMismatch(
-                self.rule_id,
-            ))?;
+        let public_input = public_input.downcast_ref::<B::PublicInput>().ok_or(
+            HeterogeneousProgramError::PublicInputTypeMismatch(self.rule_id),
+        )?;
         let proof = proof
             .downcast_ref::<B::Proof>()
             .ok_or(HeterogeneousProgramError::ProofTypeMismatch(self.rule_id))?;
@@ -305,10 +301,7 @@ impl HeterogeneousPicklesProgram {
     }
 }
 
-pub fn erase_rule_backend<B>(
-    rule_id: RuleId,
-    backend: B,
-) -> Box<dyn ErasedRuleBackend>
+pub fn erase_rule_backend<B>(rule_id: RuleId, backend: B) -> Box<dyn ErasedRuleBackend>
 where
     B: CompiledRuleBackend + 'static,
     B::PublicInput: 'static,
@@ -340,16 +333,7 @@ pub struct RecursiveRuleWitness<W, P, const ARITY: usize> {
 /// Typed backend adapter for a recursive `N1` or `N2` branch. It validates the
 /// rule arity at compilation and front-pads previous proofs before invoking
 /// the concrete Pickles prover.
-pub struct RecursiveRuleBackend<
-    const ARITY: usize,
-    I,
-    W,
-    PreviousProof,
-    Proof,
-    E,
-    Prove,
-    Verify,
-> {
+pub struct RecursiveRuleBackend<const ARITY: usize, I, W, PreviousProof, Proof, E, Prove, Verify> {
     rule: InductiveRule,
     prove: Prove,
     verify: Verify,
@@ -361,16 +345,8 @@ pub type N1RuleBackend<I, W, PreviousProof, Proof, E, Prove, Verify> =
 pub type N2RuleBackend<I, W, PreviousProof, Proof, E, Prove, Verify> =
     RecursiveRuleBackend<2, I, W, PreviousProof, Proof, E, Prove, Verify>;
 
-impl<
-        const ARITY: usize,
-        I,
-        W,
-        PreviousProof,
-        Proof,
-        E,
-        Prove,
-        Verify,
-    > RecursiveRuleBackend<ARITY, I, W, PreviousProof, Proof, E, Prove, Verify>
+impl<const ARITY: usize, I, W, PreviousProof, Proof, E, Prove, Verify>
+    RecursiveRuleBackend<ARITY, I, W, PreviousProof, Proof, E, Prove, Verify>
 {
     pub fn compile(
         rule: &InductiveRule,
@@ -397,16 +373,7 @@ impl<
     }
 }
 
-impl<
-        const ARITY: usize,
-        I,
-        W,
-        PreviousProof,
-        Proof,
-        E,
-        Prove,
-        Verify,
-    > CompiledRuleBackend
+impl<const ARITY: usize, I, W, PreviousProof, Proof, E, Prove, Verify> CompiledRuleBackend
     for RecursiveRuleBackend<ARITY, I, W, PreviousProof, Proof, E, Prove, Verify>
 where
     Prove: FnMut(&I, W, [ProofSlot<PreviousProof>; 2]) -> Result<Proof, E>,
@@ -417,11 +384,7 @@ where
     type Proof = Proof;
     type Error = E;
 
-    fn prove(
-        &mut self,
-        public_input: &I,
-        witness: Self::Witness,
-    ) -> Result<Proof, E> {
+    fn prove(&mut self, public_input: &I, witness: Self::Witness) -> Result<Proof, E> {
         let slots = self
             .rule
             .proof_slots(witness.previous_proofs.into_iter().collect())
@@ -538,7 +501,11 @@ mod tests {
 
         assert_eq!(program.rule(RuleId(1)).unwrap().wrap_domain_log2(), 14);
         assert_eq!(
-            program.rule(RuleId(1)).unwrap().proof_slots(vec![7]).unwrap(),
+            program
+                .rule(RuleId(1))
+                .unwrap()
+                .proof_slots(vec![7])
+                .unwrap(),
             [ProofSlot::Dummy, ProofSlot::Proof(7)]
         );
         assert_eq!(
@@ -651,10 +618,7 @@ mod tests {
             rule.to_mina_field_elements::<Fp>(),
             [Fp::from(7u64), Fp::from(2u64), Fp::from(16u64)]
         );
-        assert_eq!(
-            rule.branch_data().pack::<Fp>(),
-            Fp::from(16u64 * 4 + 2)
-        );
+        assert_eq!(rule.branch_data().pack::<Fp>(), Fp::from(16u64 * 4 + 2));
     }
 
     #[test]
@@ -687,10 +651,7 @@ mod tests {
         let mut binary = N2RuleBackend::compile(
             &binary_rule,
             |input: &u64, _: (), slots: [ProofSlot<u64>; 2]| {
-                assert_eq!(
-                    slots,
-                    [ProofSlot::Proof(3), ProofSlot::Proof(4)]
-                );
+                assert_eq!(slots, [ProofSlot::Proof(3), ProofSlot::Proof(4)]);
                 Ok::<_, &'static str>(*input)
             },
             verify,
@@ -755,9 +716,9 @@ mod tests {
         program.verify(&"pickles".to_owned(), &text).unwrap();
         assert_eq!(
             program.verify(&7u64, &text),
-            Err(HeterogeneousProgramError::PublicInputTypeMismatch(
-                RuleId(1)
-            ))
+            Err(HeterogeneousProgramError::PublicInputTypeMismatch(RuleId(
+                1
+            )))
         );
     }
 }

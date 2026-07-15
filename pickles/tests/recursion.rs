@@ -23,8 +23,7 @@ use pickles::{
         prepare_recursive_wrap_n1, prepare_recursive_wrap_width2,
         prove_direct_n1_stable_cycles_with_real_vk, prove_first_recursive_cycle,
         prove_next_recursive_cycle, prove_prepared_recursive_wrap, prove_recursive_step_width2,
-        prove_recursive_wrap,
-        recursive_wrap_ipa_equation_holds, step_statement_len,
+        prove_recursive_wrap, recursive_wrap_ipa_equation_holds, step_statement_len,
         width1_step_statement_len, wrap_unfinalized_from_base,
         wrap_unfinalized_from_recursive_cycle, DirectN1Backend, DirectN1Witness, DirectN2Backend,
         DirectN2Witness, DirectRecursiveBackendError,
@@ -317,16 +316,37 @@ fn program_wrap_index_is_shared_by_n0_n1_n2() {
         pickles::api::WrapBranchData::from_step_verifier(&n2_step.verifier.index, 2),
     ];
     let mut n0_wrap = prepare_recursive_wrap_n0::<
-        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
-        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+        SquareApp,
+        ROUNDS,
+        STMT_LEN,
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
     >(&base, &n0_step);
     let mut n1_wrap = prepare_recursive_wrap_n1::<
-        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
-        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+        SquareApp,
+        ROUNDS,
+        STMT_LEN,
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
     >(&base, &n1_step);
     let mut n2_wrap = prepare_recursive_wrap_width2::<
-        SquareApp, ROUNDS, STMT_LEN, ROUNDS, WROUNDS, K2, K_WIDTH2,
-        WIDTH2_STEP_ROUNDS, WIDTH2_WRAP_STMT_LEN,
+        SquareApp,
+        ROUNDS,
+        STMT_LEN,
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+        WIDTH2_STEP_ROUNDS,
+        WIDTH2_WRAP_STMT_LEN,
     >([&base, &second_base], &n2_step);
     for (which, wrap) in [&mut n0_wrap, &mut n1_wrap, &mut n2_wrap]
         .into_iter()

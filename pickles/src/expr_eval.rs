@@ -14,9 +14,11 @@ use std::borrow::Cow;
 
 use ark_ff::{FftField, PrimeField};
 use ark_poly::Radix2EvaluationDomain as D;
-use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
-use kimchi::circuits::expr::{ConstantTerm, PolishToken, RowOffset};
-use kimchi::circuits::gate::CurrOrNext;
+use kimchi::circuits::{
+    berkeley_columns::{BerkeleyChallengeTerm, Column},
+    expr::{ConstantTerm, PolishToken, RowOffset},
+    gate::CurrOrNext,
+};
 
 use snarky::{FieldVar, RunState, SnarkyResult};
 
@@ -197,17 +199,19 @@ mod tests {
     use super::*;
     use crate::plonk_checks::ZK_ROWS;
     use ark_ff::{One, Zero};
-    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-    use kimchi::circuits::expr::{Constants, PolishToken};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::BerkeleyChallenges,
+            expr::{Constants, PolishToken},
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, RunState, SnarkyResult};
 
     type BaseSponge =

@@ -22,8 +22,8 @@ use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::{
     incrementally_verify::{
-        incrementally_verify_proof, Advice, IncrementalResult, IndexDigest, Messages,
-        OpeningProof, VerificationKeyComm, XHatInput,
+        incrementally_verify_proof, Advice, IncrementalResult, IndexDigest, Messages, OpeningProof,
+        VerificationKeyComm, XHatInput,
     },
     public_input::Term,
 };

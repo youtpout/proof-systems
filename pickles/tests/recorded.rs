@@ -461,11 +461,9 @@ fn recorded_n2_over_two_kept_bases_executes_the_new_application() {
 fn recorded_compiled_n2_reuses_step_and_wrap_indexes() {
     use pickles::recorded::{RecordedCompiledBase, RecordedCompiledN2};
 
-    let mut base = RecordedCompiledBase::compile(
-        square_circuit(),
-        vec![Fp::from(3u64), Fp::from(9u64)],
-    )
-    .unwrap();
+    let mut base =
+        RecordedCompiledBase::compile(square_circuit(), vec![Fp::from(3u64), Fp::from(9u64)])
+            .unwrap();
     let first = base
         .prove_keep(vec![Fp::from(4u64), Fp::from(16u64)])
         .unwrap();
@@ -480,11 +478,7 @@ fn recorded_compiled_n2_reuses_step_and_wrap_indexes() {
     )
     .unwrap();
     let proof = compiled
-        .prove(
-            &first,
-            &second,
-            vec![Fp::from(7u64), Fp::from(49u64)],
-        )
+        .prove(&first, &second, vec![Fp::from(7u64), Fp::from(49u64)])
         .unwrap();
     assert_eq!(proof.app_state, vec![Fp::from(49u64)]);
     pickles::verify::verify_side_loaded_with_step_vk(

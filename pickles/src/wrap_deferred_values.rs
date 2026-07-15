@@ -15,11 +15,13 @@
 use ark_ff::PrimeField;
 use kimchi::proof::{PointEvaluations, ProofEvaluations};
 
-use crate::composition_types::BulletproofChallenge;
-use crate::ipa::{challenge_polynomial, combined_inner_product, compute_challenges};
-use crate::plonk_checks::{perm_scalar, Evals, ScalarsEnv};
-use crate::scalar_challenge::ScalarChallenge;
-use crate::shifted_value::type1_of_field;
+use crate::{
+    composition_types::BulletproofChallenge,
+    ipa::{challenge_polynomial, combined_inner_product, compute_challenges},
+    plonk_checks::{perm_scalar, Evals, ScalarsEnv},
+    scalar_challenge::ScalarChallenge,
+    shifted_value::type1_of_field,
+};
 
 /// The deferred values recomputed by the prover for the wrap statement (base
 /// subset: the fields the in-circuit `finalize_other_proof` checks).
@@ -86,20 +88,24 @@ pub fn expand_deferred<F: PrimeField>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plonk_checks::{ft_eval0, scalars_env, Domain, ZK_ROWS};
-    use crate::shifted_value::type1_to_field;
+    use crate::{
+        plonk_checks::{ft_eval0, scalars_env, Domain, ZK_ROWS},
+        shifted_value::type1_to_field,
+    };
     use ark_ff::{One, UniformRand, Zero};
-    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-    use kimchi::circuits::expr::{Constants, PolishToken};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::BerkeleyChallenges,
+            expr::{Constants, PolishToken},
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge =

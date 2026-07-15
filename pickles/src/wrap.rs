@@ -10,11 +10,12 @@
 //! (cip/b/perm as stored in the statement); this adds the transcript half.
 
 use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
-use kimchi::curve::KimchiCurve;
-use kimchi::proof::ProverProof;
+use kimchi::{curve::KimchiCurve, proof::ProverProof};
 use mina_curves::pasta::{Fp, Fq, Vesta};
-use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
+use mina_poseidon::{
+    constants::PlonkSpongeConstantsKimchi,
+    poseidon::{ArithmeticSponge, Sponge as _},
+};
 use poly_commitment::ipa::OpeningProof;
 
 use crate::common::FULL_ROUNDS;
@@ -192,8 +193,10 @@ mod tests {
     use ark_ff::One;
     use mina_curves::pasta::VestaParameters;
     use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-    use poly_commitment::commitment::{shift_scalar, PolyComm};
-    use poly_commitment::SRS;
+    use poly_commitment::{
+        commitment::{shift_scalar, PolyComm},
+        SRS,
+    };
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge = DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
@@ -321,9 +324,7 @@ mod tests {
         let our_chals: Vec<Fp> = w
             .bulletproof_prechallenges
             .iter()
-            .map(|&raw| {
-                crate::scalar_challenge::ScalarChallenge(to_fp(raw)).to_field(endo_p)
-            })
+            .map(|&raw| crate::scalar_challenge::ScalarChallenge(to_fp(raw)).to_field(endo_p))
             .collect();
         assert_eq!(our_chals, kimchi_chals, "IPA challenges");
         // b_repr round-trips to h(zeta) + r*h(zetaw)

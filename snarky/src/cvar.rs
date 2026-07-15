@@ -98,18 +98,11 @@ where
         res
     }
 
-    fn to_constant_and_terms_inner(
-        &self,
-        scale: F,
-        constant: &mut F,
-        terms: &mut Vec<Term<F>>,
-    ) {
+    fn to_constant_and_terms_inner(&self, scale: F, constant: &mut F, terms: &mut Vec<Term<F>>) {
         match self {
             FieldVar::Constant(c) => *constant += scale * c,
             FieldVar::Var(v) => terms.push((scale, *v)),
-            FieldVar::Scale(s, t) => {
-                t.to_constant_and_terms_inner(scale * s, constant, terms)
-            }
+            FieldVar::Scale(s, t) => t.to_constant_and_terms_inner(scale * s, constant, terms),
             FieldVar::Add(x1, x2) => {
                 x1.to_constant_and_terms_inner(scale, constant, terms);
                 x2.to_constant_and_terms_inner(scale, constant, terms);

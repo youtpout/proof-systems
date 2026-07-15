@@ -18,9 +18,9 @@ use ark_ff::PrimeField;
 use mina_poseidon::poseidon::ArithmeticSpongeParams;
 use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
 
-use crate::common::FULL_ROUNDS;
-use crate::composition_types::PlonkVerificationKeyEvals;
-use crate::sponge::PoseidonSponge;
+use crate::{
+    common::FULL_ROUNDS, composition_types::PlonkVerificationKeyEvals, sponge::PoseidonSponge,
+};
 
 /// A fresh sponge with the wrap verification key absorbed
 /// (`index_to_field_elements` order: sigma, coefficients, generic, psm,
@@ -136,10 +136,11 @@ pub fn hash_messages_for_next_wrap_proof<F: PrimeField>(
     let mut sponge = {
         use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _, SpongeState};
         let params = crate::sponge::params_for_field::<F>();
-        let mut constant_sponge =
-            ArithmeticSponge::<F, mina_poseidon::constants::PlonkSpongeConstantsKimchi, FULL_ROUNDS>::new(
-                params,
-            );
+        let mut constant_sponge = ArithmeticSponge::<
+            F,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            FULL_ROUNDS,
+        >::new(params);
         for chals in dummy_challenges {
             for c in chals {
                 constant_sponge.absorb(&[*c]);
@@ -206,12 +207,14 @@ mod tests {
     use super::*;
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_ff::UniformRand;
-    use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::wires::{COLUMNS, PERMUTS},
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
-    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
+        poseidon::{ArithmeticSponge, Sponge as _},
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof;

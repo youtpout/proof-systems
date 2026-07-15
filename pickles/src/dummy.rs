@@ -12,8 +12,7 @@ use kimchi::proof::{PointEvaluations, ProofEvaluations};
 use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
 use std::sync::OnceLock;
 
-use crate::all_evals::AllEvals;
-use crate::ro::Ro;
+use crate::{all_evals::AllEvals, ro::Ro};
 
 /// The dummy IPA challenges of one side: raw 128-bit prechallenges and their
 /// endo field images (`Dummy.Ipa.{Step,Wrap}.challenges[_computed]`).
@@ -160,8 +159,7 @@ where
     G: poly_commitment::commitment::CommitmentCurve,
 {
     use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial};
-    use poly_commitment::commitment::b_poly_coefficients;
-    use poly_commitment::SRS as _;
+    use poly_commitment::{commitment::b_poly_coefficients, SRS as _};
 
     let coeffs = b_poly_coefficients(challenges_computed);
     let poly = DensePolynomial::from_coefficients_vec(coeffs);
@@ -254,11 +252,12 @@ pub fn evals_combined<F: PrimeField>() -> AllEvals<F> {
 mod tests {
     use super::*;
     use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
-    use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::wires::{COLUMNS, PERMUTS},
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
-    use poly_commitment::commitment::b_poly_coefficients;
-    use poly_commitment::SRS as _;
+    use poly_commitment::{commitment::b_poly_coefficients, SRS as _};
     use std::str::FromStr;
 
     /// Regression vectors from Pickles' `test_common.ml`.
@@ -475,8 +474,10 @@ mod tests {
     #[test]
     fn recursion_challenge_from_real_proof_round_trips() {
         use ark_ff::{BigInteger, One, PrimeField};
-        use poly_commitment::commitment::{shift_scalar, PolyComm};
-        use poly_commitment::SRS as _;
+        use poly_commitment::{
+            commitment::{shift_scalar, PolyComm},
+            SRS as _,
+        };
 
         let (mut pi, ver) = SmallCircuit {}.compile_to_indexes().unwrap();
         let vi = &ver.index;
@@ -561,8 +562,7 @@ mod tests {
     #[test]
     fn recursion_challenge_cross_size_folding() {
         use ark_ff::One;
-        use poly_commitment::commitment::PolyComm;
-        use poly_commitment::SRS as _;
+        use poly_commitment::{commitment::PolyComm, SRS as _};
 
         let (pi, _ver) = SmallCircuit {}.compile_to_indexes().unwrap();
         let endo_step =

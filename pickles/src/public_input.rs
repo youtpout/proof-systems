@@ -34,10 +34,7 @@ pub enum Term<F: PrimeField> {
         correction: Point<F>,
     },
     /// A single-bit variable (`Cond_add`): contributes `bit · lagrange`.
-    Cond {
-        bit: Boolean<F>,
-        lagrange: Point<F>,
-    },
+    Cond { bit: Boolean<F>, lagrange: Point<F> },
 }
 
 /// One element of a Pickles statement before commitment packing: either a

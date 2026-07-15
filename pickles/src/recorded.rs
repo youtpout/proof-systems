@@ -1427,12 +1427,11 @@ impl RecordedCompiledN1 {
         // Compile the Wrap eagerly as part of `compile`, matching
         // `Pickles.compile`: the first call to `prove` must only generate a
         // witness and run the two provers, never discover another index.
-        let (bootstrap_step, step_indexes) =
-            crate::recursive_step::prove_prepared_recursive_step(
-                prepared,
-                Some(main.clone()),
-                Some(step_indexes),
-            );
+        let (bootstrap_step, step_indexes) = crate::recursive_step::prove_prepared_recursive_step(
+            prepared,
+            Some(main.clone()),
+            Some(step_indexes),
+        );
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap::<
             RecordedApp,
             16,
@@ -1446,10 +1445,7 @@ impl RecordedCompiledN1 {
         prepared_wrap.data.branches = wrap_branches.clone();
         let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
         let (bootstrap_wrap, wrap_indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(
-                prepared_wrap,
-                Some(wrap_indexes),
-            );
+            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(wrap_indexes));
         let bootstrap_cycle = crate::recursive_step::RecursiveCycleProof {
             step: bootstrap_step,
             wrap: bootstrap_wrap,
@@ -1460,9 +1456,8 @@ impl RecordedCompiledN1 {
         // constraint system even though its domains are identical. Compile
         // that second shape now as well so no later prove call discovers an
         // index lazily.
-        let stable_wrap_vk = crate::api::wrap_verification_key_points(
-            &bootstrap_cycle.wrap.verifier,
-        );
+        let stable_wrap_vk =
+            crate::api::wrap_verification_key_points(&bootstrap_cycle.wrap.verifier);
         let stable_prepared = crate::recursive_step::prepare_next_recursive_step_with_state::<
             RECORDED_N1_STEP_ROUNDS,
             RECORDED_BASE_WRAP_ROUNDS,
@@ -1541,9 +1536,7 @@ impl RecordedCompiledN1 {
                 .stable_wrap_indexes
                 .take()
                 .expect("compiled stable N1 Wrap indexes");
-            let wrap_vk_pts = crate::api::wrap_verification_key_points(
-                &stable_wrap_indexes.1,
-            );
+            let wrap_vk_pts = crate::api::wrap_verification_key_points(&stable_wrap_indexes.1);
             let prepared = crate::recursive_step::prepare_next_recursive_step_with_state::<
                 RECORDED_N1_STEP_ROUNDS,
                 RECORDED_BASE_WRAP_ROUNDS,
@@ -1562,12 +1555,11 @@ impl RecordedCompiledN1 {
                 .stable_step_indexes
                 .take()
                 .expect("compiled stable N1 Step indexes");
-            let (step, stable_step_indexes) =
-                crate::recursive_step::prove_prepared_recursive_step(
-                    prepared,
-                    Some(main),
-                    Some(stable_step_indexes),
-                );
+            let (step, stable_step_indexes) = crate::recursive_step::prove_prepared_recursive_step(
+                prepared,
+                Some(main),
+                Some(stable_step_indexes),
+            );
             self.stable_step_indexes = Some(stable_step_indexes);
             let prepared_wrap = crate::recursive_step::prepare_next_recursive_wrap::<
                 RECORDED_N1_STEP_ROUNDS,
@@ -1580,11 +1572,10 @@ impl RecordedCompiledN1 {
                 RECORDED_N1_STEP_ROUNDS,
                 RECORDED_N1_WRAP_STMT_LEN,
             >(previous_cycle, &step);
-            let (wrap, stable_wrap_indexes) =
-                crate::recursive_step::prove_prepared_recursive_wrap(
-                    prepared_wrap,
-                    Some(stable_wrap_indexes),
-                );
+            let (wrap, stable_wrap_indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
+                prepared_wrap,
+                Some(stable_wrap_indexes),
+            );
             self.stable_wrap_indexes = Some(stable_wrap_indexes);
             let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
             let step_domain_log2 = cycle.step.verifier.index.domain.log_size_of_group as u8;
@@ -1738,11 +1729,7 @@ impl RecordedCompiledN2 {
             RECORDED_N2_STEP_STMT_LEN,
         >(first_prepared, second_prepared, app_state);
         let (step, step_indexes) =
-            crate::recursive_step::prove_prepared_recursive_step_width2(
-                prepared,
-                Some(main),
-                None,
-            );
+            crate::recursive_step::prove_prepared_recursive_step_width2(prepared, Some(main), None);
         let wrap_branches = vec![crate::api::WrapBranchData::from_step_verifier(
             &step_indexes.1.index,
             2,
@@ -1794,11 +1781,29 @@ impl RecordedCompiledN2 {
             std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&first_base.wrap_verifier);
         let first_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
-            RecordedApp, 16, RECORDED_BASE_WRAP_ROUNDS, 40, RECORDED_N1_STEP_STMT_LEN,
-        >(first_base, wrap_vk_pts.clone(), first.app_state.clone(), app_state.clone());
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            first_base,
+            wrap_vk_pts.clone(),
+            first.app_state.clone(),
+            app_state.clone(),
+        );
         let second_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
-            RecordedApp, 16, RECORDED_BASE_WRAP_ROUNDS, 40, RECORDED_N1_STEP_STMT_LEN,
-        >(second_base, wrap_vk_pts, second.app_state.clone(), app_state.clone());
+            RecordedApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            second_base,
+            wrap_vk_pts,
+            second.app_state.clone(),
+            app_state.clone(),
+        );
         let accumulators = [
             first_prepared.verified_wrap_accumulator,
             second_prepared.verified_wrap_accumulator,
@@ -1820,9 +1825,15 @@ impl RecordedCompiledN2 {
         );
         self.step_indexes = Some(indexes);
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_width2::<
-            RecordedApp, 16, 40, 16, RECORDED_BASE_WRAP_ROUNDS,
-            RECORDED_N1_STEP_STMT_LEN, RECORDED_N2_STEP_STMT_LEN,
-            RECORDED_N2_STEP_ROUNDS, RECORDED_N2_WRAP_STMT_LEN,
+            RecordedApp,
+            16,
+            40,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+            RECORDED_N2_STEP_ROUNDS,
+            RECORDED_N2_WRAP_STMT_LEN,
         >([first_base, second_base], &step);
         prepared_wrap.data.branches = self.wrap_branches.clone();
         let indexes = self.wrap_indexes.take().expect("compiled N2 Wrap indexes");
@@ -1986,11 +1997,11 @@ impl RecordedCompiledProgram {
         // A protocol-only valid proof supplies proof-shaped values while Step
         // indexes are compiled from the real application circuits. No user
         // witness has to satisfy its constraints during program compilation.
-        let mut template_compiled =
-            crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
-                RecordedProgramTemplateApp,
-                (),
-            );
+        let mut template_compiled = crate::api::CompiledBaseCase::<
+            RecordedProgramTemplateApp,
+            16,
+            40,
+        >::compile(RecordedProgramTemplateApp, ());
         let template = template_compiled.prove(());
         let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
 
@@ -2053,8 +2064,7 @@ impl RecordedCompiledProgram {
             (),
             final_wrap_vk.clone(),
         );
-        let step_indexes =
-            compile_recorded_program_steps(&branches, &template, &final_wrap_vk);
+        let step_indexes = compile_recorded_program_steps(&branches, &template, &final_wrap_vk);
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
         assert_eq!(
             wrap_branches, second_wrap_branches,

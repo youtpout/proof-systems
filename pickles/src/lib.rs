@@ -27,8 +27,8 @@ pub mod ft_eval_circuit;
 pub mod hash_messages;
 pub mod incrementally_verify;
 pub mod inductive_rule;
-pub mod mina_bin_prot;
 pub mod ipa;
+pub mod mina_bin_prot;
 pub mod opt_sponge;
 pub mod oracles;
 pub mod plonk_checks;
@@ -84,5 +84,5 @@ pub mod tick_tock {
     }
 }
 
-pub use snarky::api::{CompileProfile, set_compile_profile_hook};
+pub use snarky::api::{set_compile_profile_hook, CompileProfile};
 pub use tick_tock::{Side, Tick, Tock};

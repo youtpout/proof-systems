@@ -573,7 +573,13 @@ pub struct RecursiveStepWidth2Proof<
     pub statement: [Fp; PUBLIC_INPUT_LEN],
     pub proof: kimchi::proof::ProverProof<Vesta, IpaProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
     pub verifier: snarky::api::VerifierIndexWrapper<
-        RecursiveStepWidth2Circuit<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN, ACTIVE_PROOFS>,
+        RecursiveStepWidth2Circuit<
+            PREV_ROUNDS,
+            WRAP_ROUNDS,
+            WIDTH1_INPUT_LEN,
+            PUBLIC_INPUT_LEN,
+            ACTIVE_PROOFS,
+        >,
     >,
     pub messages_for_next_step_vk_pts: Vec<(Fp, Fp)>,
     pub messages_for_next_step_proof: crate::mina_bin_prot::StepMessagesForNextProofV1,
@@ -1924,12 +1930,7 @@ pub fn prove_prepared_recursive_step_width2<
     prepared: PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
     app: Option<EmbeddedAppMain>,
     indexes: Option<
-        RecursiveStepWidth2Indexes<
-            PREV_ROUNDS,
-            WRAP_ROUNDS,
-            WIDTH1_INPUT_LEN,
-            PUBLIC_INPUT_LEN,
-        >,
+        RecursiveStepWidth2Indexes<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
     >,
 ) -> (
     RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
@@ -1953,13 +1954,7 @@ pub fn compile_prepared_recursive_step_width2<
     prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
     app: Option<EmbeddedAppMain>,
 ) -> RecursiveStepWidth2Indexes<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN> {
-    RecursiveStepWidth2Circuit::<
-        PREV_ROUNDS,
-        WRAP_ROUNDS,
-        WIDTH1_INPUT_LEN,
-        PUBLIC_INPUT_LEN,
-        2,
-    > {
+    RecursiveStepWidth2Circuit::<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN, 2> {
         proofs: prepared.proofs.clone(),
         dummy_slots: prepared.dummy_slots,
         app_state: prepared.app_state.clone(),
@@ -2034,10 +2029,12 @@ pub fn prove_prepared_recursive_step_width2_arity<
     };
     let (mut prover, verifier) = match indexes {
         Some(indexes) => indexes,
-        None => circuit.compile_to_indexes_with_domain_and_srs(
-            crate::common::TICK_ROUNDS as u32,
-            Some(crate::common::TICK_ROUNDS as u32),
-        ).unwrap(),
+        None => circuit
+            .compile_to_indexes_with_domain_and_srs(
+                crate::common::TICK_ROUNDS as u32,
+                Some(crate::common::TICK_ROUNDS as u32),
+            )
+            .unwrap(),
     };
     let (proof, _) = prover
         .prove_with_recursion_mask::<VestaBase, VestaScalar>(
@@ -2218,7 +2215,12 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         challenge_polynomial_commitment: (step_proof.proof.sg.x, step_proof.proof.sg.y),
         old_bulletproof_challenges: raw_unfinalized_bp,
     }
-    .prepare(unfinalized.last().expect("non-zero physical program width").finalize_endo_r);
+    .prepare(
+        unfinalized
+            .last()
+            .expect("non-zero physical program width")
+            .finalize_endo_r,
+    );
     let new_chals = prepared_wrap_messages.old_bulletproof_challenges.clone();
     let padded_wrap_challenges = crate::dummy::pad_wrap_challenges::<Fq, Fp>(
         &new_chals,
@@ -2229,7 +2231,10 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         padded_wrap_challenges[..crate::common::MAX_PROOFS_VERIFIED - new_chals.len()].to_vec();
     let next_wrap_dummy_raw_challenges = {
         vec![
-            crate::dummy::pasta_ipa_wrap_and_step().0.prechallenges.clone();
+            crate::dummy::pasta_ipa_wrap_and_step()
+                .0
+                .prechallenges
+                .clone();
             next_wrap_dummy_challenges.len()
         ]
     };
@@ -3422,11 +3427,7 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     let ft = pt(data.sigma_last[0]) * perm + t_red - t_red * zeta_to_domain_size;
 
     let mut commitments = Vec::new();
-    commitments.extend(
-        data.sg_olds[inactive..]
-            .iter()
-            .map(|&p| pt(p).into_group()),
-    );
+    commitments.extend(data.sg_olds[inactive..].iter().map(|&p| pt(p).into_group()));
     commitments.push(x_hat.into_group());
     commitments.push(ft);
     commitments.push(pt(data.z_comm).into_group());

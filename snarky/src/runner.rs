@@ -98,7 +98,6 @@ where
     /// Error reporting only ever reads the current location, so retaining the
     /// complete history wastes substantial memory on large recursive circuits.
     last_constraint_location: Option<Cow<'static, str>>,
-
 }
 
 //

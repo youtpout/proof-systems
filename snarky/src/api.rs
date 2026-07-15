@@ -135,16 +135,13 @@ where
             .map_err(|err| format!("failed to rebuild cached constraint system: {err}"))?;
         if index.cs.public != expected_cs.public
             || index.cs.prev_challenges != expected_cs.prev_challenges
-            || index.cs.domain.d1.log_size_of_group
-                != expected_cs.domain.d1.log_size_of_group
+            || index.cs.domain.d1.log_size_of_group != expected_cs.domain.d1.log_size_of_group
             || index.cs.domain.d1.group_gen != expected_cs.domain.d1.group_gen
             || index.cs.gates != expected_cs.gates
         {
             return Err("cached prover index does not match the compiled circuit".into());
         }
-        if minimum_domain_log2 > 0
-            && index.cs.domain.d1.log_size_of_group < minimum_domain_log2
-        {
+        if minimum_domain_log2 > 0 && index.cs.domain.d1.log_size_of_group < minimum_domain_log2 {
             return Err("cached prover index has a smaller domain than requested".into());
         }
         let verifier_index = index.verifier_index();
@@ -618,8 +615,7 @@ pub trait SnarkyCircuit: Sized {
             .build()
             .unwrap();
         let constraint_system_at = std::time::Instant::now();
-        profile.constraint_system_micros =
-            (constraint_system_at - lowered_at).as_micros() as u64;
+        profile.constraint_system_micros = (constraint_system_at - lowered_at).as_micros() as u64;
         record_compile_profile(profile);
         if minimum_domain_log2 > 0 {
             assert!(
@@ -642,8 +638,7 @@ pub trait SnarkyCircuit: Sized {
         let srs = Self::srs(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
         let lagrange_at = std::time::Instant::now();
-        profile.lagrange_micros =
-            (lagrange_at - constraint_system_at).as_micros() as u64;
+        profile.lagrange_micros = (lagrange_at - constraint_system_at).as_micros() as u64;
         record_compile_profile(profile);
 
         debug!("using an SRS of size {}", srs.size());

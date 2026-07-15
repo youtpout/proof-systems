@@ -227,21 +227,25 @@ pub fn ft_eval0_circuit<F: PrimeField>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr_eval::{eval_polish, PolishEnv};
-    use crate::plonk_checks::ZK_ROWS;
+    use crate::{
+        expr_eval::{eval_polish, PolishEnv},
+        plonk_checks::ZK_ROWS,
+    };
     use ark_ff::{One, Zero};
-    use kimchi::circuits::berkeley_columns::{BerkeleyChallengeTerm, Column};
-    use kimchi::circuits::expr::{ColumnEvaluations, PolishToken};
-    use kimchi::circuits::gate::CurrOrNext;
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::{BerkeleyChallengeTerm, Column},
+            expr::{ColumnEvaluations, PolishToken},
+            gate::CurrOrNext,
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc};
     use std::collections::HashMap;
 
@@ -520,10 +524,7 @@ mod tests {
             let chunks: Vec<Fp> = (0..k).map(|_| Fp::rand(&mut rng)).collect();
             let pt_to_n = Fp::rand(&mut rng);
             let expected = actual_evaluation_ref(&chunks, pt_to_n);
-            let circ = ActualEvalCircuit {
-                chunks,
-                pt_to_n,
-            };
+            let circ = ActualEvalCircuit { chunks, pt_to_n };
             let (mut pi, ver) = circ.compile_to_indexes().unwrap();
             let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
             assert_eq!(*out, expected);

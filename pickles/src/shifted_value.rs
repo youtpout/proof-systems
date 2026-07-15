@@ -91,8 +91,9 @@ mod tests {
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof;
-    use snarky::gadgets::curve::Point;
-    use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
+    use snarky::{
+        api::SnarkyCircuit, gadgets::curve::Point, loc, FieldVar, RunState, SnarkyResult,
+    };
 
     type BaseSponge =
         DefaultFqSponge<VestaParameters, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>;
@@ -143,7 +144,11 @@ mod tests {
     #[test]
     fn type1_scale_fast_matches_scalar_mul() {
         let mut rng = o1_utils::tests::make_test_rng(None);
-        assert_eq!(Fq::MODULUS_BIT_SIZE % 5, 0, "num_bits must be a multiple of 5");
+        assert_eq!(
+            Fq::MODULUS_BIT_SIZE % 5,
+            0,
+            "num_bits must be a multiple of 5"
+        );
 
         for _ in 0..2 {
             let s = Fq::rand(&mut rng);

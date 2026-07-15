@@ -24,14 +24,16 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::finalize::{finalize_deferred, FinalizeParams, FinalizeWitness};
-use crate::hash_messages::hash_messages_for_next_wrap_proof;
-use crate::incrementally_verify::{
-    Advice, IndexDigest, Messages, OpeningProof, VerificationKeyComm, XHatInput,
-};
 pub use crate::public_input::StatementElement as StepStatementElement;
-use crate::scalar_challenge::scalar_to_field;
-use crate::step_verifier::{verify, Claimed};
+use crate::{
+    finalize::{finalize_deferred, FinalizeParams, FinalizeWitness},
+    hash_messages::hash_messages_for_next_wrap_proof,
+    incrementally_verify::{
+        Advice, IndexDigest, Messages, OpeningProof, VerificationKeyComm, XHatInput,
+    },
+    scalar_challenge::scalar_to_field,
+    step_verifier::{verify, Claimed},
+};
 
 /// One unfinalized proof of the step statement, as handled by [`wrap_main`].
 pub struct PerUnfinalized<'a, F: PrimeField> {
@@ -188,11 +190,7 @@ where
         sg_olds.len(),
         "one mask bit per physical sg_old"
     );
-    let sg_old_mask: Vec<Boolean<F>> = actual_proofs_verified_mask
-        .iter()
-        .rev()
-        .cloned()
-        .collect();
+    let sg_old_mask: Vec<Boolean<F>> = actual_proofs_verified_mask.iter().rev().cloned().collect();
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
         sys,
@@ -254,12 +252,14 @@ mod tests {
     use super::*;
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_ff::{AdditiveGroup, BigInteger, Field, One, UniformRand, Zero};
-    use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::wires::{COLUMNS, PERMUTS},
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta, VestaParameters};
-    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
+        poseidon::{ArithmeticSponge, Sponge as _},
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof as IpaProof;
@@ -501,37 +501,35 @@ mod tests {
             let h = cpt(self.h);
             let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
             let h_for_openings = h.clone();
-            let witness_proof = |sys: &mut RunState<Fq>| -> SnarkyResult<(
-                OpeningProof<Fq>,
-                Messages<Fq>,
-            )> {
-                let mut lr = vec![];
-                for &(l, r) in &self.lr {
-                    lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
-                }
-                let openings = OpeningProof {
-                    lr,
-                    delta: mkpt(sys, self.delta)?,
-                    z1: t1(mksc(sys, self.z1)?),
-                    z2: t1(w1(sys, self.z2_repr)?),
-                    challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
-                    h_generator: h_for_openings.clone(),
+            let witness_proof =
+                |sys: &mut RunState<Fq>| -> SnarkyResult<(OpeningProof<Fq>, Messages<Fq>)> {
+                    let mut lr = vec![];
+                    for &(l, r) in &self.lr {
+                        lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
+                    }
+                    let openings = OpeningProof {
+                        lr,
+                        delta: mkpt(sys, self.delta)?,
+                        z1: t1(mksc(sys, self.z1)?),
+                        z2: t1(w1(sys, self.z2_repr)?),
+                        challenge_polynomial_commitment: mkpt(sys, self.cpc)?,
+                        h_generator: h_for_openings.clone(),
+                    };
+                    let messages = Messages {
+                        w_comm: self
+                            .w_comm
+                            .iter()
+                            .map(|&p| Ok(vec![mkpt(sys, p)?]))
+                            .collect::<SnarkyResult<Vec<_>>>()?,
+                        z_comm: vec![mkpt(sys, self.z_comm)?],
+                        t_comm: self
+                            .t_comm
+                            .iter()
+                            .map(|&p| mkpt(sys, p))
+                            .collect::<SnarkyResult<Vec<_>>>()?,
+                    };
+                    Ok((openings, messages))
                 };
-                let messages = Messages {
-                    w_comm: self
-                        .w_comm
-                        .iter()
-                        .map(|&p| Ok(vec![mkpt(sys, p)?]))
-                        .collect::<SnarkyResult<Vec<_>>>()?,
-                    z_comm: vec![mkpt(sys, self.z_comm)?],
-                    t_comm: self
-                        .t_comm
-                        .iter()
-                        .map(|&p| mkpt(sys, p))
-                        .collect::<SnarkyResult<Vec<_>>>()?,
-                };
-                Ok((openings, messages))
-            };
             let advice = Advice {
                 combined_inner_product: t1(mksc(sys, self.cip)?),
                 b: t1(w1(sys, self.b_repr)?),

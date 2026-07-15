@@ -10,15 +10,18 @@
 //! `absorb_fr` in the `Fr > Fq` case.
 
 use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
-use kimchi::curve::KimchiCurve;
-use kimchi::proof::ProverProof;
+use kimchi::{curve::KimchiCurve, proof::ProverProof};
 use mina_curves::pasta::{Fp, Fq, Pallas};
-use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
+use mina_poseidon::{
+    constants::PlonkSpongeConstantsKimchi,
+    poseidon::{ArithmeticSponge, Sponge as _},
+};
 use poly_commitment::ipa::OpeningProof;
 
-use crate::common::FULL_ROUNDS;
-use crate::shifted_value::{split_repr, type2_of_field};
+use crate::{
+    common::FULL_ROUNDS,
+    shifted_value::{split_repr, type2_of_field},
+};
 
 type FpSpongeRef = ArithmeticSponge<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
@@ -161,8 +164,10 @@ mod tests {
     use super::*;
     use mina_curves::pasta::PallasParameters;
     use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-    use poly_commitment::commitment::{shift_scalar, PolyComm};
-    use poly_commitment::SRS;
+    use poly_commitment::{
+        commitment::{shift_scalar, PolyComm},
+        SRS,
+    };
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;

@@ -460,9 +460,7 @@ pub fn rust_pickles_compile_recorded_n2_bytes(
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let compiled = crate::rayon::run_in_pool(|| {
-        pickles::recorded::RecordedCompiledN2::compile(
-            &first.0, &second.0, circuit, witness,
-        )
+        pickles::recorded::RecordedCompiledN2::compile(&first.0, &second.0, circuit, witness)
     })
     .map_err(|err| JsError::new(&format!("rust pickles N2 compile failed: {err:?}")))?;
     Ok(WasmRecordedCompiledN2(compiled))

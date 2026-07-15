@@ -7,12 +7,14 @@
 
 use ark_ff::PrimeField;
 
-use crate::composition_types::{
-    wrap::MessagesForNextWrapProof, BulletproofChallenge, MessagesForNextStepProof,
-    PlonkVerificationKeyEvals,
+use crate::{
+    composition_types::{
+        wrap::MessagesForNextWrapProof, BulletproofChallenge, MessagesForNextStepProof,
+        PlonkVerificationKeyEvals,
+    },
+    ipa::compute_challenges,
+    scalar_challenge::ScalarChallenge,
 };
-use crate::ipa::compute_challenges;
-use crate::scalar_challenge::ScalarChallenge;
 
 /// Restores the typed Pickles verification-key layout from its canonical
 /// 28-commitment flattened order.

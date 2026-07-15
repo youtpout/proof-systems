@@ -30,15 +30,17 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
-use crate::bulletproof::{
-    bullet_reduce_terms, check_bulletproof_equation_from_q, combine_commitments,
-    prepare_bulletproof_q, CommitmentOpt,
+use crate::{
+    bulletproof::{
+        bullet_reduce_terms, check_bulletproof_equation_from_q, combine_commitments,
+        prepare_bulletproof_q, CommitmentOpt,
+    },
+    commitments::ft_comm,
+    oracles::{absorb_commitment, FqOracles, PointVar},
+    plonk_curve_ops::ShiftedScalar,
+    public_input::{public_input_commitment, statement_terms, StatementElement, Term},
+    sponge::PoseidonSponge,
 };
-use crate::commitments::ft_comm;
-use crate::oracles::{absorb_commitment, FqOracles, PointVar};
-use crate::plonk_curve_ops::ShiftedScalar;
-use crate::public_input::{public_input_commitment, statement_terms, StatementElement, Term};
-use crate::sponge::PoseidonSponge;
 
 /// The verification-key commitments the base step/wrap verifier absorbs and
 /// combines (a subset of `Plonk_verification_key_evals.Step.t`, no optional
@@ -57,7 +59,6 @@ pub struct VerificationKeyComm<F: PrimeField> {
     /// The last (`PERMUTS-1` index) sigma commitment, used by `ft_comm`.
     pub sigma_last: Vec<Point<F>>,
 }
-
 
 /// The proof messages absorbed by the Fq-sponge (base subset): witness,
 /// permutation and quotient commitments, each given as its chunks.
@@ -182,7 +183,11 @@ impl<F: PrimeField> Transcript<F> {
         }
     }
 
-    fn squeeze(&mut self, sys: &mut RunState<F>, loc: Cow<'static, str>) -> SnarkyResult<FieldVar<F>> {
+    fn squeeze(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+    ) -> SnarkyResult<FieldVar<F>> {
         match self {
             Transcript::Plain(sponge) => Ok(sponge.squeeze(sys, loc)),
             Transcript::Opt(sponge) => sponge.squeeze(sys, loc),
@@ -303,8 +308,10 @@ where
     sponge.absorb(sys, loc.clone(), std::slice::from_ref(&vk_digest));
     for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
         let keep = keep.to_field_var();
-        let x = sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
-        let y = sg.y.mul(&keep, Some("mask sg_old.y".into()), loc.clone(), sys)?;
+        let x =
+            sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
+        let y =
+            sg.y.mul(&keep, Some("mask sg_old.y".into()), loc.clone(), sys)?;
         sponge.absorb_commitment(sys, loc.clone(), &[(x, y)]);
     }
 
@@ -502,9 +509,9 @@ mod tests {
     use ark_ff::{AdditiveGroup, BigInteger, One, UniformRand, Zero};
     use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Fq, Pallas, PallasParameters, Vesta, VestaParameters};
-    use mina_poseidon::poseidon::{ArithmeticSponge, Sponge as _};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
+        poseidon::{ArithmeticSponge, Sponge as _},
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
     use poly_commitment::ipa::OpeningProof as IpaProof;
@@ -903,9 +910,7 @@ mod tests {
             for &(l, r) in &self.lr {
                 lr.push((mkpt(sys, l)?, mkpt(sys, r)?));
             }
-            let t2 = |sys: &mut RunState<Fp>,
-                          p: (Fp, bool)|
-             -> SnarkyResult<ShiftedScalar<Fp>> {
+            let t2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
                 let half = sys.compute(loc!(), move |_| p.0)?;
                 let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
                 Ok(ShiftedScalar::Type2(half, odd))
@@ -963,8 +968,10 @@ mod tests {
         use ark_ff::Field;
         use kimchi::circuits::wires::PERMUTS;
         use mina_curves::pasta::PallasParameters;
-        use poly_commitment::commitment::{b_poly, shift_scalar, PolyComm};
-        use poly_commitment::SRS;
+        use poly_commitment::{
+            commitment::{b_poly, shift_scalar, PolyComm},
+            SRS,
+        };
 
         // 1. a real Pallas proof
         let (mut ppi, pver) = PallasAppCircuit {}.compile_to_indexes().unwrap();
@@ -1001,8 +1008,8 @@ mod tests {
             let u = gm.to_group(t);
             let chals = proof.proof.challenges::<PallasBase>(endo_q, &mut sponge);
             sponge.absorb_g(&[proof.proof.delta]);
-            let c = mina_poseidon::sponge::ScalarChallenge::new(sponge.challenge())
-                .to_field(endo_q);
+            let c =
+                mina_poseidon::sponge::ScalarChallenge::new(sponge.challenge()).to_field(endo_q);
             let zetaw = oracles.zeta * vi.domain.group_gen;
             let b = b_poly(&chals.chal, oracles.zeta) + oracles.u * b_poly(&chals.chal, zetaw);
             (b, u, chals, c)
@@ -1036,16 +1043,21 @@ mod tests {
         // -- diagnostic: our perm scalar vs kimchi's perm_scalars --
         {
             use ark_poly::Polynomial;
-            use kimchi::circuits::argument::ArgumentType;
-            use kimchi::circuits::constraints::ConstraintSystem;
+            use kimchi::circuits::{argument::ArgumentType, constraints::ConstraintSystem};
             let pvp = vi
                 .permutation_vanishing_polynomial_m()
                 .evaluate(&oracles.zeta);
-            let alphas = o
-                .all_alphas
-                .get_alphas(ArgumentType::Permutation, kimchi::circuits::polynomials::permutation::CONSTRAINTS);
-            let kimchi_perm =
-                ConstraintSystem::<Fq>::perm_scalars(&combined, oracles.beta, oracles.gamma, alphas, pvp);
+            let alphas = o.all_alphas.get_alphas(
+                ArgumentType::Permutation,
+                kimchi::circuits::polynomials::permutation::CONSTRAINTS,
+            );
+            let kimchi_perm = ConstraintSystem::<Fq>::perm_scalars(
+                &combined,
+                oracles.beta,
+                oracles.gamma,
+                alphas,
+                pvp,
+            );
             assert_eq!(perm, kimchi_perm, "perm scalar vs kimchi perm_scalars");
         }
         // -- diagnostic: our ft point vs kimchi's ft_comm, out of circuit --
@@ -1056,15 +1068,17 @@ mod tests {
             for c in proof.commitments.t_comm.chunks[..6].iter().rev() {
                 t_red = c.into_group() + t_red * zeta_to_srs_length;
             }
-            let our_ft =
-                (sigma_last * perm + t_red - t_red * zeta_to_domain_size).into_affine();
+            let our_ft = (sigma_last * perm + t_red - t_red * zeta_to_domain_size).into_affine();
             let kimchi_ft = {
                 let f = poly_commitment::commitment::PolyComm::multi_scalar_mul(
                     &[&vi.sigma_comm[kimchi::circuits::wires::PERMUTS - 1]],
                     &[perm],
                 );
                 let chunked_f = f.chunk_commitment(zeta_to_srs_length);
-                let chunked_t = proof.commitments.t_comm.chunk_commitment(zeta_to_srs_length);
+                let chunked_t = proof
+                    .commitments
+                    .t_comm
+                    .chunk_commitment(zeta_to_srs_length);
                 (&chunked_f - &chunked_t.scale(zeta_to_domain_size - Fq::one())).chunks[0]
             };
             assert_eq!(our_ft, kimchi_ft, "ft_comm out-of-circuit");
@@ -1120,7 +1134,11 @@ mod tests {
                     .iter()
                     .map(|c| c.chunks[0].into_group()),
             );
-            comms.extend(vi.coefficients_comm.iter().map(|c| c.chunks[0].into_group()));
+            comms.extend(
+                vi.coefficients_comm
+                    .iter()
+                    .map(|c| c.chunks[0].into_group()),
+            );
             comms.extend(
                 vi.sigma_comm[..PERMUTS - 1]
                     .iter()
@@ -1199,9 +1217,9 @@ mod tests {
             }
             let zeta_r = s.squeeze();
             assert_eq!(
-                mina_poseidon::sponge::ScalarChallenge::new(Fq::from(l128q(Fq::from(
-                    l128(zeta_r)
-                ))))
+                mina_poseidon::sponge::ScalarChallenge::new(Fq::from(l128q(Fq::from(l128(
+                    zeta_r
+                )))))
                 .to_field(endo_q),
                 oracles.zeta,
                 "replay zeta"
@@ -1262,12 +1280,7 @@ mod tests {
                 .map(|c| pt(&c.chunks[0]))
                 .collect(),
             sigma_last: vec![pt(&vi.sigma_comm[PERMUTS - 1].chunks[0])],
-            lr: proof
-                .proof
-                .lr
-                .iter()
-                .map(|(l, r)| (pt(l), pt(r)))
-                .collect(),
+            lr: proof.proof.lr.iter().map(|(l, r)| (pt(l), pt(r))).collect(),
             delta: pt(&proof.proof.delta),
             cpc: pt(&proof.proof.sg),
             h: (srs_h.x, srs_h.y),

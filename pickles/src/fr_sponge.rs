@@ -35,8 +35,7 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
-use crate::challenge::squeeze_challenge;
-use crate::sponge::PoseidonSponge;
+use crate::{challenge::squeeze_challenge, sponge::PoseidonSponge};
 
 /// A single polynomial's evaluations at `zeta` and `zeta * omega`, each a list
 /// of chunks (length 1 in the single-chunk / base-step case).
@@ -176,16 +175,16 @@ pub fn squeeze_xi_r<F: PrimeField>(
 mod tests {
     use super::*;
     use ark_ff::One;
-    use kimchi::circuits::wires::{COLUMNS, PERMUTS};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::wires::{COLUMNS, PERMUTS},
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc};
 
     type BaseSponge =
@@ -260,7 +259,10 @@ mod tests {
 
             let digest = w1(sys, self.digest)?;
             let ft_eval1 = w1(sys, self.ft_eval1)?;
-            let public_evals = [wvec(sys, &self.public_evals[0])?, wvec(sys, &self.public_evals[1])?];
+            let public_evals = [
+                wvec(sys, &self.public_evals[0])?,
+                wvec(sys, &self.public_evals[1])?,
+            ];
 
             let z = wpair(sys, &self.z)?;
             let generic_selector = wpair(sys, &self.generic)?;
@@ -332,7 +334,8 @@ mod tests {
 
         // capture the column evaluations as chunked vecs, in kimchi order
         let e = &proof.evals;
-        let pair = |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta.clone(), p.zeta_omega.clone());
+        let pair =
+            |p: &kimchi::proof::PointEvaluations<Vec<Fp>>| (p.zeta.clone(), p.zeta_omega.clone());
         assert_eq!(e.w.len(), COLUMNS);
         assert_eq!(e.coefficients.len(), COLUMNS);
         assert_eq!(e.s.len(), PERMUTS - 1);

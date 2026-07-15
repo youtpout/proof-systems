@@ -60,7 +60,13 @@ pub fn ft_comm<F: PrimeField>(
     num_bits: usize,
 ) -> SnarkyResult<Point<F>> {
     // f_comm = perm · reduce_chunks(sigma_comm_last)
-    let sigma = reduce_chunks(sys, loc.clone(), sigma_comm_last, zeta_to_srs_length, num_bits)?;
+    let sigma = reduce_chunks(
+        sys,
+        loc.clone(),
+        sigma_comm_last,
+        zeta_to_srs_length,
+        num_bits,
+    )?;
     let f_comm = perm.scale(sys, loc.clone(), &sigma, num_bits)?;
 
     // chunked_t_comm = reduce_chunks(t_comm)
@@ -81,10 +87,7 @@ pub fn ft_comm<F: PrimeField>(
         &chunked_t,
     )?;
     let neg_t_scaled = t_scaled.negate();
-    let neg_t_scaled = Point::new(
-        neg_t_scaled.x,
-        neg_t_scaled.y.seal(sys, loc.clone())?,
-    );
+    let neg_t_scaled = Point::new(neg_t_scaled.x, neg_t_scaled.y.seal(sys, loc.clone())?);
     add_fast(
         sys,
         Cow::Owned(format!("{loc} | ft_comm final add")),

@@ -8,6 +8,7 @@
 //! optional gates, no lookups, zero prev challenges).
 
 use ark_poly::EvaluationDomain;
+use groupmap::GroupMap;
 use kimchi::{
     circuits::{
         constraints::{FeatureFlags, ZK_ROWS_BY_DEFAULT},
@@ -22,7 +23,6 @@ use mina_poseidon::{
     constants::PlonkSpongeConstantsKimchi,
     sponge::{DefaultFqSponge, DefaultFrSponge},
 };
-use groupmap::GroupMap;
 use poly_commitment::{commitment::CommitmentCurve, ipa::SRS, SRS as _};
 
 use crate::{

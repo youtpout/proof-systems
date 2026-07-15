@@ -163,12 +163,9 @@ fn test_minimum_domain_padding_proves_and_verifies() {
 fn cached_index_is_reattached_only_to_the_exact_circuit() {
     let (compiled, _) = TestCircuit {}.compile_to_indexes().unwrap();
     let cached = compiled.index.clone();
-    let (mut restored, verifier) = crate::api::ProverIndexWrapper::from_cached_index(
-        TestCircuit {},
-        0,
-        cached.clone(),
-    )
-    .unwrap();
+    let (mut restored, verifier) =
+        crate::api::ProverIndexWrapper::from_cached_index(TestCircuit {}, 0, cached.clone())
+            .unwrap();
     let private = Priv {
         x: Fp::one(),
         y: Fp::from(2),
@@ -184,10 +181,7 @@ fn cached_index_is_reattached_only_to_the_exact_circuit() {
     std::sync::Arc::make_mut(&mut cs.gates)[0]
         .coeffs
         .push(Fp::one());
-    assert!(crate::api::ProverIndexWrapper::from_cached_index(
-        TestCircuit {},
-        0,
-        corrupted,
-    )
-    .is_err());
+    assert!(
+        crate::api::ProverIndexWrapper::from_cached_index(TestCircuit {}, 0, corrupted,).is_err()
+    );
 }

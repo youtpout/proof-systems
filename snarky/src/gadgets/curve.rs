@@ -74,10 +74,7 @@ impl<F: PrimeField> Point<F> {
         })?;
         sys.add_constraint(
             Constraint::BasicSnarkyConstraint(
-                crate::constraint_system::BasicSnarkyConstraint::Square(
-                    self.x.clone(),
-                    x2.clone(),
-                ),
+                crate::constraint_system::BasicSnarkyConstraint::Square(self.x.clone(), x2.clone()),
             ),
             Some("on-curve x^2".into()),
             loc.clone(),
@@ -164,18 +161,19 @@ pub fn add_complete<F: PrimeField>(
     // constant zero (`check_finite = true`): points at infinity cannot occur
     // in the pickles gadgets, and the constant wires the cell into the
     // cached-zero permutation class exactly like OCaml.
-    let aux = |sys: &mut RunState<F>, loc: Cow<'static, str>, k: usize| -> SnarkyResult<FieldVar<F>> {
-        let (x1, y1) = (p1.x.clone(), p1.y.clone());
-        let (x2, y2) = (p2.x.clone(), p2.y.clone());
-        sys.compute(loc, move |env| {
-            complete_add_witness(
-                env.read_var(&x1),
-                env.read_var(&y1),
-                env.read_var(&x2),
-                env.read_var(&y2),
-            )[k]
-        })
-    };
+    let aux =
+        |sys: &mut RunState<F>, loc: Cow<'static, str>, k: usize| -> SnarkyResult<FieldVar<F>> {
+            let (x1, y1) = (p1.x.clone(), p1.y.clone());
+            let (x2, y2) = (p2.x.clone(), p2.y.clone());
+            sys.compute(loc, move |env| {
+                complete_add_witness(
+                    env.read_var(&x1),
+                    env.read_var(&y1),
+                    env.read_var(&x2),
+                    env.read_var(&y2),
+                )[k]
+            })
+        };
     // complete_add_witness order: [x3, y3, inf, same_x, slope, inf_z, x21_inv]
     let same_x = aux(sys, loc.clone(), 3)?;
     let inf = FieldVar::zero();

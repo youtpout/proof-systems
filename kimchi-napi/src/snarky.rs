@@ -25,8 +25,10 @@ use snarky::constraint_system::{
     SnarkyConstraintSystem, SnarkyCvar,
 };
 
-use crate::gate_vector::{CoreGateVector, NapiFpGateVector, NapiFqGateVector};
-use crate::wrappers::field::{NapiPastaFp, NapiPastaFq};
+use crate::{
+    gate_vector::{CoreGateVector, NapiFpGateVector, NapiFqGateVector},
+    wrappers::field::{NapiPastaFp, NapiPastaFq},
+};
 
 /// A circuit variable, as a flattened linear combination.
 #[derive(Clone, Debug)]

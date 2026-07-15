@@ -191,8 +191,7 @@ pub fn ft_eval0<F: PrimeField>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composition_types::Features;
-    use crate::scalar_challenge::ScalarChallenge;
+    use crate::{composition_types::Features, scalar_challenge::ScalarChallenge};
     use ark_ff::Field;
     use mina_curves::pasta::Fp;
 
@@ -243,17 +242,19 @@ mod oracles_parity_tests {
     use crate::composition_types::Features;
     use ark_ff::{One, Zero};
     use ark_poly::Polynomial;
-    use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
-    use kimchi::circuits::expr::{Constants, PolishToken};
-    use kimchi::curve::KimchiCurve;
+    use kimchi::{
+        circuits::{
+            berkeley_columns::BerkeleyChallenges,
+            expr::{Constants, PolishToken},
+        },
+        curve::KimchiCurve,
+    };
     use mina_curves::pasta::{Fp, Vesta, VestaParameters};
     use mina_poseidon::{
         constants::PlonkSpongeConstantsKimchi,
         sponge::{DefaultFqSponge, DefaultFrSponge},
     };
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::ipa::OpeningProof;
-    use poly_commitment::SRS;
+    use poly_commitment::{commitment::PolyComm, ipa::OpeningProof, SRS};
     use snarky::{api::SnarkyCircuit, loc, FieldVar, RunState, SnarkyResult};
 
     type BaseSponge =
