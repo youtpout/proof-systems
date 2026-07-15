@@ -104,7 +104,7 @@ pub fn wrap_main<F, C, W>(
     // this statement's accumulator digest
     messages_for_next_wrap_proof_digest: &FieldVar<F>,
     new_acc_dummy_challenges: &[Vec<F>],
-    is_base_case: &Boolean<F>,
+    _is_base_case: &Boolean<F>,
     // constants
     group_map_params: &groupmap::BWParameters<C>,
     endo_base: F,
@@ -211,7 +211,7 @@ where
         advice,
         xi,
         claimed,
-        is_base_case,
+        None,
         group_map_params,
         endo_base,
         endo_scalar,

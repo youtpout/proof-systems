@@ -62,7 +62,12 @@ pub fn verify<F, C>(
     advice: &Advice<F>,
     xi: &FieldVar<F>,
     claimed: &Claimed<F>,
-    is_base_case: &Boolean<F>,
+    // Step side mirrors step_verifier.ml:1312 (base-case bypass through
+    // `Field.if_`); the wrap side passes `None`: wrap_main.ml:515 asserts the
+    // claimed statement challenges against the derived ones UNCONDITIONALLY,
+    // so the copy constraint unions the public-input cells with the derived
+    // challenge cells (required for wiring/VK parity).
+    base_case_challenge_bypass: Option<&Boolean<F>>,
     group_map_params: &groupmap::BWParameters<C>,
     endo_base: F,
     endo_scalar: <ark_ec::short_weierstrass::Affine<C> as ark_ec::AffineRepr>::ScalarField,
@@ -115,9 +120,18 @@ where
         .iter()
         .zip(&bulletproof_challenges)
     {
-        // in the base case compare c1 with itself, else with the actual c2
-        let rhs = sys.if_(loc.clone(), is_base_case.clone(), c1.clone(), c2.clone())?;
-        c1.assert_equals(sys, Cow::Borrowed("verify: bulletproof challenge"), &rhs)?;
+        match base_case_challenge_bypass {
+            // step: in the base case compare c1 with itself, else with c2
+            Some(is_base_case) => {
+                let rhs = sys.if_(loc.clone(), is_base_case.clone(), c1.clone(), c2.clone())?;
+                c1.assert_equals(sys, Cow::Borrowed("verify: bulletproof challenge"), &rhs)?;
+            }
+            // wrap: unconditional (wrap_main.ml:515) — unions the statement
+            // cells with the derived challenge cells
+            None => {
+                c1.assert_equals(sys, Cow::Borrowed("verify: bulletproof challenge"), c2)?;
+            }
+        }
     }
 
     // == assert_eq_plonk: sampled raw challenges == statement's ==
@@ -396,7 +410,7 @@ where
         advice,
         xi,
         claimed,
-        is_base_case,
+        Some(is_base_case),
         group_map_params,
         endo_base,
         endo_scalar,
@@ -612,7 +626,7 @@ mod tests {
                 &advice,
                 &xi,
                 &claimed,
-                &is_base_case,
+                Some(&is_base_case),
                 &params,
                 crate::endo::tick::base(),
                 <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,
