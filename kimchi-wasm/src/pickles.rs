@@ -425,6 +425,21 @@ pub fn rust_pickles_recorded_base_donor_handle_bytes(
     Ok(WasmRecordedBaseHandle(handle))
 }
 
+/// Canonical Mina side-loaded VK of a compiled base circuit:
+/// `{"base64": ..., "hash": ...}` — the same data/hash pair jsoo's
+/// `Program.compile()` returns.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_vk_envelope(
+    compiled: &WasmRecordedCompiledBase,
+) -> Result<String, JsError> {
+    let (base64, hash) = compiled
+        .0
+        .verification_key_envelope()
+        .map_err(|err| JsError::new(&format!("VK envelope failed: {err:?}")))?;
+    serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
+        .map_err(|err| JsError::new(&format!("envelope encoding failed: {err}")))
+}
+
 #[wasm_bindgen]
 pub fn rust_pickles_prove_recorded_n2_over_base_handles(
     first: &WasmRecordedBaseHandle,

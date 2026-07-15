@@ -229,6 +229,54 @@ fn decode_proofs_verified(value: u8) -> Result<ProofsVerified, BinProtError> {
 }
 
 impl SideLoadedVerificationKeyV2 {
+    /// Mina's account-level hash of the side-loaded key —
+    /// `Random_oracle.(hash ~init:(salt "MinaSideLoadedVk****")
+    /// (to_field_elements key))` — the value o1js exposes as
+    /// `verificationKey.hash` and `setVerificationKey` stores on chain.
+    pub fn mina_hash(&self) -> Fp {
+        use kimchi::curve::KimchiCurve;
+        use mina_poseidon::poseidon::{ArithmeticSponge, Sponge};
+        let params =
+            <mina_curves::pasta::Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::sponge_params();
+        let mut sponge = ArithmeticSponge::<
+            Fp,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >::new(params);
+        // `prefixToField`: the ASCII prefix zero-padded to 32 bytes, read as a
+        // little-endian field element.
+        let prefix = b"MinaSideLoadedVk****";
+        let mut bytes = [0u8; 32];
+        bytes[..prefix.len()].copy_from_slice(prefix);
+        sponge.absorb(&[Fp::from_le_bytes_mod_order(&bytes)]);
+        // Close the salt block: OCaml's `salt` runs a full update (permute)
+        // over the prefix before the payload starts a fresh block.
+        let _ = sponge.squeeze();
+        // `Random_oracle_input.Chunked.pack_to_fields`: the 56 commitment
+        // coordinates first, then the two one-hot vectors packed
+        // left-to-right into a single 6-bit field element
+        // (side_loaded_verification_key.ml `to_input` +
+        // random_oracle_input.ml `pack_to_fields`).
+        let mut fields = Vec::with_capacity(2 * self.commitments.len() + 1);
+        for &(x, y) in &self.commitments {
+            fields.push(x);
+            fields.push(y);
+        }
+        let mut packed = 0u64;
+        let one_hot = |proofs: usize| {
+            std::array::from_fn::<u64, 3, _>(|index| u64::from(index == proofs))
+        };
+        for bit in one_hot(self.max_proofs_verified.to_usize())
+            .into_iter()
+            .chain(one_hot(self.actual_wrap_domain_size.to_usize()))
+        {
+            packed = (packed << 1) | bit;
+        }
+        fields.push(Fp::from(packed));
+        sponge.absorb(&fields);
+        sponge.squeeze()
+    }
+
     pub fn to_bin_prot(&self) -> Result<Vec<u8>, BinProtError> {
         if self.commitments.len() != POINTS {
             return Err(BinProtError::WrongLength(self.commitments.len()));

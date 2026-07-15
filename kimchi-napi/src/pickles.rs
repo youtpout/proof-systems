@@ -523,6 +523,20 @@ pub fn rust_pickles_recorded_base_donor_handle_bytes(
     Ok(External::new(handle))
 }
 
+/// Canonical Mina side-loaded VK of a compiled base circuit:
+/// `{"base64": ..., "hash": ...}` — the same data/hash pair jsoo's
+/// `Program.compile()` returns.
+#[napi(js_name = "rust_pickles_recorded_base_vk_envelope")]
+pub fn rust_pickles_recorded_base_vk_envelope(
+    compiled: &External<pickles::recorded::RecordedCompiledBase>,
+) -> Result<String> {
+    let (base64, hash) = compiled
+        .verification_key_envelope()
+        .map_err(|err| Error::from_reason(format!("VK envelope failed: {err:?}")))?;
+    serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
+        .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
 #[napi(js_name = "rust_pickles_prove_recorded_n2_over_base_handles")]
 pub fn rust_pickles_prove_recorded_n2_over_base_handles(
     first: &External<pickles::recorded::RecordedBaseHandle>,
@@ -774,6 +788,7 @@ pub fn rust_pickles_decode_side_loaded_vk(encoded: String, format: String) -> Re
     let envelope = serde_json::json!({
         "maxProofsVerified": key.max_proofs_verified.to_usize(),
         "actualWrapDomainSize": key.actual_wrap_domain_size.to_usize(),
+        "minaHash": key.mina_hash().to_string(),
         "base64": BASE64_STANDARD.encode(
             key.to_bin_prot()
                 .map_err(|err| Error::from_reason(format!("VK bin_prot encoding failed: {err:?}")))?

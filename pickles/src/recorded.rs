@@ -1321,6 +1321,38 @@ impl RecordedCompiledBase {
         })
     }
 
+    /// The canonical Mina side-loaded verification key of this circuit:
+    /// the bin_prot bytes base64-encoded (what o1js `verificationKey.data`
+    /// holds on the jsoo side) and its Mina account-level hash.
+    pub fn verification_key_envelope(&self) -> Result<(String, String), RecordedProveError> {
+        use base64::prelude::*;
+        let step_domain_log2 = self
+            .compiled
+            .step_indexes
+            .as_ref()
+            .expect("compiled Step indexes")
+            .1
+            .index
+            .domain
+            .log_size_of_group as u8;
+        let wrap_verifier = &self
+            .compiled
+            .wrap_indexes
+            .as_ref()
+            .expect("compiled Wrap indexes")
+            .1;
+        let key =
+            crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(step_domain_log2, wrap_verifier)
+                .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
+        let stable = key.to_stable_v2();
+        let base64 = BASE64_STANDARD.encode(
+            stable
+                .to_bin_prot()
+                .map_err(|err| RecordedProveError::Program(format!("VK encoding: {err:?}")))?,
+        );
+        Ok((base64, stable.mina_hash().to_string()))
+    }
+
     /// A proof-SHAPED base handle assembled from the compiled indexes
     /// without running either prover — the compile-time template donor for
     /// the recursive compiles. Its values are protocol-meaningless dummies;
