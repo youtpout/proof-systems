@@ -2523,3 +2523,38 @@ Validation release avec `RUST_MIN_STACK=31457280` :
   réelle N0 -> N1 -> N2 vérifiée standalone après chaque couche ;
 - `cargo test -p pickles --release --test e2e` : 1/1 ;
 - `make check-format` et `cargo check -p pickles` : verts.
+
+## Session 2026-07-15 — perf compile + notes de parité
+
+### Compile single-pass (commit `162bd1d16c`)
+`RecordedCompiledProgram::compile` : le point fixe 4-passes (4 preuves
+template, 4 passes de steps, 3 compiles du wrap) est remplacé par UNE passe —
+prouvé équivalent par `program_single_pass_matches_multipass_reference`
+(l'ancien corps survit en `compile_multipass_reference`). 48.1s → 16.4s en
+natif sur le programme 3-branches. Fondement : les alignements
+(`align_program_recursive_*`) ne consomment que des champs STRUCTURELS
+(domaines, shifts, tokens de linéarisation, endo), invariants sous les
+valeurs de VK ; les valeurs (commitments, digests) ne transitent que par des
+slots witness.
+
+### Le vrai chemin du bench o1js n'est PAS le program compile
+`ZkProgram.compile` (rust-native) → mina-runtime `compile_program` →
+`compile_circuit` PAR MÉTHODE : base compile + `prove_keep` (template) +
+`RecordedCompiledN1/N2::compile`. N1::compile exécute TROIS preuves complètes
+(bootstrap step, bootstrap wrap, stable step) qui ne servent que de donneurs
+de forme. Prochain gros gain : les remplacer par des constructions
+shape-only (même argument valeurs-vs-structure que le single-pass), et/ou
+migrer o1js vers le chemin programme partagé (un seul wrap comme OCaml).
+État : compile 3 méthodes = jsoo 8.0s / rust-native 17.2s (après
+parallélisation des branches dans mina-runtime) / rust-wasm 53s.
+Prove/verify : rust DÉJÀ plus rapide (1.34s vs 2.42s ; 26ms vs 94ms).
+
+### Référence de parité wrap : attention au kimchi-wasm bundlé
+Le dump "jsoo" du diff (`fq_prover_to_json`) passe par le kimchi-wasm bundlé
+dans o1js (`node_bindings/kimchi_wasm.cjs`) — historiquement un build
+pickle-rs custom (PAS l'artefact upstream). Le "2 rows" documenté plus haut
+était mesuré contre un build PÉRIMÉ de cette référence. Reconstruite depuis
+HEAD (`npm run build:wasm:node:rust` côté o1js), le diff wrap affiche
+**32 rows wiring-only** : PI rows 13-28 (les 16 challenges bulletproof du
+statement) + une row par round IPA (4332+74k). À bisecter : représentation
+du dump vs vrai écart de wiring. Step reste FULL MATCH.
