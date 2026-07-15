@@ -2581,3 +2581,32 @@ rust-wasm 56.5→37.2s (jsoo-wasm 16.3s). Prove/verify rust déjà devant.
 Le chemin programme partagé existe (`RecordedCompiledProgram`, single-pass,
 lui aussi encore 3 preuves compile-time à donner) — migrer o1js/mina-runtime
 dessus est la suite qui ferme le gap wasm.
+
+## JALON 2026-07-15 — WRAP GATES: FULL MATCH ; VK 26/28
+
+Le `if_(is_base_case, c1, c2)` du challenge bulletproof (step_verifier.rs
+verify) était un pattern STEP (step_verifier.ml:1312) appliqué au wrap ; en
+base case il se constant-fold et laisse les 16 cellules PI des challenges
+hors permutation. OCaml wrap = assert INCONDITIONNEL (wrap_main.ml:515-521,
+union PI ↔ challenge dérivé). Fix : `base_case_challenge_bypass:
+Option<&Boolean>` — step Some(...) (FULL MATCH conservé), wrap None.
+**Résultat : WRAP GATES FULL MATCH (types+coeffs+wiring, 8192/8192).**
+
+VK side-loaded (rust-pickles-vk-parity.ts, forceRecompile ajouté — ATTENTION
+le cache disque servait une vieille VK jsoo) : **26/28 commitments égaux**.
+Restent sigma[0] et sigma[6] (aucun swap : ne matchent rien en face).
+
+### Piste précise pour les 2 sigmas restants
+Les deux chemins RUST divergent entre eux : le chemin dump
+(prove_base_case_with_wrap_dump — wrap recompilé avec la wdata "réelle") ==
+jsoo ✓ ; le chemin prove (CompiledBaseCase::compile puis prove — RÉUTILISE
+l'index wrap compilé avec la wdata bootstrap: points générateurs, z1/z2=0)
+diverge sur σ0/σ6 (wiring only, gates/coeffs identiques). Donc une VALEUR de
+witness de la wdata influence le WIRING quelque part (probablement un
+FieldVar::constant / partage cached_constants sur une valeur qui coïncide en
+mode bootstrap — ex. `point = generator` partagé). À faire : test rust qui
+compile le wrap via les deux wdata (bootstrap vs réelle) et diffe
+gates+wires ; trouver la valeur constante fautive ; la witnesser. Ensuite la
+VK rust == VK jsoo (les 28 commitments), et il restera l'enveloppe
+('mina-runtime-v1:' vs side-loaded base64) + le hash pour que
+verificationKey.hash soit identique dans zkapp-rust.
