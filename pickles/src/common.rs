@@ -114,31 +114,84 @@ mod tests {
 /// inside the first compile serializes ~1s of SRS hashing per curve plus
 /// 0.3-1.9s of group-IFFT per domain on the critical path. The recursion
 /// domains are architecture constants, so warm them all concurrently up
-/// front. Guarded: each piece is a `OnceLock`/SRS-cache hit afterwards.
+/// front — loading each Lagrange basis from the on-disk cache when present
+/// (`PICKLES_CACHE_DIR`, default `$XDG_CACHE_HOME/pickles-rs`), computing and
+/// persisting it otherwise.
 pub fn warm_recursion_caches(recursive: bool) {
-    use ark_poly::EvaluationDomain as _;
-    use poly_commitment::SRS as _;
     use rayon::prelude::*;
     let tick_domains: &[u32] = if recursive { &[14, 15, 16] } else { &[] };
     let tock_domains: &[u32] = if recursive { &[13, 15] } else { &[13] };
     rayon::join(
         || {
             let srs = tick_srs(1 << TICK_ROUNDS);
-            tick_domains.par_iter().for_each(|&log2| {
-                let domain =
-                    ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fp>::new(1usize << log2)
-                        .expect("tick domain");
-                let _ = srs.get_lagrange_basis(domain);
-            });
+            tick_domains
+                .par_iter()
+                .for_each(|&log2| lagrange_from_cache_or_compute(&srs, "vesta", log2));
         },
         || {
             let srs = tock_srs(1 << TOCK_ROUNDS);
-            tock_domains.par_iter().for_each(|&log2| {
-                let domain =
-                    ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(1usize << log2)
-                        .expect("tock domain");
-                let _ = srs.get_lagrange_basis(domain);
-            });
+            tock_domains
+                .par_iter()
+                .for_each(|&log2| lagrange_from_cache_or_compute(&srs, "pallas", log2));
         },
     );
+}
+
+fn cache_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("PICKLES_CACHE_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(std::path::PathBuf::from(xdg).join("pickles-rs"));
+    }
+    std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join(".cache").join("pickles-rs"))
+}
+
+/// Loads the Lagrange basis for `2^domain_log2` from the disk cache into the
+/// SRS's in-memory cache, or computes it and persists it. Corrupt or absent
+/// cache files only cost a recomputation.
+fn lagrange_from_cache_or_compute<G>(srs: &SRS<G>, curve: &str, domain_log2: u32)
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G: ark_serialize::CanonicalSerialize + ark_serialize::CanonicalDeserialize,
+    poly_commitment::ipa::SRS<G>: poly_commitment::SRS<G>,
+{
+    use poly_commitment::SRS as _;
+    use ark_poly::EvaluationDomain as _;
+    let domain_size = 1usize << domain_log2;
+    let path = cache_dir().map(|dir| {
+        dir.join(format!(
+            "lagrange-{curve}-srs{}-d{domain_log2}.bin",
+            srs.g.len()
+        ))
+    });
+    if let Some(path) = &path {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(basis) =
+                rmp_serde::from_slice::<Vec<poly_commitment::commitment::PolyComm<G>>>(&bytes)
+            {
+                if basis.len() == domain_size {
+                    srs.lagrange_bases().set_once(domain_size, basis);
+                    return;
+                }
+            }
+        }
+    }
+    let domain =
+        ark_poly::Radix2EvaluationDomain::<G::ScalarField>::new(domain_size).expect("domain");
+    let basis: Vec<poly_commitment::commitment::PolyComm<G>> =
+        srs.get_lagrange_basis(domain).clone();
+    if let Some(path) = &path {
+        if let Ok(bytes) = rmp_serde::to_vec(&basis) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Write atomically enough: temp file + rename.
+            let tmp = path.with_extension("tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
+        }
+    }
 }
