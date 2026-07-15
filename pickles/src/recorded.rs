@@ -1393,7 +1393,7 @@ impl RecordedCompiledN1 {
             ));
         };
         let profile = std::env::var_os("PICKLES_PROFILE").is_some();
-        let started = std::time::Instant::now();
+        let started = snarky::wasm_instant::Instant::now();
         let new_state = circuit.state(&witness);
         let app = RecordedApp {
             circuit: circuit.clone(),
@@ -1413,13 +1413,13 @@ impl RecordedCompiledN1 {
             previous.app_state.clone(),
             new_state.clone(),
         );
-        let prepared_at = std::time::Instant::now();
+        let prepared_at = snarky::wasm_instant::Instant::now();
         let step_indexes = crate::recursive_step::compile_prepared_recursive_step::<
             16,
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
         >(&prepared, Some(main.clone()));
-        let step_compiled_at = std::time::Instant::now();
+        let step_compiled_at = snarky::wasm_instant::Instant::now();
         let wrap_branches = vec![
             crate::api::WrapBranchData::from_step_verifier(&base.step_verifier.index, 0),
             crate::api::WrapBranchData::from_step_verifier(&step_indexes.1.index, 1),

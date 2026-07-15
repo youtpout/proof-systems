@@ -19,6 +19,7 @@ pub mod errors;
 pub mod gadgets;
 pub mod poseidon;
 pub mod range_checks;
+pub mod wasm_instant;
 pub mod runner;
 pub mod snarky_type;
 pub mod union_find;

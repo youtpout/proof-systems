@@ -580,7 +580,7 @@ pub trait SnarkyCircuit: Sized {
     where
         <Self::Curve as AffineRepr>::BaseField: PrimeField,
     {
-        let started = std::time::Instant::now();
+        let started = crate::wasm_instant::Instant::now();
         let mut compiled_circuit = compile(self)?;
         if minimum_domain_log2 > 0 {
             let target_domain_size = 1usize << minimum_domain_log2;
@@ -601,7 +601,7 @@ pub trait SnarkyCircuit: Sized {
                     .extend(std::iter::repeat_with(String::new).take(pad));
             }
         }
-        let lowered_at = std::time::Instant::now();
+        let lowered_at = crate::wasm_instant::Instant::now();
         let mut profile = CompileProfile {
             lowering_micros: (lowered_at - started).as_micros() as u64,
             ..CompileProfile::default()
@@ -614,7 +614,7 @@ pub trait SnarkyCircuit: Sized {
             .prev_challenges(Self::PREV_CHALLENGES)
             .build()
             .unwrap();
-        let constraint_system_at = std::time::Instant::now();
+        let constraint_system_at = crate::wasm_instant::Instant::now();
         profile.constraint_system_micros = (constraint_system_at - lowered_at).as_micros() as u64;
         record_compile_profile(profile);
         if minimum_domain_log2 > 0 {
@@ -637,7 +637,7 @@ pub trait SnarkyCircuit: Sized {
         };
         let srs = Self::srs(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
-        let lagrange_at = std::time::Instant::now();
+        let lagrange_at = crate::wasm_instant::Instant::now();
         profile.lagrange_micros = (lagrange_at - constraint_system_at).as_micros() as u64;
         record_compile_profile(profile);
 
@@ -652,7 +652,7 @@ pub trait SnarkyCircuit: Sized {
                 cs, *endo_q, srs, false,
             );
         let verifier_index = prover_index.verifier_index();
-        let prover_index_at = std::time::Instant::now();
+        let prover_index_at = crate::wasm_instant::Instant::now();
         profile.prover_index_micros = (prover_index_at - lagrange_at).as_micros() as u64;
         record_compile_profile(profile);
 
