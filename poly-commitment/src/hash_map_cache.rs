@@ -3,12 +3,19 @@ use std::{
     collections::HashMap,
     hash::Hash,
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
+/// A concurrent memoization cache with per-key initialization.
+///
+/// The map itself is guarded by a mutex, but values are initialized through a
+/// per-key `OnceLock` OUTSIDE that lock: generating a value for one key (e.g.
+/// a multi-second Lagrange-basis computation) neither blocks lookups nor
+/// serializes generations for other keys. Two threads racing on the same key
+/// compute it once — the second blocks on the `OnceLock` until it is ready.
 #[derive(Debug, Clone, Default)]
 pub struct HashMapCache<Key: Hash, Value> {
-    contents: Arc<Mutex<HashMap<Key, Arc<Value>>>>,
+    contents: Arc<Mutex<HashMap<Key, Arc<OnceLock<Value>>>>>,
 }
 
 impl<Key: Hash + Eq, Value> HashMapCache<Key, Value> {
@@ -21,9 +28,28 @@ impl<Key: Hash + Eq, Value> HashMapCache<Key, Value> {
 
     #[must_use]
     pub(crate) fn new_from_hashmap(hashmap: HashMap<Key, Arc<Value>>) -> Self {
+        let contents = hashmap
+            .into_iter()
+            .map(|(key, value)| {
+                let cell = OnceLock::new();
+                let _ = cell.set(
+                    Arc::try_unwrap(value).unwrap_or_else(|_| panic!("unique cache value")),
+                );
+                (key, Arc::new(cell))
+            })
+            .collect();
         Self {
-            contents: Arc::new(Mutex::new(hashmap)),
+            contents: Arc::new(Mutex::new(contents)),
         }
+    }
+
+    fn cell(&self, key: Key) -> Arc<OnceLock<Value>> {
+        let mut hashmap = self.contents.lock().unwrap();
+        Arc::clone(
+            hashmap
+                .entry(key)
+                .or_insert_with(|| Arc::new(OnceLock::new())),
+        )
     }
 
     /// Sets a value by key only if it hasn't already been set
@@ -32,34 +58,49 @@ impl<Key: Hash + Eq, Value> HashMapCache<Key, Value> {
     ///
     /// Panics if the internal mutex is poisoned.
     pub fn set_once(&self, key: Key, value: Value) {
-        let mut hashmap = self.contents.lock().unwrap();
-        let _ = hashmap.entry(key).or_insert_with(|| Arc::new(value));
+        let _ = self.cell(key).set(value);
     }
 
     /// Retrieves a cached value by key, or generates and caches it using the
-    /// provided closure.
+    /// provided closure. The generator runs outside the map lock, so distinct
+    /// keys generate concurrently and the same key generates exactly once.
     ///
     /// # Panics
     ///
     /// Panics if the internal mutex is poisoned.
-    #[allow(clippy::significant_drop_tightening)] // it's a false positive, you can't drop the lock any earlier
     pub(crate) fn get_or_generate<F: FnOnce() -> Value>(
         &self,
         key: Key,
         generator: F,
     ) -> impl Deref<Target = Value> + '_ {
-        let mut hashmap = self.contents.lock().unwrap();
-        let entry = hashmap.entry(key).or_insert_with(|| Arc::new(generator()));
-        Arc::clone(entry)
+        let cell = self.cell(key);
+        cell.get_or_init(generator);
+        CacheRef(cell)
     }
 
-    /// Returns `true` if the cache contains the given key.
+    /// Returns `true` if the cache contains a fully initialized value for the
+    /// given key.
     ///
     /// # Panics
     ///
     /// Panics if the internal mutex is poisoned.
     pub fn contains_key(&self, key: &Key) -> bool {
-        self.contents.lock().unwrap().contains_key(key)
+        self.contents
+            .lock()
+            .unwrap()
+            .get(key)
+            .is_some_and(|cell| cell.get().is_some())
+    }
+}
+
+/// Owning handle to an initialized cache entry.
+pub(crate) struct CacheRef<Value>(Arc<OnceLock<Value>>);
+
+impl<Value> Deref for CacheRef<Value> {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        self.0.get().expect("initialized by get_or_generate")
     }
 }
 
@@ -69,6 +110,15 @@ impl<Key: Hash + Eq + Clone, Value: Clone> From<HashMapCache<Key, Value>>
     for HashMap<Key, Arc<Value>>
 {
     fn from(cache: HashMapCache<Key, Value>) -> Self {
-        cache.contents.lock().unwrap().clone()
+        cache
+            .contents
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(key, cell)| {
+                cell.get()
+                    .map(|value| (key.clone(), Arc::new(value.clone())))
+            })
+            .collect()
     }
 }
