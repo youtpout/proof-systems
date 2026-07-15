@@ -1872,6 +1872,7 @@ impl StepApp for RecordedProgramTemplateApp {
     }
 }
 
+#[derive(Clone)]
 pub struct RecordedProgramBranch {
     pub circuit: RecordedCircuit,
     pub witness: Vec<Fp>,
@@ -1905,6 +1906,86 @@ fn compile_recorded_program_steps(
     branches
         .iter()
         .map(|branch| {
+            Some(compile_recorded_program_step_branch(
+                branch,
+                template,
+                wrap_vk,
+                wrap_index,
+                finalize_index,
+            ))
+        })
+        .collect()
+}
+
+/// Compiles the step indexes of every branch in one pass: the first N0
+/// branch first (its index is the program's shared finalize index; aligning
+/// it to itself is a no-op), then every other branch — in parallel — aligned
+/// to it.
+fn compile_recorded_program_steps_single_pass(
+    branches: &[RecordedProgramBranch],
+    template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+) -> Vec<Option<RecordedProgramStepIndexes>> {
+    use rayon::prelude::*;
+    let first_n0 = branches.iter().position(|b| b.proofs_verified == 0);
+    let n0_indexes = first_n0.map(|i| {
+        compile_recorded_program_step_branch(&branches[i], template, wrap_vk, wrap_index, None)
+    });
+    let finalize_index = n0_indexes.as_ref().map(|indexes| &indexes.1.index);
+    let rest: Vec<usize> = (0..branches.len())
+        .filter(|&i| Some(i) != first_n0)
+        .collect();
+    let compiled: Vec<(usize, RecordedProgramStepIndexes)> = rest
+        .into_par_iter()
+        .map(|i| {
+            (
+                i,
+                compile_recorded_program_step_branch(
+                    &branches[i],
+                    template,
+                    wrap_vk,
+                    wrap_index,
+                    finalize_index,
+                ),
+            )
+        })
+        .collect();
+    let mut out: Vec<Option<RecordedProgramStepIndexes>> =
+        (0..branches.len()).map(|_| None).collect();
+    for (i, indexes) in compiled {
+        out[i] = Some(indexes);
+    }
+    if let (Some(i), Some(indexes)) = (first_n0, n0_indexes) {
+        out[i] = Some(indexes);
+    }
+    out
+}
+
+fn compile_recorded_program_step_branch(
+    branch: &RecordedProgramBranch,
+    template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+    finalize_index: Option<
+        &kimchi::verifier_index::VerifierIndex<
+            { snarky::FULL_ROUNDS },
+            Vesta,
+            poly_commitment::ipa::SRS<Vesta>,
+        >,
+    >,
+) -> RecordedProgramStepIndexes {
+    let branch = branch.clone();
+    {
+        {
             let app_state = branch.circuit.state(&branch.witness);
             let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
                 RecordedProgramTemplateApp,
@@ -1953,16 +2034,14 @@ fn compile_recorded_program_steps(
             let witness = branch.witness.clone();
             let main: crate::recursive_step::EmbeddedAppMain =
                 std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
-            Some(
-                crate::recursive_step::compile_prepared_recursive_step_width2::<
-                    RECORDED_N1_STEP_ROUNDS,
-                    RECORDED_BASE_WRAP_ROUNDS,
-                    RECORDED_N1_STEP_STMT_LEN,
-                    RECORDED_N2_STEP_STMT_LEN,
-                >(&prepared, Some(main)),
-            )
-        })
-        .collect()
+            crate::recursive_step::compile_prepared_recursive_step_width2::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(&prepared, Some(main))
+        }
+    }
 }
 
 fn recorded_program_wrap_branches(
@@ -1997,6 +2076,16 @@ pub struct RecordedCompiledProgram {
 }
 
 impl RecordedCompiledProgram {
+    /// Compiles a program in a single fixpoint-free pass.
+    ///
+    /// The step and wrap circuits only exchange VALUES (verification-key
+    /// commitments, digests) through witness slots and structural parameters
+    /// (domains, shifts, linearization tokens) through the alignment helpers.
+    /// The structural parameters are invariant under the branch VK values, so
+    /// one steps pass aligned to a structure-donor wrap plus one final wrap
+    /// compile reproduces exactly what the multi-pass fixpoint iteration
+    /// converged to (see `compile_multipass_reference` and the
+    /// `program_single_pass_matches_multipass_reference` test).
     pub fn compile(branches: Vec<RecordedProgramBranch>) -> Result<Self, RecordedProveError> {
         if branches.is_empty() {
             return Err(RecordedProveError::Program(
@@ -2017,23 +2106,226 @@ impl RecordedCompiledProgram {
             }
         }
 
-        // A protocol-only valid proof supplies proof-shaped values while Step
-        // indexes are compiled from the real application circuits. No user
-        // witness has to satisfy its constraints during program compilation.
-        let mut template_compiled = crate::api::CompiledBaseCase::<
+        let profile = std::env::var_os("PICKLES_PROFILE").is_some();
+        macro_rules! phase {
+            ($label:expr, $body:expr) => {{
+                let t = snarky::wasm_instant::Instant::now();
+                let out = $body;
+                if profile {
+                    eprintln!("[program compile] {}: {:.2?}", $label, t.elapsed());
+                }
+                out
+            }};
+        }
+
+        // Template base cycle (bootstrap VK): supplies proof-shaped values to
+        // every preparation below. Its concrete values never reach a circuit
+        // constant, so proving it against the bootstrap key is enough for
+        // compilation.
+        let mut template_compiled = phase!(
+            "template base compile",
+            crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+                RecordedProgramTemplateApp,
+                (),
+            )
+        );
+        let template = phase!("template base prove", template_compiled.prove(()));
+        let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
+
+        // Bootstrap width-2 step proof: proof-shaped values for the wrap
+        // witness, and — as a byproduct — the real recursive-step index whose
+        // structure seeds the placeholder branch data below.
+        let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
+            RecordedProgramTemplateApp,
+            16,
+            RECORDED_BASE_WRAP_ROUNDS,
+            40,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(
+            &template,
+            bootstrap_vk,
+            vec![Fp::from(0u64)],
+            vec![Fp::from(0u64)],
+        );
+        let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
+        let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(bootstrap, vec![Fp::from(0u64)]);
+        let bootstrap_step = phase!(
+            "bootstrap N2 step prove",
+            crate::recursive_step::prove_recursive_step_width2::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(bootstrap)
+        );
+
+        // Structure-donor wrap: compiled from branch data whose VALUES are
+        // placeholders (the bootstrap recursive-step index, which has the
+        // real program-step shape). Only its structural fields are consumed
+        // by the step alignment, and those are invariant under branch data.
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0::<
             RecordedProgramTemplateApp,
             16,
             40,
-        >::compile(RecordedProgramTemplateApp, ());
-        let template = template_compiled.prove(());
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+            RECORDED_N2_STEP_ROUNDS,
+            RECORDED_N2_WRAP_STMT_LEN,
+        >(&template, &bootstrap_step);
+        prepared_wrap.data.which_branch = 0;
+        prepared_wrap.data.branches = branches
+            .iter()
+            .map(|branch| {
+                crate::api::WrapBranchData::from_step_verifier(
+                    &bootstrap_step.verifier.index,
+                    branch.proofs_verified as usize,
+                )
+            })
+            .collect();
+        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        let structure_wrap = phase!(
+            "wrap structure compile",
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
+        );
+        let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap.1);
+
+        // Single steps pass: the first N0 branch compiles without finalize
+        // alignment (aligning it to its own index is a no-op), every other
+        // branch aligns to that shared finalize index.
+        let step_indexes = phase!(
+            "steps compile",
+            compile_recorded_program_steps_single_pass(
+                &branches,
+                &template,
+                &structure_vk,
+                &structure_wrap.1.index,
+            )
+        );
+        let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
+
+        // Final wrap: the real branch VKs plus the finalize alignment. The
+        // alignment only reads structural fields, which the structure donor
+        // already carries.
+        prepared_wrap.data.branches = wrap_branches.clone();
+        let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
+            prepared_wrap,
+            &structure_wrap.1.index,
+        );
+        let wrap_indexes = phase!(
+            "wrap final compile",
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
+        );
+        let final_wrap_vk = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+
+        // Guard the single-pass premise: swapping branch VK values must not
+        // move any structural field the alignments consume. A violation here
+        // means the steps were aligned against the wrong wrap structure.
+        {
+            let donor = &structure_wrap.1.index;
+            let fixed = &wrap_indexes.1.index;
+            assert_eq!(
+                fixed.domain, donor.domain,
+                "wrap domain changed under branch VK values"
+            );
+            assert_eq!(
+                fixed.max_poly_size, donor.max_poly_size,
+                "wrap SRS size changed under branch VK values"
+            );
+            assert_eq!(
+                fixed.shift, donor.shift,
+                "wrap shifts changed under branch VK values"
+            );
+            assert_eq!(
+                fixed.endo, donor.endo,
+                "wrap endo changed under branch VK values"
+            );
+        }
+
+        // The stored template pads unfilled proof slots at prove time, so it
+        // must be consistent with the final wrap key.
+        let template = phase!(
+            "final template prove",
+            crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
+                RecordedProgramTemplateApp,
+                (),
+                final_wrap_vk.clone(),
+            )
+        );
+
+        Ok(Self {
+            branches,
+            wrap_branches,
+            step_indexes,
+            wrap_indexes: Some(wrap_indexes),
+            template,
+        })
+    }
+
+    /// The historical multi-pass fixpoint compile, kept as the reference the
+    /// single-pass `compile` is tested against. Do not use outside tests.
+    #[doc(hidden)]
+    pub fn compile_multipass_reference(
+        branches: Vec<RecordedProgramBranch>,
+    ) -> Result<Self, RecordedProveError> {
+        if branches.is_empty() {
+            return Err(RecordedProveError::Program(
+                "recorded program has no branches".into(),
+            ));
+        }
+        for branch in &branches {
+            branch.circuit.validate()?;
+            if branch.witness.len() != branch.circuit.aux_count as usize {
+                return Err(RecordedProveError::Circuit(
+                    RecordedCircuitError::WrongWitnessLength(branch.witness.len()),
+                ));
+            }
+            if branch.proofs_verified > 2 {
+                return Err(RecordedProveError::Program(
+                    "proofs_verified must be 0, 1 or 2".into(),
+                ));
+            }
+        }
+
+        let profile = std::env::var_os("PICKLES_PROFILE").is_some();
+        macro_rules! phase {
+            ($label:expr, $body:expr) => {{
+                let t = snarky::wasm_instant::Instant::now();
+                let out = $body;
+                if profile {
+                    eprintln!("[program compile] {}: {:.2?}", $label, t.elapsed());
+                }
+                out
+            }};
+        }
+
+        // A protocol-only valid proof supplies proof-shaped values while Step
+        // indexes are compiled from the real application circuits. No user
+        // witness has to satisfy its constraints during program compilation.
+        let mut template_compiled = phase!(
+            "template base compile",
+            crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+                RecordedProgramTemplateApp,
+                (),
+            )
+        );
+        let template = phase!("template base prove #1", template_compiled.prove(()));
         let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
 
-        let step_indexes = compile_recorded_program_steps(
-            &branches,
-            &template,
-            &bootstrap_vk,
-            &template.wrap_verifier.index,
-            None,
+        let step_indexes = phase!(
+            "steps pass #1",
+            compile_recorded_program_steps(
+                &branches,
+                &template,
+                &bootstrap_vk,
+                &template.wrap_verifier.index,
+                None,
+            )
         );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
 
@@ -2055,12 +2347,15 @@ impl RecordedCompiledProgram {
             RECORDED_N1_STEP_STMT_LEN,
             RECORDED_N2_STEP_STMT_LEN,
         >(bootstrap, vec![Fp::from(0u64)]);
-        let bootstrap_step = crate::recursive_step::prove_recursive_step_width2::<
-            RECORDED_N1_STEP_ROUNDS,
-            RECORDED_BASE_WRAP_ROUNDS,
-            RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
-        >(bootstrap);
+        let bootstrap_step = phase!(
+            "bootstrap N2 step prove",
+            crate::recursive_step::prove_recursive_step_width2::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(bootstrap)
+        );
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0::<
             RecordedProgramTemplateApp,
             16,
@@ -2075,29 +2370,55 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.which_branch = 0;
         prepared_wrap.data.branches = wrap_branches.clone();
         prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
-        let first_wrap_indexes =
-            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
-        let first_wrap_vk = crate::api::wrap_verification_key_points(&first_wrap_indexes.1);
-        let first_template = crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
-            RecordedProgramTemplateApp,
-            (),
-            first_wrap_vk.clone(),
+        let first_wrap_indexes = phase!(
+            "wrap compile #1",
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
         );
-        let second_step_indexes = compile_recorded_program_steps(
-            &branches,
-            &first_template,
-            &first_wrap_vk,
-            &first_wrap_indexes.1.index,
-            None,
+        let first_wrap_vk = crate::api::wrap_verification_key_points(&first_wrap_indexes.1);
+        let first_template = phase!(
+            "template base prove #2",
+            crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
+                RecordedProgramTemplateApp,
+                (),
+                first_wrap_vk.clone(),
+            )
+        );
+        let second_step_indexes = phase!(
+            "steps pass #2",
+            compile_recorded_program_steps(
+                &branches,
+                &first_template,
+                &first_wrap_vk,
+                &first_wrap_indexes.1.index,
+                None,
+            )
         );
         let second_wrap_branches = recorded_program_wrap_branches(&branches, &second_step_indexes);
+        if profile {
+            eprintln!(
+                "[program compile] steps #2 VKs == steps #1 VKs: {}",
+                second_wrap_branches == wrap_branches
+            );
+        }
         prepared_wrap.data.branches = second_wrap_branches.clone();
-        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        let wrap_indexes = phase!(
+            "wrap compile #2",
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
+        );
         let final_wrap_vk = crate::api::wrap_verification_key_points(&wrap_indexes.1);
-        let template = crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
-            RecordedProgramTemplateApp,
-            (),
-            final_wrap_vk.clone(),
+        if profile {
+            eprintln!(
+                "[program compile] wrap #2 VK == wrap #1 VK: {}",
+                final_wrap_vk == first_wrap_vk
+            );
+        }
+        let template = phase!(
+            "template base prove #3",
+            crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
+                RecordedProgramTemplateApp,
+                (),
+                final_wrap_vk.clone(),
+            )
         );
         let finalize_index = branches
             .iter()
@@ -2105,25 +2426,50 @@ impl RecordedCompiledProgram {
             .find(|(branch, _)| branch.proofs_verified == 0)
             .and_then(|(_, indexes)| indexes.as_ref())
             .map(|indexes| &indexes.1.index);
-        let step_indexes = compile_recorded_program_steps(
-            &branches,
-            &template,
-            &final_wrap_vk,
-            &wrap_indexes.1.index,
-            finalize_index,
+        let step_indexes = phase!(
+            "steps pass #3",
+            compile_recorded_program_steps(
+                &branches,
+                &template,
+                &final_wrap_vk,
+                &wrap_indexes.1.index,
+                finalize_index,
+            )
         );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
+        if profile {
+            for (i, (a, b)) in wrap_branches.iter().zip(&second_wrap_branches).enumerate() {
+                eprintln!(
+                    "[program compile] steps #3 branch {i} (pv={}) == steps #2: {}",
+                    branches[i].proofs_verified,
+                    a == b
+                );
+            }
+        }
         prepared_wrap.data.branches = wrap_branches.clone();
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
             &wrap_indexes.1.index,
         );
-        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
-        let final_wrap_vk = crate::api::wrap_verification_key_points(&wrap_indexes.1);
-        let template = crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
-            RecordedProgramTemplateApp,
-            (),
-            final_wrap_vk.clone(),
+        let wrap_indexes = phase!(
+            "wrap compile #3",
+            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
+        );
+        let final_wrap_vk2 = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        if profile {
+            eprintln!(
+                "[program compile] wrap #3 VK == wrap #2 VK: {}",
+                final_wrap_vk2 == final_wrap_vk
+            );
+        }
+        let final_wrap_vk = final_wrap_vk2;
+        let template = phase!(
+            "template base prove #4",
+            crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
+                RecordedProgramTemplateApp,
+                (),
+                final_wrap_vk.clone(),
+            )
         );
         let finalize_index = branches
             .iter()
@@ -2131,12 +2477,15 @@ impl RecordedCompiledProgram {
             .find(|(branch, _)| branch.proofs_verified == 0)
             .and_then(|(_, indexes)| indexes.as_ref())
             .map(|indexes| &indexes.1.index);
-        let stable_step_indexes = compile_recorded_program_steps(
-            &branches,
-            &template,
-            &final_wrap_vk,
-            &wrap_indexes.1.index,
-            finalize_index,
+        let stable_step_indexes = phase!(
+            "steps pass #4",
+            compile_recorded_program_steps(
+                &branches,
+                &template,
+                &final_wrap_vk,
+                &wrap_indexes.1.index,
+                finalize_index,
+            )
         );
         let stable_wrap_branches = recorded_program_wrap_branches(&branches, &stable_step_indexes);
         assert_eq!(
@@ -2151,6 +2500,13 @@ impl RecordedCompiledProgram {
             wrap_indexes: Some(wrap_indexes),
             template,
         })
+    }
+
+    /// The per-branch step verification key data embedded in the shared
+    /// wrap. Exposed for the single-pass/multi-pass equivalence test.
+    #[doc(hidden)]
+    pub fn wrap_branches_for_tests(&self) -> &[crate::api::WrapBranchData] {
+        &self.wrap_branches
     }
 
     pub fn wrap_verification_key_points(&self) -> Vec<(Fp, Fp)> {

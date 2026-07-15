@@ -586,3 +586,32 @@ fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
         pickles::composition_types::ProofsVerified::N1
     );
 }
+
+/// The single-pass program compile must reproduce exactly the artifacts the
+/// historical multi-pass fixpoint iteration converged to: identical
+/// per-branch step verification keys and an identical shared wrap key.
+#[test]
+fn program_single_pass_matches_multipass_reference() {
+    use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};
+    let branches: Vec<RecordedProgramBranch> = [0u8, 1, 2]
+        .into_iter()
+        .map(|proofs_verified| RecordedProgramBranch {
+            circuit: square_circuit(),
+            witness: vec![Fp::from(6u64), Fp::from(36u64)],
+            proofs_verified,
+        })
+        .collect();
+    let single = RecordedCompiledProgram::compile(branches.clone()).expect("single-pass compile");
+    let reference = RecordedCompiledProgram::compile_multipass_reference(branches)
+        .expect("multi-pass reference compile");
+    assert_eq!(
+        single.wrap_branches_for_tests(),
+        reference.wrap_branches_for_tests(),
+        "per-branch step verification keys diverged from the multi-pass reference"
+    );
+    assert_eq!(
+        single.wrap_verification_key_points(),
+        reference.wrap_verification_key_points(),
+        "shared wrap verification key diverged from the multi-pass reference"
+    );
+}

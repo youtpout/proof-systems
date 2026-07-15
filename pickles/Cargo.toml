@@ -25,6 +25,7 @@ num-bigint.workspace = true
 num-traits = "0.2"
 o1-utils.workspace = true
 poly-commitment.workspace = true
+rayon.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
