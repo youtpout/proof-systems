@@ -370,6 +370,38 @@ pub fn combined_inner_product_circuit<F: ark_ff::PrimeField>(
     Ok(res)
 }
 
+/// Fixed-width `combined_evaluation` with optional prefix entries. For a
+/// disabled entry neither its contribution nor its power of `xi` is
+/// consumed, matching OCaml's `Opt.Maybe` fold for padded recursion slots.
+pub fn combined_inner_product_circuit_masked<F: ark_ff::PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    xi: &FieldVar<F>,
+    r: &FieldVar<F>,
+    masked_prefix: &[(snarky::Boolean<F>, FieldVar<F>, FieldVar<F>)],
+    entries: &[(FieldVar<F>, FieldVar<F>)],
+) -> SnarkyResult<FieldVar<F>> {
+    let mut result = FieldVar::constant(F::zero());
+    let mut xi_power = FieldVar::constant(F::one());
+    for (keep, zeta, zetaw) in masked_prefix {
+        let r_zetaw = r.mul(zetaw, None, loc.clone(), sys)?;
+        let term = zeta + &r_zetaw;
+        let contribution = xi_power.mul(&term, None, loc.clone(), sys)?;
+        let next_result = &result + &contribution;
+        let next_xi_power = xi_power.mul(xi, None, loc.clone(), sys)?;
+        result = sys.if_(loc.clone(), keep.clone(), next_result, result)?;
+        xi_power = sys.if_(loc.clone(), keep.clone(), next_xi_power, xi_power)?;
+    }
+    for (zeta, zetaw) in entries {
+        let r_zetaw = r.mul(zetaw, None, loc.clone(), sys)?;
+        let term = zeta + &r_zetaw;
+        let contribution = xi_power.mul(&term, None, loc.clone(), sys)?;
+        result = &result + &contribution;
+        xi_power = xi_power.mul(xi, None, loc.clone(), sys)?;
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod cip_circuit_tests {
     use super::*;

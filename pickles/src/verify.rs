@@ -5,7 +5,8 @@
 //! compiled wrap circuit. The kimchi verifier index is reconstructed from the
 //! key's 28 commitments and its wrap domain, mirroring the structural fields
 //! that `compile_to_indexes` produces for [`crate::api::WrapCircuit`] (no
-//! optional gates, no lookups, zero prev challenges).
+//! optional gates, no lookups, and the fixed two previous challenges carried
+//! by Pickles' shared Wrap proof).
 
 use ark_poly::EvaluationDomain;
 use groupmap::GroupMap;
@@ -23,7 +24,11 @@ use mina_poseidon::{
     constants::PlonkSpongeConstantsKimchi,
     sponge::{DefaultFqSponge, DefaultFrSponge},
 };
-use poly_commitment::{commitment::CommitmentCurve, ipa::SRS, SRS as _};
+use poly_commitment::{
+    commitment::{CommitmentCurve, PolyComm},
+    ipa::SRS,
+    SRS as _,
+};
 
 use crate::{
     api::MinaWrapProof,
@@ -103,7 +108,7 @@ pub fn wrap_verifier_index_from_side_loaded(
         zk_rows,
         srs,
         public: public_input_size,
-        prev_challenges: 0,
+        prev_challenges: crate::common::MAX_PROOFS_VERIFIED,
         // Pickles canonical order: 7 sigma, 15 coefficients, then generic,
         // psm, complete_add, mul, emul, endomul_scalar.
         sigma_comm: core::array::from_fn(|i| comm(i)),
@@ -147,9 +152,36 @@ pub fn verify_wrap_proof(
     vk: &SideLoadedVerificationKey,
     proof: &MinaWrapProof,
 ) -> Result<(), StandaloneVerifyError> {
-    let prover_proof = crate::mina_bin_prot::WrapWireProofV1::from_bin_prot(&proof.wrap_wire_proof)
-        .and_then(|wire| wire.to_prover_proof())
-        .map_err(|_| StandaloneVerifyError::ProofDecoding)?;
+    let mut prover_proof =
+        crate::mina_bin_prot::WrapWireProofV1::from_bin_prot(&proof.wrap_wire_proof)
+            .and_then(|wire| wire.to_prover_proof())
+            .map_err(|_| StandaloneVerifyError::ProofDecoding)?;
+    if proof.wrap_recursion_commitments.len() != crate::common::MAX_PROOFS_VERIFIED
+        || proof.wrap_recursion_challenges.len() != crate::common::MAX_PROOFS_VERIFIED
+        || proof
+            .wrap_recursion_challenges
+            .iter()
+            .any(|challenges| challenges.len() != crate::common::TOCK_ROUNDS)
+    {
+        return Err(StandaloneVerifyError::MalformedMessages);
+    }
+    prover_proof.prev_challenges = proof
+        .wrap_recursion_commitments
+        .iter()
+        .zip(&proof.wrap_recursion_challenges)
+        .map(|(&(x, y), challenges)| {
+            let point = Pallas::new_unchecked(x, y);
+            if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
+                return Err(StandaloneVerifyError::ProofDecoding);
+            }
+            Ok(kimchi::proof::RecursionChallenge {
+                chals: challenges.clone(),
+                comm: PolyComm {
+                    chunks: vec![point],
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let index = wrap_verifier_index_from_side_loaded(vk, proof.statement.len());
     let group_map = <Pallas as CommitmentCurve>::Map::setup();
     kimchi::verifier::verify::<

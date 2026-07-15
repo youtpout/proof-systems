@@ -1889,6 +1889,18 @@ fn compile_recorded_program_steps(
     branches: &[RecordedProgramBranch],
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+    finalize_index: Option<
+        &kimchi::verifier_index::VerifierIndex<
+            { snarky::FULL_ROUNDS },
+            Vesta,
+            poly_commitment::ipa::SRS<Vesta>,
+        >,
+    >,
 ) -> Vec<Option<RecordedProgramStepIndexes>> {
     branches
         .iter()
@@ -1906,6 +1918,17 @@ fn compile_recorded_program_steps(
                 vec![Fp::from(0u64)],
                 app_state.clone(),
             );
+            let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
+            let prepared = crate::recursive_step::align_program_recursive_step_verifier::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+            >(prepared, wrap_index);
+            let prepared = match finalize_index {
+                Some(index) => crate::recursive_step::align_program_recursive_step_finalize_index(
+                    prepared, index,
+                ),
+                None => prepared,
+            };
             let prepared = match branch.proofs_verified {
                 0 => crate::recursive_step::prepare_recursive_step_n0::<
                     RECORDED_BASE_WRAP_ROUNDS,
@@ -2005,7 +2028,13 @@ impl RecordedCompiledProgram {
         let template = template_compiled.prove(());
         let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
 
-        let step_indexes = compile_recorded_program_steps(&branches, &template, &bootstrap_vk);
+        let step_indexes = compile_recorded_program_steps(
+            &branches,
+            &template,
+            &bootstrap_vk,
+            &template.wrap_verifier.index,
+            None,
+        );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
 
         let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
@@ -2020,6 +2049,7 @@ impl RecordedCompiledProgram {
             vec![Fp::from(0u64)],
             vec![Fp::from(0u64)],
         );
+        let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
         let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
@@ -2053,8 +2083,13 @@ impl RecordedCompiledProgram {
             (),
             first_wrap_vk.clone(),
         );
-        let second_step_indexes =
-            compile_recorded_program_steps(&branches, &first_template, &first_wrap_vk);
+        let second_step_indexes = compile_recorded_program_steps(
+            &branches,
+            &first_template,
+            &first_wrap_vk,
+            &first_wrap_indexes.1.index,
+            None,
+        );
         let second_wrap_branches = recorded_program_wrap_branches(&branches, &second_step_indexes);
         prepared_wrap.data.branches = second_wrap_branches.clone();
         let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
@@ -2064,17 +2099,55 @@ impl RecordedCompiledProgram {
             (),
             final_wrap_vk.clone(),
         );
-        let step_indexes = compile_recorded_program_steps(&branches, &template, &final_wrap_vk);
+        let finalize_index = branches
+            .iter()
+            .zip(&second_step_indexes)
+            .find(|(branch, _)| branch.proofs_verified == 0)
+            .and_then(|(_, indexes)| indexes.as_ref())
+            .map(|indexes| &indexes.1.index);
+        let step_indexes = compile_recorded_program_steps(
+            &branches,
+            &template,
+            &final_wrap_vk,
+            &wrap_indexes.1.index,
+            finalize_index,
+        );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
+        prepared_wrap.data.branches = wrap_branches.clone();
+        let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
+            prepared_wrap,
+            &wrap_indexes.1.index,
+        );
+        let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
+        let final_wrap_vk = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        let template = crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
+            RecordedProgramTemplateApp,
+            (),
+            final_wrap_vk.clone(),
+        );
+        let finalize_index = branches
+            .iter()
+            .zip(&step_indexes)
+            .find(|(branch, _)| branch.proofs_verified == 0)
+            .and_then(|(_, indexes)| indexes.as_ref())
+            .map(|indexes| &indexes.1.index);
+        let stable_step_indexes = compile_recorded_program_steps(
+            &branches,
+            &template,
+            &final_wrap_vk,
+            &wrap_indexes.1.index,
+            finalize_index,
+        );
+        let stable_wrap_branches = recorded_program_wrap_branches(&branches, &stable_step_indexes);
         assert_eq!(
-            wrap_branches, second_wrap_branches,
-            "Step VKs did not stabilize during shared Wrap fixed-point compilation",
+            stable_wrap_branches, wrap_branches,
+            "Step verification keys did not stabilize under the final shared Wrap key"
         );
 
         Ok(Self {
             branches,
             wrap_branches,
-            step_indexes,
+            step_indexes: stable_step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
         })
@@ -2120,6 +2193,7 @@ impl RecordedCompiledProgram {
             vec![Fp::from(0u64)],
             app_state.clone(),
         );
+        let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
         let prepared = crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
@@ -2130,6 +2204,26 @@ impl RecordedCompiledProgram {
             .challenge_polynomial_commitments
             .clone();
         let carried_challenges: Vec<Vec<Fp>> = prepared
+            .recursions
+            .iter()
+            .zip(prepared.dummy_slots)
+            .filter(|(_, dummy)| !dummy)
+            .map(|(recursion, _)| recursion.chals.clone())
+            .collect();
+        let dummy_accumulator = crate::dummy::pasta_dummy_wrap_sg();
+        let physical_accumulators = prepared
+            .proofs
+            .iter()
+            .zip(prepared.dummy_slots)
+            .map(|(proof, dummy)| {
+                if dummy {
+                    (dummy_accumulator.x, dummy_accumulator.y)
+                } else {
+                    proof.sg
+                }
+            })
+            .collect();
+        let physical_challenges = prepared
             .recursions
             .iter()
             .map(|recursion| recursion.chals.clone())
@@ -2162,6 +2256,15 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
+            prepared_wrap,
+            &self
+                .wrap_indexes
+                .as_ref()
+                .expect("compiled program Wrap indexes")
+                .1
+                .index,
+        );
         let indexes = self
             .wrap_indexes
             .take()
@@ -2180,7 +2283,203 @@ impl RecordedCompiledProgram {
                 wrap,
                 carried_accumulators,
                 carried_challenges,
+                physical_accumulators,
+                physical_challenges,
                 proofs_verified: 0,
+            }),
+        })
+    }
+
+    pub fn prove_n1(
+        &mut self,
+        branch_index: usize,
+        previous: &RecordedProofHandle,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        self.prove_recursive(branch_index, std::slice::from_ref(&previous), witness)
+    }
+
+    pub fn prove_n2(
+        &mut self,
+        branch_index: usize,
+        previous: [&RecordedProofHandle; 2],
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        self.prove_recursive(branch_index, &previous, witness)
+    }
+
+    fn prove_recursive(
+        &mut self,
+        branch_index: usize,
+        previous: &[&RecordedProofHandle],
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        let branch = self
+            .branches
+            .get(branch_index)
+            .ok_or_else(|| RecordedProveError::Program("unknown program branch".into()))?;
+        if usize::from(branch.proofs_verified) != previous.len() || previous.is_empty() {
+            return Err(RecordedProveError::Program(format!(
+                "branch expects {} previous proofs, got {}",
+                branch.proofs_verified,
+                previous.len()
+            )));
+        }
+        if witness.len() != branch.circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let shared_wrap_vk = self.wrap_verification_key_points();
+        let mut previous_cycles = Vec::with_capacity(previous.len());
+        for proof in previous {
+            let RecordedProofInner::Program(cycle) = &proof.inner else {
+                return Err(RecordedProveError::Program(
+                    "program branches require proofs from a compiled program".into(),
+                ));
+            };
+            if cycle.step.messages_for_next_step_vk_pts != shared_wrap_vk
+                || crate::api::wrap_verification_key_points(&cycle.wrap.verifier) != shared_wrap_vk
+            {
+                return Err(RecordedProveError::Program(
+                    "previous proof uses a different program Wrap key".into(),
+                ));
+            }
+            previous_cycles.push((proof, cycle));
+        }
+
+        let app_state = branch.circuit.state(&witness);
+        let mut prepared_previous = Vec::with_capacity(previous.len());
+        for (proof, cycle) in &previous_cycles {
+            prepared_previous.push(
+                crate::recursive_step::prepare_program_recursive_step_from_previous::<
+                    RECORDED_N1_STEP_ROUNDS,
+                    RECORDED_BASE_WRAP_ROUNDS,
+                    RECORDED_N1_STEP_STMT_LEN,
+                    RECORDED_N2_STEP_STMT_LEN,
+                    RECORDED_N2_WRAP_STMT_LEN,
+                    RECORDED_N1_STEP_STMT_LEN,
+                >(
+                    &cycle.step,
+                    &cycle.wrap,
+                    cycle.physical_accumulators.clone(),
+                    cycle.physical_challenges.clone(),
+                    shared_wrap_vk.clone(),
+                    proof.app_state.clone(),
+                    app_state.clone(),
+                ),
+            );
+        }
+        let mut prepared_previous = prepared_previous.into_iter();
+        let prepared = match previous.len() {
+            1 => crate::recursive_step::prepare_recursive_step_n1::<
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(prepared_previous.next().unwrap(), app_state.clone()),
+            2 => crate::recursive_step::prepare_recursive_step_width2::<
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(
+                prepared_previous.next().unwrap(),
+                prepared_previous.next().unwrap(),
+                app_state.clone(),
+            ),
+            _ => unreachable!(),
+        };
+        let carried_accumulators = prepared
+            .messages_for_next_step_proof
+            .challenge_polynomial_commitments
+            .clone();
+        let carried_challenges = prepared
+            .recursions
+            .iter()
+            .zip(prepared.dummy_slots)
+            .filter(|(_, dummy)| !dummy)
+            .map(|(recursion, _)| recursion.chals.clone())
+            .collect();
+        let dummy_accumulator = crate::dummy::pasta_dummy_wrap_sg();
+        let physical_accumulators = prepared
+            .proofs
+            .iter()
+            .zip(prepared.dummy_slots)
+            .map(|(proof, dummy)| {
+                if dummy {
+                    (dummy_accumulator.x, dummy_accumulator.y)
+                } else {
+                    proof.sg
+                }
+            })
+            .collect();
+        let physical_challenges = prepared
+            .recursions
+            .iter()
+            .map(|recursion| recursion.chals.clone())
+            .collect();
+
+        let app = RecordedApp {
+            circuit: branch.circuit.clone(),
+        };
+        let main: crate::recursive_step::EmbeddedAppMain =
+            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        let indexes = self.step_indexes[branch_index]
+            .take()
+            .expect("compiled program Step indexes");
+        let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
+            prepared,
+            Some(main),
+            Some(indexes),
+        );
+        self.step_indexes[branch_index] = Some(indexes);
+
+        let real_unfinalized = previous_cycles
+            .iter()
+            .map(|(_, cycle)| {
+                crate::recursive_step::program_unfinalized_from_previous(&cycle.step, &cycle.wrap)
+            })
+            .collect();
+        let mut prepared_wrap = crate::recursive_step::prepare_program_recursive_wrap::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+            RECORDED_N2_STEP_ROUNDS,
+            RECORDED_N2_WRAP_STMT_LEN,
+        >(&step, real_unfinalized);
+        prepared_wrap.data.which_branch = branch_index;
+        prepared_wrap.data.branches = self.wrap_branches.clone();
+        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
+            prepared_wrap,
+            &self
+                .wrap_indexes
+                .as_ref()
+                .expect("compiled program Wrap indexes")
+                .1
+                .index,
+        );
+        let indexes = self
+            .wrap_indexes
+            .take()
+            .expect("compiled program Wrap indexes");
+        let (wrap, indexes) =
+            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(indexes));
+        self.wrap_indexes = Some(indexes);
+        let proof = wrap
+            .to_mina_network_proof(step.verifier.index.domain.log_size_of_group as u8)
+            .map_err(RecordedProveError::RecursiveBackend)?;
+        Ok(RecordedProofHandle {
+            app_state,
+            proof,
+            inner: RecordedProofInner::Program(RecordedProgramCycle {
+                step,
+                wrap,
+                carried_accumulators,
+                carried_challenges,
+                physical_accumulators,
+                physical_challenges,
+                proofs_verified: branch.proofs_verified,
             }),
         })
     }
@@ -2246,6 +2545,8 @@ struct RecordedProgramCycle {
     >,
     carried_accumulators: Vec<(Fp, Fp)>,
     carried_challenges: Vec<Vec<Fp>>,
+    physical_accumulators: Vec<(Fp, Fp)>,
+    physical_challenges: Vec<Vec<Fp>>,
     proofs_verified: u8,
 }
 

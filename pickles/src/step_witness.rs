@@ -87,8 +87,15 @@ pub fn step_witness(
         s.absorb(&[p.y]);
     };
 
-    // oracle transcript (base subset)
+    // Oracle transcript. Wrap proofs carry the fixed-width Pickles
+    // accumulator as Kimchi previous challenges; its commitments are
+    // absorbed immediately after the verifier-index digest.
     s.absorb(&[vk_digest]);
+    for challenge in &proof.prev_challenges {
+        for commitment in &challenge.comm.chunks {
+            abpt(&mut s, commitment);
+        }
+    }
     for c in &public_comm.chunks {
         abpt(&mut s, c);
     }

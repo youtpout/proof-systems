@@ -121,19 +121,34 @@ fn recorded_program_compiles_n0_n1_n2_with_one_wrap_key() {
     let mut program = RecordedCompiledProgram::compile(branches).unwrap();
     assert_eq!(program.branch_count(), 3);
     assert_eq!(program.wrap_verification_key_points().len(), 28);
-    let proved = program
+    let n0 = program
         .prove_n0(0, vec![Fp::from(6u64), Fp::from(36u64)])
         .unwrap();
-    assert_eq!(proved.app_state, vec![Fp::from(36u64)]);
-    let (accumulators, challenges, vk) = proved.program_verification_messages().unwrap();
-    pickles::verify::verify_side_loaded_with_step_vk(
-        &proved.app_state,
-        Some(&vk),
-        &accumulators,
-        &challenges,
-        &proved.proof,
-    )
-    .unwrap();
+    let verify = |proved: &pickles::recorded::RecordedProofHandle| {
+        let (accumulators, challenges, vk) = proved.program_verification_messages().unwrap();
+        pickles::verify::verify_side_loaded_with_step_vk(
+            &proved.app_state,
+            Some(&vk),
+            &accumulators,
+            &challenges,
+            &proved.proof,
+        )
+        .unwrap();
+    };
+    assert_eq!(n0.app_state, vec![Fp::from(36u64)]);
+    verify(&n0);
+
+    let n1 = program
+        .prove_n1(1, &n0, vec![Fp::from(7u64), Fp::from(49u64)])
+        .unwrap();
+    assert_eq!(n1.app_state, vec![Fp::from(49u64)]);
+    verify(&n1);
+
+    let n2 = program
+        .prove_n2(2, [&n0, &n1], vec![Fp::from(8u64), Fp::from(64u64)])
+        .unwrap();
+    assert_eq!(n2.app_state, vec![Fp::from(64u64)]);
+    verify(&n2);
 }
 
 #[test]

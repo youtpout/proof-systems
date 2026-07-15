@@ -16,7 +16,7 @@ use std::borrow::Cow;
 
 use ark_ff::PrimeField;
 use mina_poseidon::poseidon::ArithmeticSpongeParams;
-use snarky::{gadgets::curve::Point, FieldVar, RunState, SnarkyResult};
+use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::{
     common::FULL_ROUNDS, composition_types::PlonkVerificationKeyEvals, sponge::PoseidonSponge,
@@ -72,6 +72,50 @@ pub fn hash_messages_for_next_step_proof<F: PrimeField>(
         }
     }
     Ok(sponge.squeeze(sys, loc))
+}
+
+/// Fixed-width variant of [`hash_messages_for_next_step_proof`] matching
+/// OCaml's `hash_messages_for_next_step_proof_opt`. The verification key and
+/// application state are absorbed normally; every accumulator coordinate and
+/// challenge is then conditionally absorbed according to the branch's
+/// checked proofs-verified mask.
+pub fn hash_messages_for_next_step_proof_opt<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge_after_index: &PoseidonSponge<F>,
+    app_state: &[FieldVar<F>],
+    challenge_polynomial_commitments: &[Point<F>],
+    old_bulletproof_challenges: &[Vec<FieldVar<F>>],
+    proofs_verified_mask: &[Boolean<F>],
+) -> SnarkyResult<FieldVar<F>> {
+    assert_eq!(
+        challenge_polynomial_commitments.len(),
+        old_bulletproof_challenges.len(),
+        "hash_messages_for_next_step_proof_opt: one challenge vector per commitment"
+    );
+    assert_eq!(
+        challenge_polynomial_commitments.len(),
+        proofs_verified_mask.len(),
+        "hash_messages_for_next_step_proof_opt: one mask bit per accumulator"
+    );
+
+    let mut prefix = sponge_after_index.clone();
+    for value in app_state {
+        prefix.absorb(sys, loc.clone(), std::slice::from_ref(value));
+    }
+    let mut sponge = crate::opt_sponge::OptSponge::from_sponge(prefix);
+    for ((commitment, challenges), keep) in challenge_polynomial_commitments
+        .iter()
+        .zip(old_bulletproof_challenges)
+        .zip(proofs_verified_mask)
+    {
+        sponge.absorb((keep.clone(), commitment.x.clone()));
+        sponge.absorb((keep.clone(), commitment.y.clone()));
+        for challenge in challenges {
+            sponge.absorb((keep.clone(), challenge.clone()));
+        }
+    }
+    sponge.squeeze(sys, loc)
 }
 
 /// Out-of-circuit mirror of [`hash_messages_for_next_step_proof`].
@@ -230,6 +274,7 @@ mod tests {
         app_state: Vec<Fp>,
         cpcs: Vec<(Fp, Fp)>,
         old_chals: Vec<Vec<Fp>>,
+        mask: Option<Vec<bool>>,
     }
 
     impl SnarkyCircuit for HashCircuit {
@@ -285,14 +330,30 @@ mod tests {
             }
 
             let after_index = sponge_after_index(sys, loc!(), &vk);
-            hash_messages_for_next_step_proof(
-                sys,
-                loc!(),
-                &after_index,
-                &app_state,
-                &cpcs,
-                &old_chals,
-            )
+            if let Some(mask) = &self.mask {
+                let mask = mask
+                    .iter()
+                    .map(|&keep| sys.compute(loc!(), move |_| keep))
+                    .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?;
+                hash_messages_for_next_step_proof_opt(
+                    sys,
+                    loc!(),
+                    &after_index,
+                    &app_state,
+                    &cpcs,
+                    &old_chals,
+                    &mask,
+                )
+            } else {
+                hash_messages_for_next_step_proof(
+                    sys,
+                    loc!(),
+                    &after_index,
+                    &app_state,
+                    &cpcs,
+                    &old_chals,
+                )
+            }
         }
     }
 
@@ -331,11 +392,61 @@ mod tests {
             app_state,
             cpcs,
             old_chals,
+            mask: None,
         };
         let (mut pi, ver) = circ.compile_to_indexes().unwrap();
         let (proof, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
         assert_eq!(*out, expected);
         ver.verify::<BaseSponge, ScalarSponge>(proof, (), *out);
+    }
+
+    #[test]
+    fn optional_step_hash_matches_filtered_reference() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let pt = |rng: &mut _| {
+            let p = (Pallas::generator() * Fq::rand(rng)).into_affine();
+            (p.x, p.y)
+        };
+        let vk_comms: Vec<(Fp, Fp)> = (0..PERMUTS + COLUMNS + 6).map(|_| pt(&mut rng)).collect();
+        let app_state = vec![Fp::rand(&mut rng)];
+        let cpcs: Vec<(Fp, Fp)> = (0..2).map(|_| pt(&mut rng)).collect();
+        let old_chals: Vec<Vec<Fp>> = (0..2)
+            .map(|_| {
+                (0..crate::common::TICK_ROUNDS)
+                    .map(|_| Fp::rand(&mut rng))
+                    .collect()
+            })
+            .collect();
+
+        for mask in [vec![false, false], vec![false, true], vec![true, true]] {
+            let filtered_cpcs: Vec<_> = cpcs
+                .iter()
+                .zip(&mask)
+                .filter_map(|(&value, &keep)| keep.then_some(value))
+                .collect();
+            let filtered_chals: Vec<_> = old_chals
+                .iter()
+                .zip(&mask)
+                .filter_map(|(value, &keep)| keep.then_some(value.clone()))
+                .collect();
+            let expected = hash_messages_for_next_step_proof_ref(
+                Vesta::sponge_params(),
+                &vk_comms,
+                &app_state,
+                &filtered_cpcs,
+                &filtered_chals,
+            );
+            let circ = HashCircuit {
+                vk_comms: vk_comms.clone(),
+                app_state: app_state.clone(),
+                cpcs: cpcs.clone(),
+                old_chals: old_chals.clone(),
+                mask: Some(mask.clone()),
+            };
+            let (mut pi, _) = circ.compile_to_indexes().unwrap();
+            let (_, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected, "mask = {mask:?}");
+        }
     }
 
     struct WrapHashCircuit {

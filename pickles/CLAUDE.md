@@ -2495,3 +2495,31 @@ largeur fixe et les états pré-calculés de `Wrap_hack`; ne pas synthétiser le
 dummy depuis un proof existant. Le critère d'acceptation reste une chaîne
 réelle N0 -> N1 -> N2 prouvée avec le même index Wrap et vérifiée standalone
 après chaque branche, sans recompilation pendant le proving.
+
+## Handoff 2026-07-15 — multibranche N0/N1/N2 terminé
+
+Le port multibranche est maintenant fonctionnel sans relâcher les contrôles
+Snarky/Kimchi. La divergence venait du port incomplet, pas d'un bug de sécurité
+préexistant dans Snarky.
+
+Invariants désormais alignés sur OCaml :
+
+- Step vérifie seulement la H-list logique, puis lie explicitement les slots
+  publics absents aux valeurs canoniques de `Unfinalized.dummy` ;
+- les accumulateurs/challenges physiques restent de largeur deux, avec les
+  masques N0 `[false,false]`, N1 `[false,true]`, N2 `[true,true]` ;
+- Wrap transporte les deux `prev_challenges` Kimchi et le vérificateur
+  standalone les reconstruit depuis l'enveloppe réseau ;
+- les dummies conservent leurs valeurs cryptographiques déterministes mais
+  utilisent les métadonnées publiques de l'index réellement finalisé ;
+- les Step VK sont stabilisées sous la Wrap VK finale et un seul index Wrap
+  maximal est réutilisé pendant `prove_n0`, `prove_n1` et `prove_n2`.
+
+Validation release avec `RUST_MIN_STACK=31457280` :
+
+- `cargo test -p pickles --release --lib` : 104/104 ;
+- `cargo test -p pickles --release --test recursion` : 13/13 ;
+- `cargo test -p pickles --release --test recorded` : 16/16, dont une chaîne
+  réelle N0 -> N1 -> N2 vérifiée standalone après chaque couche ;
+- `cargo test -p pickles --release --test e2e` : 1/1 ;
+- `make check-format` et `cargo check -p pickles` : verts.

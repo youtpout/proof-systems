@@ -45,6 +45,36 @@ pub fn pasta_dummy_wrap_sg() -> Pallas {
     })
 }
 
+/// Commitment to the protocol-fixed dummy Step challenge polynomial.
+///
+/// This is `Dummy.Ipa.Step.sg`, used by `step_main` when it front-pads the
+/// fixed-width `messages_for_next_wrap_proof` vector.  It is deliberately a
+/// Vesta point (coordinates in `Fq`), whereas [`pasta_dummy_wrap_sg`] is the
+/// Pallas accumulator used by Kimchi recursion in the Step proof.
+pub fn pasta_dummy_step_sg() -> Vesta {
+    static SG: OnceLock<Vesta> = OnceLock::new();
+    *SG.get_or_init(|| {
+        compute_sg(
+            crate::common::tick_srs(1 << crate::common::TICK_ROUNDS).as_ref(),
+            &pasta_ipa_wrap_and_step().1.challenges_computed,
+        )
+    })
+}
+
+/// The `n`th value of one of Pickles' deterministic random-oracle streams.
+/// Counters are one-based, exactly as `ro.ml::ro`.
+pub fn field_at<F: PrimeField>(label: &str, bit_length: usize, n: usize) -> F {
+    let bits = crate::ro::bits_random_oracle(bit_length, &format!("{label}_{n}"));
+    let mut acc = F::zero();
+    for &bit in bits.iter().rev() {
+        acc = acc + acc;
+        if bit {
+            acc += F::one();
+        }
+    }
+    acc
+}
+
 /// One challenge-polynomial accumulator entry: the commitment to `b_poly` and
 /// the field-form IPA challenges it commits to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,11 +201,21 @@ where
 /// one chunk at `zeta` and one at `zeta*omega`, followed by one public-input
 /// chunk at each point and `ft_eval1`.
 pub fn evals<F: PrimeField>() -> AllEvals<F> {
-    let mut ro = Ro::tock();
-
-    let mut pair = || PointEvaluations {
-        zeta: vec![ro.next_field()],
-        zeta_omega: vec![ro.next_field()],
+    // `dummy.ml` first allocates all 86 mandatory values. OCaml evaluates
+    // record and vector constructors right-to-left, so the values are stored
+    // in descending counter order even though the global `Ro.tock` stream is
+    // consumed from 1 through 86. Openmina's network-compatible port uses the
+    // same explicit 86..1 sequence.
+    let mut counter = 86usize;
+    let mut pair = || {
+        let zeta = field_at("fq", 255, counter);
+        counter -= 1;
+        let zeta_omega = field_at("fq", 255, counter);
+        counter -= 1;
+        PointEvaluations {
+            zeta: vec![zeta],
+            zeta_omega: vec![zeta_omega],
+        }
     };
 
     // Keep the draw order aligned with `Evaluation_lengths.default` in OCaml:
@@ -220,10 +260,12 @@ pub fn evals<F: PrimeField>() -> AllEvals<F> {
         foreign_field_mul_lookup_selector: None,
     };
     let public_input = PointEvaluations {
-        zeta: vec![ro.next_field()],
-        zeta_omega: vec![ro.next_field()],
+        // The tuple in `([| Ro.tock () |], [| Ro.tock () |])` is also
+        // evaluated right-to-left after the mandatory values.
+        zeta: vec![field_at("fq", 255, 88)],
+        zeta_omega: vec![field_at("fq", 255, 87)],
     };
-    let ft_eval1 = ro.next_field();
+    let ft_eval1 = field_at("fq", 255, 89);
 
     AllEvals {
         ft_eval1,
@@ -252,10 +294,7 @@ pub fn evals_combined<F: PrimeField>() -> AllEvals<F> {
 mod tests {
     use super::*;
     use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
-    use kimchi::{
-        circuits::wires::{COLUMNS, PERMUTS},
-        curve::KimchiCurve,
-    };
+    use kimchi::curve::KimchiCurve;
     use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
     use poly_commitment::{commitment::b_poly_coefficients, SRS as _};
     use std::str::FromStr;
@@ -363,21 +402,31 @@ mod tests {
     #[test]
     fn dummy_evals_follow_ocaml_ro_order() {
         let e = evals::<Fq>();
-        let mut ro = Ro::tock();
 
-        assert_eq!(e.evals.w[0].zeta[0], ro.next_field::<Fq>());
-        assert_eq!(e.evals.w[0].zeta_omega[0], ro.next_field::<Fq>());
-
-        let mandatory = COLUMNS + COLUMNS + 1 + (PERMUTS - 1) + 6;
-        let mut all = Ro::tock();
-        let expected: Vec<Fq> = (0..(2 * mandatory + 3)).map(|_| all.next_field()).collect();
-        assert_eq!(e.public_input.zeta[0], expected[2 * mandatory]);
-        assert_eq!(e.public_input.zeta_omega[0], expected[2 * mandatory + 1]);
-        assert_eq!(e.ft_eval1, expected[2 * mandatory + 2]);
+        assert_eq!(e.evals.w[0].zeta[0], field_at("fq", 255, 86));
+        assert_eq!(e.evals.w[0].zeta_omega[0], field_at("fq", 255, 85));
+        assert_eq!(e.public_input.zeta[0], field_at("fq", 255, 88));
+        assert_eq!(e.public_input.zeta_omega[0], field_at("fq", 255, 87));
+        assert_eq!(e.ft_eval1, field_at("fq", 255, 89));
 
         assert!(e.evals.public.is_none());
         assert!(e.evals.range_check0_selector.is_none());
         assert!(e.evals.lookup_sorted.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn dummy_step_sg_matches_ocaml() {
+        let expected = Vesta::new_unchecked(
+            Fq::from_str(
+                "7157847628472818669877981787153253278122158060570991904823379281596325861730",
+            )
+            .unwrap(),
+            Fq::from_str(
+                "9959746677904483136261451107528553963316638248277760417056251351537540061100",
+            )
+            .unwrap(),
+        );
+        assert_eq!(pasta_dummy_step_sg(), expected);
     }
 
     /// The default evaluation lengths are all one chunk, so combining preserves

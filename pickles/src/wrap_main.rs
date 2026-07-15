@@ -140,6 +140,7 @@ where
             bulletproof_challenges: u.bulletproof_challenges.clone(),
             digest: u.sponge_digest_before_evaluations.clone(),
             prev_challenges: u.old_bulletproof_challenges.clone(),
+            prev_challenge_mask: None,
             ft_eval1: u.finalize_evals.ft_eval1.clone(),
             public_evals: u.finalize_evals.public_evals.clone(),
             evals: u.finalize_evals.evals.clone(),

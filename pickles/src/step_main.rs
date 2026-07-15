@@ -53,6 +53,9 @@ pub struct PerProofInput<'a, F: PrimeField> {
     /// Kimchi-level previous challenges of the finalized step proof (padded
     /// to width 2 by Mina) — used by the Fr-sponge replay, not the digest.
     pub finalize_prev_challenges: Vec<Vec<FieldVar<F>>>,
+    /// Dynamic mask derived from the wrapped proof's branch data. Present for
+    /// a fixed-width multibranch program, absent on legacy fixed-arity paths.
+    pub proofs_verified_mask: Option<Vec<Boolean<F>>>,
     // the wrap proof itself
     pub vk: VerificationKeyComm<F>,
     pub packed_lagranges: Vec<(Point<F>, Point<F>)>,
@@ -95,7 +98,10 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
+    use crate::hash_messages::{
+        hash_messages_for_next_step_proof, hash_messages_for_next_step_proof_opt,
+        sponge_after_index,
+    };
 
     // verify every previous proof
     let mut chalss: Vec<Vec<FieldVar<F>>> = Vec::with_capacity(proofs.len());
@@ -114,6 +120,7 @@ where
             &p.prev_challenge_polynomial_commitments,
             &p.prev_challenges,
             &p.finalize_prev_challenges,
+            p.proofs_verified_mask.as_deref(),
             &p.vk,
             &p.packed_lagranges,
             &p.flag_lagranges,
@@ -164,5 +171,24 @@ where
         .iter()
         .map(|p| p.next_step_accumulator.clone())
         .collect();
-    hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
+    if proofs
+        .iter()
+        .all(|proof| proof.proofs_verified_mask.is_some())
+    {
+        let current_proof_mask: Vec<Boolean<F>> = proofs
+            .iter()
+            .map(|proof| proof.must_verify.clone())
+            .collect();
+        hash_messages_for_next_step_proof_opt(
+            sys,
+            loc,
+            &after_index,
+            app_state,
+            &cpcs,
+            &chalss,
+            &current_proof_mask,
+        )
+    } else {
+        hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
+    }
 }

@@ -93,7 +93,7 @@ fn pickles_recursive_step() {
     let prev_wrap_digest = pickles::hash_messages::hash_messages_for_next_wrap_proof_ref(
         mina_curves::pasta::Pallas::sponge_params(),
         &unfinalized.hash_dummy_challenges,
-        &unfinalized.old_bulletproof_challenges,
+        &unfinalized.hash_old_bulletproof_challenges,
         unfinalized.prev_step_acc,
     );
     assert_eq!(prev_wrap_digest, base.statement[11]);
@@ -111,7 +111,7 @@ fn pickles_recursive_step() {
     >(&base, wrap_vk_pts.clone(), prev_app_state);
     assert_eq!(cycle.step.statement.len(), K2);
     assert_eq!(cycle.wrap.statement.len(), WRAP2_STMT_LEN);
-    assert_eq!(cycle.wrap.proof.proof.lr.len(), R2);
+    assert_eq!(cycle.wrap.proof.proof.lr.len(), WRAP2_PROOF_ROUNDS);
 
     let prepared3 = prepare_next_recursive_step::<
         ROUNDS,
@@ -127,10 +127,17 @@ fn pickles_recursive_step() {
         prepared3.data.messages_for_next_step_accumulators,
         vec![cycle.step.verified_wrap_accumulator]
     );
-    assert!(prepared3
-        .data
-        .prev_challenge_polynomial_commitments
-        .is_empty());
+    assert_eq!(
+        prepared3.data.prev_challenge_polynomial_commitments,
+        cycle
+            .wrap
+            .proof
+            .prev_challenges
+            .iter()
+            .flat_map(|challenge| challenge.comm.chunks.iter())
+            .map(|point| (point.x, point.y))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         prepared3.data.prev_challenges,
         vec![cycle.step.finalized_step_challenges.clone()]
@@ -252,7 +259,23 @@ fn pickles_recursive_step_n1_is_physically_padded() {
         Fp::from(1u64)
     );
 
-    let step = prove_recursive_step_width2::<ROUNDS, WROUNDS, K2, K_WIDTH2>(prepared);
+    let mut tampered_dummy = prepared.clone();
+    tampered_dummy.statement[0] += Fp::from(1u64);
+    let (step, indexes) = pickles::recursive_step::prove_prepared_recursive_step_width2::<
+        ROUNDS,
+        WROUNDS,
+        K2,
+        K_WIDTH2,
+    >(prepared, None, None);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = pickles::recursive_step::prove_prepared_recursive_step_width2::<
+            ROUNDS,
+            WROUNDS,
+            K2,
+            K_WIDTH2,
+        >(tampered_dummy, None, Some(indexes));
+    }))
+    .is_err());
     assert_eq!(step.proof.prev_challenges.len(), 2);
     let prepared_wrap = prepare_recursive_wrap_n1::<
         SquareApp,

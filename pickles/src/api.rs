@@ -403,6 +403,7 @@ pub struct WrapCircuit<const ROUNDS: usize, const STMT_LEN: usize> {
 
 impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<ROUNDS, STMT_LEN> {
     type Curve = Pallas;
+    const PREV_CHALLENGES: usize = crate::common::MAX_PROOFS_VERIFIED;
     type Proof = IpaProof<Self::Curve, FULL_ROUNDS>;
     type PrivateInput = WrapWitnessData;
     type PublicInput = [FieldVar<Fq>; STMT_LEN];
@@ -1085,6 +1086,8 @@ pub struct MinaWrapProof {
     pub statement: Vec<Fq>,
     pub wrap_wire_proof: Vec<u8>,
     pub side_loaded_verification_key: String,
+    pub wrap_recursion_commitments: Vec<(Fp, Fp)>,
+    pub wrap_recursion_challenges: Vec<Vec<Fq>>,
 }
 
 /// JSON-safe envelope intended for JS/o1js consumers.
@@ -1098,6 +1101,8 @@ pub struct O1jsWrapProofJson {
     pub statement: Vec<String>,
     pub wrap_wire_proof_base64: String,
     pub side_loaded_verification_key_base58: String,
+    pub wrap_recursion_commitments: Vec<(String, String)>,
+    pub wrap_recursion_challenges: Vec<Vec<String>>,
 }
 
 #[deprecated(note = "use MinaWrapProof; this wrap proof envelope is no longer base-case specific")]
@@ -1119,6 +1124,16 @@ impl MinaWrapProof {
                 .collect(),
             wrap_wire_proof_base64: BASE64_STANDARD.encode(&self.wrap_wire_proof),
             side_loaded_verification_key_base58: self.side_loaded_verification_key.clone(),
+            wrap_recursion_commitments: self
+                .wrap_recursion_commitments
+                .iter()
+                .map(|(x, y)| (x.to_string(), y.to_string()))
+                .collect(),
+            wrap_recursion_challenges: self
+                .wrap_recursion_challenges
+                .iter()
+                .map(|challenges| challenges.iter().map(ToString::to_string).collect())
+                .collect(),
         }
     }
 
@@ -1138,10 +1153,38 @@ impl MinaWrapProof {
         let wrap_wire_proof = BASE64_STANDARD
             .decode(value.wrap_wire_proof_base64)
             .map_err(|_| BaseCaseBackendError::O1jsJsonProofBytes)?;
+        let wrap_recursion_commitments = value
+            .wrap_recursion_commitments
+            .iter()
+            .map(|(x, y)| {
+                Ok((
+                    x.parse::<Fp>()
+                        .map_err(|_| BaseCaseBackendError::O1jsJsonField)?,
+                    y.parse::<Fp>()
+                        .map_err(|_| BaseCaseBackendError::O1jsJsonField)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, BaseCaseBackendError>>()?;
+        let wrap_recursion_challenges = value
+            .wrap_recursion_challenges
+            .iter()
+            .map(|challenges| {
+                challenges
+                    .iter()
+                    .map(|challenge| {
+                        challenge
+                            .parse::<Fq>()
+                            .map_err(|_| BaseCaseBackendError::O1jsJsonField)
+                    })
+                    .collect()
+            })
+            .collect::<Result<Vec<_>, BaseCaseBackendError>>()?;
         Ok(Self {
             statement,
             wrap_wire_proof,
             side_loaded_verification_key: value.side_loaded_verification_key_base58,
+            wrap_recursion_commitments,
+            wrap_recursion_challenges,
         })
     }
 
@@ -1172,6 +1215,21 @@ impl<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> BaseCaseProof<A, RO
             statement: self.statement.clone(),
             wrap_wire_proof,
             side_loaded_verification_key,
+            wrap_recursion_commitments: self
+                .proof
+                .prev_challenges
+                .iter()
+                .map(|challenge| {
+                    let point = challenge.comm.chunks[0];
+                    (point.x, point.y)
+                })
+                .collect(),
+            wrap_recursion_challenges: self
+                .proof
+                .prev_challenges
+                .iter()
+                .map(|challenge| challenge.chals.clone())
+                .collect(),
         })
     }
 
@@ -1947,7 +2005,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         }],
         step_statement_lagranges: vec![(co(&l0), co(&correction))],
         h: (srs_h.x, srs_h.y),
-        new_acc_dummies: dummy_wrap_chals,
+        new_acc_dummies: dummy_wrap_chals.clone(),
     };
 
     let stmt_arr: [Fq; STMT_LEN] = statement
@@ -1997,8 +2055,18 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         gates: wrap_pi.index.cs.gates.to_vec(),
         labels: wrap_pi.gate_labels().to_vec(),
     };
+    let dummy_wrap_sg = crate::dummy::pasta_dummy_wrap_sg();
+    let wrap_recursions = dummy_wrap_chals
+        .iter()
+        .map(|challenges| kimchi::proof::RecursionChallenge {
+            chals: challenges.clone(),
+            comm: PolyComm {
+                chunks: vec![dummy_wrap_sg],
+            },
+        })
+        .collect();
     let (wrap_proof, _) = wrap_pi
-        .prove::<PallasBase, PallasScalar>(stmt_arr, wdata, true)
+        .prove_with_recursion::<PallasBase, PallasScalar>(stmt_arr, wdata, true, wrap_recursions)
         .unwrap();
     wrap_ver.verify::<PallasBase, PallasScalar>(wrap_proof.clone(), stmt_arr, ());
 

@@ -53,6 +53,26 @@ impl<F: PrimeField> OptSponge<F> {
         }
     }
 
+    /// Continues from a plain sponge in absorbing mode. OCaml switches from
+    /// `Sponge` to `Opt_sponge` at the first optional accumulator input; the
+    /// pending rate position is therefore part of the protocol state.
+    pub fn from_sponge(sponge: crate::sponge::PoseidonSponge<F>) -> Self {
+        let (state, absorbed) = sponge.into_var_state_absorbed();
+        assert!(absorbed < RATE, "invalid absorbed Poseidon rate position");
+        Self {
+            state,
+            sponge_state: SpongeState::Absorbing {
+                next_index: if absorbed == 0 {
+                    Boolean::false_()
+                } else {
+                    Boolean::true_()
+                },
+                xs: vec![],
+            },
+            needs_final_permute_if_empty: true,
+        }
+    }
+
     /// Queues `(flag, x)`: `x` is absorbed iff `flag` is true.
     pub fn absorb(&mut self, input: FlaggedInput<F>) {
         match &mut self.sponge_state {

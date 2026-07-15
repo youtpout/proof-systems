@@ -4,7 +4,8 @@
 //! equation included — inside the wrap circuit proved on Pallas. The returned
 //! wrap proof *is* the base-case pickles proof.
 
-use mina_curves::pasta::Fp;
+use ark_ec::{AffineRepr, CurveGroup};
+use mina_curves::pasta::{Fp, Fq, Pallas};
 use pickles::api::{prove_base_case, StepApp};
 use snarky::{loc, FieldVar, RunState, SnarkyResult};
 
@@ -29,17 +30,21 @@ impl StepApp for SquareApp {
     }
 }
 
-/// The step circuit compiles to a 2^9 domain (9 IPA rounds); real pickles
-/// pads its domains so this is TICK_ROUNDS = 16 there.
-const ROUNDS: usize = 9;
-const STMT_LEN: usize = 13 + ROUNDS + 9;
+/// Mina uses the full Tick SRS for the step proof, independently of the
+/// application's smaller constraint domain.
+const ROUNDS: usize = pickles::common::TICK_ROUNDS;
+const STMT_LEN: usize = 13 + ROUNDS + 11;
 
 #[test]
 fn pickles_base_case_end_to_end() {
     // base case: the wrap VK is pinned by the *next* step proof, not this
-    // one; fixed placeholder points keep the accumulator self-consistent.
-    let wrap_vk_pts: Vec<(Fp, Fp)> = (0..28u64)
-        .map(|i| (Fp::from(1000 + i), Fp::from(2000 + i)))
+    // one; valid fixed Pallas points keep the accumulator self-consistent.
+    let generator = Pallas::generator().into_group();
+    let wrap_vk_pts: Vec<(Fp, Fp)> = (1..=28u64)
+        .map(|i| {
+            let point = (generator * Fq::from(i)).into_affine();
+            (point.x, point.y)
+        })
         .collect();
 
     let proof =

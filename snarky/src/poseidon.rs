@@ -167,6 +167,21 @@ where
         }
     }
 
+    /// Consumes a sponge that is currently absorbing and exposes its state
+    /// plus the pending rate position. This is the faithful transition used
+    /// by Pickles' `hash_messages_for_next_step_proof_opt`: a plain sponge
+    /// absorbs the verification key and application state, then an
+    /// `Opt_sponge` continues from exactly that state for branch-masked
+    /// accumulator inputs.
+    pub fn into_var_state_absorbed(self) -> ([FieldVar<F>; 3], usize) {
+        match self.mode {
+            SpongeMode::Absorbed(position) => (self.state, position),
+            SpongeMode::Squeezed(_) => {
+                panic!("DuplexState::into_var_state_absorbed: sponge is squeezed")
+            }
+        }
+    }
+
     /// The in-circuit permutation, as the [`SpongeMachine`] permute closure.
     fn permute_closure<'a>(
         sys: &'a mut RunState<F>,

@@ -28,7 +28,10 @@ use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::{
     fr_sponge::{squeeze_xi_r, FrSpongeInputs},
-    ipa::{challenge_polynomial_circuit, combined_inner_product_circuit},
+    ipa::{
+        challenge_polynomial_circuit, combined_inner_product_circuit,
+        combined_inner_product_circuit_masked,
+    },
     scalar_challenge::scalar_to_field,
 };
 
@@ -62,6 +65,18 @@ pub fn finalize_core<F: PrimeField>(
     cip_entries: &[(FieldVar<F>, FieldVar<F>)],
     endo: F,
 ) -> SnarkyResult<FinalizeCore<F>> {
+    finalize_core_with_mask(sys, loc, sponge_inputs, claimed_xi, &[], cip_entries, endo)
+}
+
+fn finalize_core_with_mask<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    sponge_inputs: &FrSpongeInputs<F>,
+    claimed_xi: &FieldVar<F>,
+    masked_prefix: &[(Boolean<F>, FieldVar<F>, FieldVar<F>)],
+    cip_entries: &[(FieldVar<F>, FieldVar<F>)],
+    endo: F,
+) -> SnarkyResult<FinalizeCore<F>> {
     // steps 4-5: reconstruct the sponge, squeeze xi and r (128-bit challenges)
     let (xi_actual, r_actual) = squeeze_xi_r(sys, loc.clone(), sponge_inputs)?;
 
@@ -73,8 +88,18 @@ pub fn finalize_core<F: PrimeField>(
     let r_field = scalar_to_field(sys, loc.clone(), &r_actual, endo)?;
 
     // step 8: the combined inner product from those challenges
-    let combined_inner_product =
-        combined_inner_product_circuit(sys, loc, &xi_field, &r_field, cip_entries)?;
+    let combined_inner_product = if masked_prefix.is_empty() {
+        combined_inner_product_circuit(sys, loc, &xi_field, &r_field, cip_entries)?
+    } else {
+        combined_inner_product_circuit_masked(
+            sys,
+            loc,
+            &xi_field,
+            &r_field,
+            masked_prefix,
+            cip_entries,
+        )?
+    };
 
     Ok(FinalizeCore {
         xi_field,
@@ -288,8 +313,12 @@ pub struct FinalizeWitness<F: PrimeField> {
     // proof evaluations
     /// `sponge_digest_before_evaluations` (seeds the Fr-sponge).
     pub digest: FieldVar<F>,
-    /// Previous challenge digests (empty in the base case).
+    /// Previous challenge digests (logically empty in a base branch, or
+    /// physically padded for a fixed-width program).
     pub prev_challenges: Vec<Vec<FieldVar<F>>>,
+    /// Dynamic branch mask for a fixed-width previous-challenge vector.
+    /// `None` preserves the historical fixed-arity path.
+    pub prev_challenge_mask: Option<Vec<Boolean<F>>>,
     pub ft_eval1: FieldVar<F>,
     pub public_evals: [Vec<FieldVar<F>>; 2],
     /// All column evaluations, chunked (`AbsorbEvalsVar`); single-chunk in the
@@ -435,11 +464,12 @@ pub fn finalize_deferred<F: PrimeField>(
 
     // Inner-product entries: evaluations of the accumulated challenge
     // polynomials come first, then public, [ft0, ft1], mandatory columns.
-    // The first-recursion/base case has no previous challenges, which is why
-    // this prefix was previously invisible.
+    // A logical base case has no previous challenges; a fixed-width program
+    // supplies the same vector shape with an all-false mask.
     let zetaw = witness.zeta.scale(params.domain.group_gen);
+    let mut masked_cip_entries = Vec::new();
     let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
-    for old_challenges in &witness.prev_challenges {
+    for (index, old_challenges) in witness.prev_challenges.iter().enumerate() {
         let at_zeta = crate::ipa::challenge_polynomial_circuit(
             sys,
             loc.clone(),
@@ -448,7 +478,12 @@ pub fn finalize_deferred<F: PrimeField>(
         )?;
         let at_zetaw =
             crate::ipa::challenge_polynomial_circuit(sys, loc.clone(), old_challenges, &zetaw)?;
-        cip_entries.push((at_zeta, at_zetaw));
+        if let Some(mask) = &witness.prev_challenge_mask {
+            assert_eq!(mask.len(), witness.prev_challenges.len());
+            masked_cip_entries.push((mask[index].clone(), at_zeta, at_zetaw));
+        } else {
+            cip_entries.push((at_zeta, at_zetaw));
+        }
     }
     cip_entries.extend([
         (
@@ -466,15 +501,17 @@ pub fn finalize_deferred<F: PrimeField>(
     let sponge_inputs = FrSpongeInputs {
         digest: witness.digest.clone(),
         prev_challenges: witness.prev_challenges.clone(),
+        prev_challenge_mask: witness.prev_challenge_mask.clone(),
         ft_eval1: witness.ft_eval1.clone(),
         public_evals: witness.public_evals.clone(),
         evals: evals.clone(),
     };
-    let core = finalize_core(
+    let core = finalize_core_with_mask(
         sys,
         loc.clone(),
         &sponge_inputs,
         &witness.xi,
+        &masked_cip_entries,
         &cip_entries,
         params.endo_r,
     )?;
@@ -667,6 +704,7 @@ mod tests {
                 bulletproof_challenges: wvec(sys, &self.bp_prechals)?,
                 digest: w1(sys, self.digest)?,
                 prev_challenges: vec![],
+                prev_challenge_mask: None,
                 ft_eval1: w1(sys, self.ft_eval1)?,
                 public_evals: [
                     wvec(sys, &self.public_evals[0])?,

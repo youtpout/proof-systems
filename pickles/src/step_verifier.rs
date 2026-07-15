@@ -98,7 +98,11 @@ where
     )?;
 
     // == step 4a: the sponge digest must match the claimed one ==
-    sponge_digest.assert_equals(sys, loc.clone(), &claimed.sponge_digest_before_evaluations)?;
+    sponge_digest.assert_equals(
+        sys,
+        Cow::Borrowed("verify: sponge digest"),
+        &claimed.sponge_digest_before_evaluations,
+    )?;
 
     // == step 4b: bulletproof challenges must match (base case bypassed) ==
     assert_eq!(
@@ -113,20 +117,22 @@ where
     {
         // in the base case compare c1 with itself, else with the actual c2
         let rhs = sys.if_(loc.clone(), is_base_case.clone(), c1.clone(), c2.clone())?;
-        c1.assert_equals(sys, loc.clone(), &rhs)?;
+        c1.assert_equals(sys, Cow::Borrowed("verify: bulletproof challenge"), &rhs)?;
     }
 
     // == assert_eq_plonk: sampled raw challenges == statement's ==
     oracles
         .beta
-        .assert_equals(sys, loc.clone(), &claimed.beta)?;
+        .assert_equals(sys, Cow::Borrowed("verify: beta"), &claimed.beta)?;
     oracles
         .gamma
-        .assert_equals(sys, loc.clone(), &claimed.gamma)?;
+        .assert_equals(sys, Cow::Borrowed("verify: gamma"), &claimed.gamma)?;
     oracles
         .alpha
-        .assert_equals(sys, loc.clone(), &claimed.alpha)?;
-    oracles.zeta.assert_equals(sys, loc, &claimed.zeta)?;
+        .assert_equals(sys, Cow::Borrowed("verify: alpha"), &claimed.alpha)?;
+    oracles
+        .zeta
+        .assert_equals(sys, Cow::Borrowed("verify: zeta"), &claimed.zeta)?;
 
     Ok(success)
 }
@@ -264,6 +270,7 @@ pub fn verify_one<F, C>(
     prev_challenge_polynomial_commitments: &[Point<F>],
     prev_challenges: &[Vec<FieldVar<F>>],
     finalize_prev_challenges: &[Vec<FieldVar<F>>],
+    proofs_verified_mask: Option<&[Boolean<F>]>,
     // wrap proof verification. The same sponge that was initialized with the
     // verified wrap VK for the accumulator hash is copied and squeezed for
     // the verifier-index digest (step_verifier.ml:533-537).
@@ -325,6 +332,7 @@ where
             .sponge_digest_before_evaluations
             .seal(sys, loc.clone())?,
         prev_challenges: finalize_prev_challenges.to_vec(),
+        prev_challenge_mask: proofs_verified_mask.map(<[Boolean<F>]>::to_vec),
         ft_eval1: finalize_evals.ft_eval1.clone(),
         public_evals: finalize_evals.public_evals.clone(),
         evals: finalize_evals.evals.clone(),
@@ -343,14 +351,25 @@ where
     }
 
     // the previous accumulator digest, recomputed in-circuit
-    let msgs_step_digest = hash_messages_for_next_step_proof(
-        sys,
-        loc.clone(),
-        sponge_after_index,
-        app_state,
-        messages_for_next_step_accumulators,
-        prev_challenges,
-    )?;
+    let msgs_step_digest = match proofs_verified_mask {
+        Some(mask) => crate::hash_messages::hash_messages_for_next_step_proof_opt(
+            sys,
+            loc.clone(),
+            sponge_after_index,
+            app_state,
+            messages_for_next_step_accumulators,
+            prev_challenges,
+            mask,
+        )?,
+        None => hash_messages_for_next_step_proof(
+            sys,
+            loc.clone(),
+            sponge_after_index,
+            app_state,
+            messages_for_next_step_accumulators,
+            prev_challenges,
+        )?,
+    };
 
     // the wrap statement public input, then the full wrap-proof check
     let terms = wrap_statement_terms(stmt, &msgs_step_digest, packed_lagranges, flag_lagranges);
@@ -973,6 +992,7 @@ mod tests {
                 prev_challenge_polynomial_commitments: prev_cpcs,
                 prev_challenges: prev_chals,
                 finalize_prev_challenges: vec![],
+                proofs_verified_mask: None,
                 vk,
                 packed_lagranges,
                 flag_lagranges,

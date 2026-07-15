@@ -33,7 +33,7 @@
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{FieldVar, RunState, SnarkyResult};
+use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::{challenge::squeeze_challenge, sponge::PoseidonSponge};
 
@@ -91,6 +91,10 @@ pub struct FrSpongeInputs<F: PrimeField> {
     /// (empty for a base proof). Each inner list is absorbed with
     /// `absorb_multiple` into a *fresh* sponge whose digest is then folded in.
     pub prev_challenges: Vec<Vec<FieldVar<F>>>,
+    /// When present, conditionally absorbs the fixed-width previous
+    /// challenges exactly like `step_verifier.ml`'s `Opt_sponge`. Padding is
+    /// at the front, so this mask is aligned with `prev_challenges`.
+    pub prev_challenge_mask: Option<Vec<Boolean<F>>>,
     /// `ft(zeta * omega)`.
     pub ft_eval1: FieldVar<F>,
     /// The negated public-input polynomial evaluations at `zeta` and `zeta*w`.
@@ -133,12 +137,24 @@ pub fn squeeze_xi_r<F: PrimeField>(
 
     // 2. absorb the previous-recursion-challenges digest (computed in a fresh
     //    sponge to keep the optional-sponge scope small, exactly as kimchi does)
-    let prev_challenge_digest = {
-        let mut inner = PoseidonSponge::new();
-        for chals in &inputs.prev_challenges {
-            absorb_all(sys, loc.clone(), &mut inner, chals);
+    let prev_challenge_digest = match &inputs.prev_challenge_mask {
+        None => {
+            let mut inner = PoseidonSponge::new();
+            for chals in &inputs.prev_challenges {
+                absorb_all(sys, loc.clone(), &mut inner, chals);
+            }
+            inner.squeeze(sys, loc.clone())
         }
-        inner.squeeze(sys, loc.clone())
+        Some(mask) => {
+            assert_eq!(mask.len(), inputs.prev_challenges.len());
+            let mut inner = crate::opt_sponge::OptSponge::new();
+            for (keep, chals) in mask.iter().zip(&inputs.prev_challenges) {
+                for challenge in chals {
+                    inner.absorb((keep.clone(), challenge.clone()));
+                }
+            }
+            inner.squeeze(sys, loc.clone())?
+        }
     };
     absorb_all(
         sys,
@@ -299,6 +315,7 @@ mod tests {
             let inputs = FrSpongeInputs {
                 digest,
                 prev_challenges: vec![],
+                prev_challenge_mask: None,
                 ft_eval1,
                 public_evals,
                 evals,
