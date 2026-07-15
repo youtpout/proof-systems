@@ -508,6 +508,21 @@ pub fn rust_pickles_prove_recorded_base_keep_compiled_bytes(
     Ok(External::new(handle))
 }
 
+/// Assembles the compile-time proof template as a proof-SHAPED donor from
+/// the compiled base indexes — no prover runs during compilation (the donor
+/// is proven index-equivalent to a real base proof in pickles).
+#[napi(js_name = "rust_pickles_recorded_base_donor_handle_bytes")]
+pub fn rust_pickles_recorded_base_donor_handle_bytes(
+    compiled: &External<pickles::recorded::RecordedCompiledBase>,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedBaseHandle>> {
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let handle = compiled
+        .donor_handle(&witness)
+        .map_err(|err| Error::from_reason(format!("rust pickles donor template failed: {err:?}")))?;
+    Ok(External::new(handle))
+}
+
 #[napi(js_name = "rust_pickles_prove_recorded_n2_over_base_handles")]
 pub fn rust_pickles_prove_recorded_n2_over_base_handles(
     first: &External<pickles::recorded::RecordedBaseHandle>,

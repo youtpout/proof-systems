@@ -411,6 +411,20 @@ pub fn rust_pickles_prove_recorded_base_keep_compiled_bytes(
     Ok(WasmRecordedBaseHandle(handle))
 }
 
+/// Assembles the compile-time proof template as a proof-SHAPED donor from
+/// the compiled base indexes — no prover runs during compilation (the donor
+/// is proven index-equivalent to a real base proof in pickles).
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_donor_handle_bytes(
+    compiled: &WasmRecordedCompiledBase,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| compiled.0.donor_handle(&witness))
+        .map_err(|err| JsError::new(&format!("rust pickles donor template failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
 #[wasm_bindgen]
 pub fn rust_pickles_prove_recorded_n2_over_base_handles(
     first: &WasmRecordedBaseHandle,
