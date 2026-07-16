@@ -477,18 +477,19 @@ pub fn finalize_deferred<F: PrimeField>(
     {
         let mut zeta_n = witness.zeta.clone();
         let mut zetaw_n = zetaw.clone();
+        let chain_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | dead pow chains"));
         for _ in 0..params.srs_log2 {
-            zeta_n = zeta_n.mul(&zeta_n.clone(), None, loc.clone(), sys)?;
+            zeta_n = zeta_n.mul(&zeta_n.clone(), None, chain_loc.clone(), sys)?;
         }
         for _ in 0..params.srs_log2 {
-            zetaw_n = zetaw_n.mul(&zetaw_n.clone(), None, loc.clone(), sys)?;
+            zetaw_n = zetaw_n.mul(&zetaw_n.clone(), None, chain_loc.clone(), sys)?;
         }
     }
 
     // Step 7: scalars environment from the (field-form) challenges
     let env = scalars_env_circuit(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | env")),
         &params.domain,
         params.srs_log2,
         &witness.alpha,
@@ -542,10 +543,15 @@ pub fn finalize_deferred<F: PrimeField>(
         challenge: &challenge,
         column: &column,
     };
-    let constant_term = eval_polish(sys, loc.clone(), params.tokens, &penv)?;
+    let constant_term = eval_polish(
+        sys,
+        Cow::Owned(format!("{loc} | linearization")),
+        params.tokens,
+        &penv,
+    )?;
     let ft_eval0 = ft_eval0_circuit(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | ft_eval0")),
         &env,
         params.shifts,
         &ft_evals,
@@ -565,11 +571,17 @@ pub fn finalize_deferred<F: PrimeField>(
         cip_entries.push(chunk0(column_eval(evals, &col)));
     }
     let combined_inner_product = if masked_cip_entries.is_empty() {
-        combined_inner_product_circuit(sys, loc.clone(), &xi_field, &r_field, &cip_entries)?
+        combined_inner_product_circuit(
+            sys,
+            Cow::Owned(format!("{loc} | cip fold")),
+            &xi_field,
+            &r_field,
+            &cip_entries,
+        )?
     } else {
         combined_inner_product_circuit_masked(
             sys,
-            loc.clone(),
+            Cow::Owned(format!("{loc} | cip fold masked")),
             &xi_field,
             &r_field,
             &masked_cip_entries,
@@ -601,8 +613,12 @@ pub fn finalize_deferred<F: PrimeField>(
     let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
 
     // Step 10: the PlonK relation (the deferred permutation scalar)
-    let perm_derived =
-        crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
+    let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(
+        sys,
+        Cow::Owned(format!("{loc} | perm scalar")),
+        &env,
+        &ft_evals,
+    )?;
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
 

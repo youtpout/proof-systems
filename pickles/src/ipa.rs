@@ -356,18 +356,34 @@ pub fn combined_inner_product_circuit<F: ark_ff::PrimeField>(
     r: &FieldVar<F>,
     entries: &[(FieldVar<F>, FieldVar<F>)],
 ) -> SnarkyResult<FieldVar<F>> {
-    let mut res = FieldVar::constant(F::zero());
-    let mut xi_i = FieldVar::constant(F::one());
-    for (zeta, zetaw) in entries {
-        // term = zeta + r * zetaw
-        let r_zw = r.mul(zetaw, None, loc.clone(), sys)?;
-        let term = zeta + &r_zw;
-        // res += xi^i * term
-        let contrib = xi_i.mul(&term, None, loc.clone(), sys)?;
-        res = &res + &contrib;
-        xi_i = xi_i.mul(xi, None, loc.clone(), sys)?;
+    combined_inner_product_circuit_masked(sys, loc, xi, r, &[], entries)
+}
+
+/// OCaml `Common.combined_evaluation` (common.ml:216): a Horner fold over one
+/// evaluation point, `acc = fx + xi * acc` per entry (`Field.if_` around it
+/// for a masked entry, which then consumes no power of xi). Entries are
+/// processed back to front so entry 0 pairs with `xi^0`, exactly the value
+/// kimchi's `combined_inner_product` computes.
+fn combined_evaluation<F: ark_ff::PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    xi: &FieldVar<F>,
+    values: &[(Option<snarky::Boolean<F>>, FieldVar<F>)],
+) -> SnarkyResult<FieldVar<F>> {
+    let mut iter = values.iter().rev();
+    let mut acc = match iter.next().expect("combined_evaluation: empty") {
+        (None, v) => v.clone(),
+        (Some(b), v) => v.mul(&b.to_field_var(), None, loc.clone(), sys)?,
+    };
+    for (mask, v) in iter {
+        let xi_acc = xi.mul(&acc, None, loc.clone(), sys)?;
+        let folded = v + &xi_acc;
+        acc = match mask {
+            None => folded,
+            Some(b) => sys.if_(loc.clone(), b.clone(), folded, acc)?,
+        };
     }
-    Ok(res)
+    Ok(acc)
 }
 
 /// Fixed-width `combined_evaluation` with optional prefix entries. For a
@@ -381,25 +397,24 @@ pub fn combined_inner_product_circuit_masked<F: ark_ff::PrimeField>(
     masked_prefix: &[(snarky::Boolean<F>, FieldVar<F>, FieldVar<F>)],
     entries: &[(FieldVar<F>, FieldVar<F>)],
 ) -> SnarkyResult<FieldVar<F>> {
-    let mut result = FieldVar::constant(F::zero());
-    let mut xi_power = FieldVar::constant(F::one());
-    for (keep, zeta, zetaw) in masked_prefix {
-        let r_zetaw = r.mul(zetaw, None, loc.clone(), sys)?;
-        let term = zeta + &r_zetaw;
-        let contribution = xi_power.mul(&term, None, loc.clone(), sys)?;
-        let next_result = &result + &contribution;
-        let next_xi_power = xi_power.mul(xi, None, loc.clone(), sys)?;
-        result = sys.if_(loc.clone(), keep.clone(), next_result, result)?;
-        xi_power = sys.if_(loc.clone(), keep.clone(), next_xi_power, xi_power)?;
-    }
-    for (zeta, zetaw) in entries {
-        let r_zetaw = r.mul(zetaw, None, loc.clone(), sys)?;
-        let term = zeta + &r_zetaw;
-        let contribution = xi_power.mul(&term, None, loc.clone(), sys)?;
-        result = &result + &contribution;
-        xi_power = xi_power.mul(xi, None, loc.clone(), sys)?;
-    }
-    Ok(result)
+    // OCaml step 8b: two independent Horner folds — one per evaluation
+    // point — then `combine(zeta) + r * combine(zetaw)`
+    // (`wrap_verifier.ml:1725-1729`); masked recursion slots fold as
+    // `Opt.Maybe` entries at the head of each list.
+    let zeta_values: Vec<(Option<snarky::Boolean<F>>, FieldVar<F>)> = masked_prefix
+        .iter()
+        .map(|(b, zeta, _)| (Some(b.clone()), zeta.clone()))
+        .chain(entries.iter().map(|(zeta, _)| (None, zeta.clone())))
+        .collect();
+    let zetaw_values: Vec<(Option<snarky::Boolean<F>>, FieldVar<F>)> = masked_prefix
+        .iter()
+        .map(|(b, _, zetaw)| (Some(b.clone()), zetaw.clone()))
+        .chain(entries.iter().map(|(_, zetaw)| (None, zetaw.clone())))
+        .collect();
+    let at_zeta = combined_evaluation(sys, loc.clone(), xi, &zeta_values)?;
+    let at_zetaw = combined_evaluation(sys, loc.clone(), xi, &zetaw_values)?;
+    let r_at_zetaw = r.mul(&at_zetaw, None, loc.clone(), sys)?;
+    Ok(&at_zeta + &r_at_zetaw)
 }
 
 #[cfg(test)]
