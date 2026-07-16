@@ -2455,6 +2455,70 @@ fn build_recorded_program_step_prepared(
     (prepared, main)
 }
 
+/// Debug-only: the probe's prepared step WITHOUT the Selected domain list
+/// (historical fixed-finalize path).
+fn build_recorded_program_step_prepared_fixed_for_debug(
+    branch: &RecordedProgramBranch,
+    template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+) -> (
+    crate::recursive_step::PreparedRecursiveStepWidth2<
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >,
+    crate::recursive_step::EmbeddedAppMain,
+) {
+    let branch = branch.clone();
+    let app_state = branch.circuit.state(&branch.witness);
+    let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+        RecordedProgramTemplateApp,
+        16,
+        RECORDED_BASE_WRAP_ROUNDS,
+        40,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(
+        template,
+        wrap_vk.to_vec(),
+        vec![Fp::from(0u64)],
+        app_state.clone(),
+    );
+    let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
+    let prepared = crate::recursive_step::align_program_recursive_step_verifier::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(prepared, wrap_index);
+    let prepared = match branch.proofs_verified {
+        0 => crate::recursive_step::prepare_recursive_step_n0::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared, app_state),
+        1 => crate::recursive_step::prepare_recursive_step_n1::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared, app_state),
+        2 => crate::recursive_step::prepare_recursive_step_width2::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared.clone(), prepared, app_state),
+        _ => unreachable!(),
+    };
+    let app = RecordedApp {
+        circuit: branch.circuit.clone(),
+    };
+    let witness = branch.witness.clone();
+    let main: crate::recursive_step::EmbeddedAppMain =
+        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+    (prepared, main)
+}
+
 fn compile_recorded_program_step_branch(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
@@ -2541,31 +2605,55 @@ pub fn debug_probe_branch(
     let branch = branches
         .get(branch_index)
         .ok_or_else(|| RecordedProveError::Program("unknown branch".into()))?;
-    let list: &[u32] = if mode == 1 { &[] } else { &[FIX_DOMAINS_ROUGH_LOG2] };
     let t0 = snarky::wasm_instant::Instant::now();
-    let (prepared, main) = build_recorded_program_step_prepared(
-        branch,
-        &template,
-        &bootstrap_vk,
-        &template.wrap_verifier.index,
-        None,
-        list,
-    );
+    let (prepared, main) = if mode == 1 {
+        // FIXED finalize: bypass the domain-list align entirely.
+        build_recorded_program_step_prepared_fixed_for_debug(
+            branch,
+            &template,
+            &bootstrap_vk,
+            &template.wrap_verifier.index,
+        )
+    } else {
+        build_recorded_program_step_prepared(
+            branch,
+            &template,
+            &bootstrap_vk,
+            &template.wrap_verifier.index,
+            None,
+            &[FIX_DOMAINS_ROUGH_LOG2],
+        )
+    };
     let prepare_elapsed = t0.elapsed();
     if mode == 0 {
         return Ok(format!("prepared only: {prepare_elapsed:.2?}"));
     }
     let t1 = snarky::wasm_instant::Instant::now();
-    let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
-        RECORDED_N1_STEP_ROUNDS,
-        RECORDED_BASE_WRAP_ROUNDS,
-        RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
-    >(&prepared, Some(main));
-    Ok(format!(
-        "mode {mode}: prepared {prepare_elapsed:.2?}, probe {:.2?} -> 2^{log2}",
-        t1.elapsed()
-    ))
+    let probed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(&prepared, Some(main))
+    }));
+    match probed {
+        Ok(log2) => Ok(format!(
+            "mode {mode}: prepared {prepare_elapsed:.2?}, probe {:.2?} -> 2^{log2}",
+            t1.elapsed()
+        )),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            Ok(format!(
+                "mode {mode}: prepared {prepare_elapsed:.2?}, probe PANICKED after {:.2?}: {message}",
+                t1.elapsed()
+            ))
+        }
+    }
 }
 
 /// Probe sub-step timings, readable through the debug-stage report (wasm has
