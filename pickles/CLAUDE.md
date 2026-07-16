@@ -2691,9 +2691,10 @@ Mesures (jsoo vs rust) :
   messages_for_next_WRAP est PAR PROOF (2 slots), nous n'en avons qu'un.
 
 Ordre d'attaque :
-1. Statement 66 -> 67 : messages_for_next_wrap digest par slot (stmt len,
-   build_step_statement, slots x_hat +1 lagrange, wrap statement mapping,
-   prepares, dummies).
+1. [FAIT — commit "one messages_for_next_wrap digest per statement slot"]
+   Statement 66 -> 67 ; PI 67==67 mesuré sur les 3 steps ; toutes suites
+   vertes. Reste à vérifier le binding PAR SLOT côté wrap (OCaml
+   Vector.map2 hash(acc_i, chals_i) == stmt slot i — voir wrap_main.ml:424).
 2. Wrap au domaine naturel (probe fixpoint comme les steps) + répercuter dans
    les aligns step-side (finalize wrap 2^14) et la side-loaded VK
    (actual_wrap_domain_size devient N1 pour Add).
