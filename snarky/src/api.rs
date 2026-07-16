@@ -295,6 +295,7 @@ where
                 witness.debug();
             }
             if let Err(err) = self.index.verify(&witness.0, &public_input_and_output) {
+                kimchi::live_trace::checkpoint(&format!("witness verify FAILED: {err:?}"));
                 eprintln!("[witness-debug] verify failed: {err:?}");
                 let labels = self.gate_labels();
                 let gates = &self.index.cs.gates;
