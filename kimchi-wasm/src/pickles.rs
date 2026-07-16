@@ -751,6 +751,29 @@ pub fn rust_pickles_program_prove_n2_bytes(
     Ok(WasmRecordedBaseHandle(handle))
 }
 
+/// Debug bisection of the program N1 prove (see pickles
+/// `debug_prove_recursive_stage`).
+#[wasm_bindgen]
+pub fn rust_pickles_program_debug_prove_n1(
+    program: &mut WasmRecordedProgram,
+    branch_index: u32,
+    previous: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+    stage: u32,
+) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    crate::rayon::run_in_pool(|| {
+        program.0.debug_prove_recursive_stage(
+            branch_index as usize,
+            &[&previous.0],
+            witness,
+            stage as usize,
+        )
+    })
+    .map_err(|err| JsError::new(&format!("prove debug failed: {err:?}")))
+}
+
 /// The N1-shaped recursive verification envelope of a program proof handle.
 #[wasm_bindgen]
 pub fn rust_pickles_recorded_program_n1_envelope(

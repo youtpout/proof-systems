@@ -3535,12 +3535,57 @@ impl RecordedCompiledProgram {
         self.prove_recursive(branch_index, &previous, witness)
     }
 
+    /// Debug bisection of a recursive program prove: runs up to `stage`
+    /// (1 = previous prepared, 2 = step prepared, 3 = step proved,
+    /// 4 = wrap prepared, 5+ = full) and reports the timings.
+    #[doc(hidden)]
+    pub fn debug_prove_recursive_stage(
+        &mut self,
+        branch_index: usize,
+        previous: &[&RecordedProofHandle],
+        witness: Vec<Fp>,
+        stage: usize,
+    ) -> Result<String, RecordedProveError> {
+        match self.prove_recursive_impl(branch_index, previous, witness, Some(stage)) {
+            Err(RecordedProveError::Program(message)) if message.starts_with("DEBUG-STAGE") => {
+                Ok(message)
+            }
+            Err(err) => Err(err),
+            Ok(_) => Ok(format!("DEBUG-STAGE {stage}: full prove finished")),
+        }
+    }
+
     fn prove_recursive(
         &mut self,
         branch_index: usize,
         previous: &[&RecordedProofHandle],
         witness: Vec<Fp>,
     ) -> Result<RecordedProofHandle, RecordedProveError> {
+        self.prove_recursive_impl(branch_index, previous, witness, None)
+    }
+
+    fn prove_recursive_impl(
+        &mut self,
+        branch_index: usize,
+        previous: &[&RecordedProofHandle],
+        witness: Vec<Fp>,
+        debug_stage: Option<usize>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        let prove_started = snarky::wasm_instant::Instant::now();
+        let mut stage_timings: Vec<String> = Vec::new();
+        let mut stage_index = 0usize;
+        macro_rules! prove_stage {
+            ($label:expr) => {{
+                stage_index += 1;
+                stage_timings.push(format!("{}: {:.2?}", $label, prove_started.elapsed()));
+                if debug_stage == Some(stage_index) {
+                    return Err(RecordedProveError::Program(format!(
+                        "DEBUG-STAGE {stage_index} OK — {}",
+                        stage_timings.join(" | ")
+                    )));
+                }
+            }};
+        }
         let branch = self
             .branches
             .get(branch_index)
@@ -3575,6 +3620,7 @@ impl RecordedCompiledProgram {
             previous_cycles.push((proof, cycle));
         }
 
+        prove_stage!("previous checked");
         let app_state = branch.circuit.state(&witness);
         let mut prepared_previous = Vec::with_capacity(previous.len());
         for (proof, cycle) in &previous_cycles {
@@ -3662,12 +3708,14 @@ impl RecordedCompiledProgram {
         let indexes = self.step_indexes[branch_index]
             .take()
             .expect("compiled program Step indexes");
+        prove_stage!("step prepared");
         let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
             prepared,
             Some(main),
             Some(indexes),
         );
         self.step_indexes[branch_index] = Some(indexes);
+        prove_stage!("step proved");
 
         let real_unfinalized = previous_cycles
             .iter()
@@ -3686,6 +3734,7 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
+        prove_stage!("wrap prepared");
         prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
