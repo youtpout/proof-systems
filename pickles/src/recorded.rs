@@ -2410,7 +2410,7 @@ fn build_recorded_program_step_prepared(
     >(
         template,
         wrap_vk.to_vec(),
-        vec![Fp::from(0u64)],
+        vec![Fp::from(0u64); app_state.len()],
         app_state.clone(),
     );
     let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
@@ -2485,7 +2485,7 @@ fn build_recorded_program_step_prepared_fixed_for_debug(
     >(
         template,
         wrap_vk.to_vec(),
-        vec![Fp::from(0u64)],
+        vec![Fp::from(0u64); app_state.len()],
         app_state.clone(),
     );
     let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
@@ -3429,7 +3429,7 @@ impl RecordedCompiledProgram {
         >(
             &self.template,
             self.wrap_verification_key_points(),
-            vec![Fp::from(0u64)],
+            vec![Fp::from(0u64); app_state.len()],
             app_state.clone(),
         );
         let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);

@@ -1054,8 +1054,16 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 }
             }
             (s, ConstantOrVar::Constant) => match self.cached_constants.get(&s) {
-                Some(x) => *x,
+                Some(x) => {
+                    if std::env::var_os("SNARKY_DEBUG_CONST_CACHE").is_some() {
+                        eprintln!("[const-mat] HIT at {loc}");
+                    }
+                    *x
+                }
                 None => {
+                    if std::env::var_os("SNARKY_DEBUG_CONST_CACHE").is_some() {
+                        eprintln!("[const-mat] MISS at {loc}");
+                    }
                     // note: the constant is required so that the witness value
                     // of the internal variable evaluates to s (this used to
                     // pass None, making the witness 0 and breaking the gate)
@@ -1338,6 +1346,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                         let ratio = s2 / s1;
                         match self.cached_constants.get(&ratio) {
                             Some(x2) => {
+                                if std::env::var_os("SNARKY_DEBUG_CONST_CACHE").is_some() {
+                                    eprintln!("[const-cache] HIT var==const at {loc}");
+                                }
                                 let x2 = x2.clone();
                                 self.union_find(x1);
                                 self.union_find(x2);
@@ -1346,6 +1357,9 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                                     .unwrap();
                             }
                             None => {
+                                if std::env::var_os("SNARKY_DEBUG_CONST_CACHE").is_some() {
+                                    eprintln!("[const-cache] MISS var==const at {loc}");
+                                }
                                 self.add_generic_constraint(
                                     labels,
                                     loc,

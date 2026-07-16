@@ -23,6 +23,50 @@ fn square_circuit() -> RecordedCircuit {
     }
 }
 
+/// Two-field app state: 56 VK coordinates + 2 fields fill the Poseidon rate
+/// exactly (the o1js Add program shape) — regression for the full-pending-
+/// rate messages digest through a real recursive cycle.
+#[test]
+fn recorded_program_two_field_state_proves_n0_then_n1() {
+    use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};
+
+    let circuit = RecordedCircuit {
+        aux_count: 2,
+        output: vec![LinComb::var(0), LinComb::var(1)],
+        constraints: vec![RecordedConstraint::Square {
+            v: LinComb::var(0),
+            square: LinComb::var(1),
+        }],
+    };
+    let branches = (0..=1)
+        .map(|proofs_verified| RecordedProgramBranch {
+            circuit: circuit.clone(),
+            witness: vec![Fp::from(6u64), Fp::from(36u64)],
+            proofs_verified,
+        })
+        .collect();
+    let mut program = RecordedCompiledProgram::compile(branches).unwrap();
+    let n0 = program
+        .prove_n0(0, vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    assert_eq!(n0.app_state, vec![Fp::from(6u64), Fp::from(36u64)]);
+    {
+        let (accumulators, challenges, vk) = n0.program_verification_messages().unwrap();
+        pickles::verify::verify_side_loaded_with_step_vk(
+            &n0.app_state,
+            Some(&vk),
+            &accumulators,
+            &challenges,
+            &n0.proof,
+        )
+        .expect("host verification of the two-field N0 proof");
+    }
+    let n1 = program
+        .prove_n1(1, &n0, vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    assert_eq!(n1.app_state, vec![Fp::from(6u64), Fp::from(36u64)]);
+}
+
 #[test]
 fn recorded_circuit_json_round_trips() {
     let circuit = square_circuit();

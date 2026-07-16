@@ -479,6 +479,54 @@ mod tests {
         assert_eq!(*out, expected);
     }
 
+    /// The exact N1 shape: a full pending Poseidon rate (56 VK coords + 2
+    /// app fields) FOLLOWED by optional accumulator slots — one dummy, one
+    /// kept — must agree with the plain host reference.
+    #[test]
+    fn optional_step_hash_full_pending_rate_with_masked_proofs() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let pt = |rng: &mut _| {
+            let p = (Pallas::generator() * Fq::rand(rng)).into_affine();
+            (p.x, p.y)
+        };
+        let vk_comms: Vec<(Fp, Fp)> = (0..PERMUTS + COLUMNS + 6).map(|_| pt(&mut rng)).collect();
+        let app_state = vec![Fp::rand(&mut rng), Fp::rand(&mut rng)];
+        let cpcs: Vec<(Fp, Fp)> = (0..2).map(|_| pt(&mut rng)).collect();
+        let old_chals: Vec<Vec<Fp>> =
+            (0..2).map(|_| (0..15).map(|_| Fp::rand(&mut rng)).collect()).collect();
+        for mask in [vec![false, false], vec![false, true], vec![true, true]] {
+            let kept_cpcs: Vec<(Fp, Fp)> = cpcs
+                .iter()
+                .zip(&mask)
+                .filter(|(_, keep)| **keep)
+                .map(|(c, _)| *c)
+                .collect();
+            let kept_chals: Vec<Vec<Fp>> = old_chals
+                .iter()
+                .zip(&mask)
+                .filter(|(_, keep)| **keep)
+                .map(|(c, _)| c.clone())
+                .collect();
+            let expected = hash_messages_for_next_step_proof_ref(
+                Vesta::sponge_params(),
+                &vk_comms,
+                &app_state,
+                &kept_cpcs,
+                &kept_chals,
+            );
+            let circ = HashCircuit {
+                vk_comms: vk_comms.clone(),
+                app_state: app_state.clone(),
+                cpcs: cpcs.clone(),
+                old_chals: old_chals.clone(),
+                mask: Some(mask.clone()),
+            };
+            let (mut pi, _) = circ.compile_to_indexes().unwrap();
+            let (_, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+            assert_eq!(*out, expected, "mask {mask:?}");
+        }
+    }
+
     struct WrapHashCircuit {
         dummy_chals: Vec<Vec<Fp>>,
         old_chals: Vec<Vec<Fp>>,

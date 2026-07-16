@@ -2538,6 +2538,122 @@ pub fn prove_prepared_recursive_step_width2_arity<
             .unwrap(),
     };
     kimchi::live_trace::checkpoint("pickles: step prove begin");
+    if std::env::var_os("PICKLES_DEBUG_RESYNTH").is_some() {
+        // Re-synthesize the circuit from the PROVE-time data and diff its
+        // wiring against the stored (compile-time) index: any difference is
+        // a value->wiring leak in the synthesis.
+        let fresh_circuit = RecursiveStepWidth2Circuit::<
+            PREV_ROUNDS,
+            WRAP_ROUNDS,
+            WIDTH1_INPUT_LEN,
+            PUBLIC_INPUT_LEN,
+            ACTIVE_PROOFS,
+        > {
+            proofs: private.proofs.clone(),
+            dummy_slots: private.dummy_slots,
+            app_state: private.app_state.clone(),
+            app: private.app.clone(),
+            messages_for_next_step_vk_pts: private.messages_for_next_step_vk_pts.clone(),
+        };
+        let (fresh, _) = fresh_circuit
+            .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+            .unwrap();
+        let stored_gates = &prover.index.cs.gates;
+        let fresh_gates = &fresh.index.cs.gates;
+        let stored_labels = prover.gate_labels();
+        let fresh_labels = fresh.gate_labels();
+        if !stored_labels.is_empty() && !fresh_labels.is_empty() {
+            let mut shown = 0;
+            for row in 0..stored_labels.len().min(fresh_labels.len()) {
+                if stored_labels[row] != fresh_labels[row] {
+                    for r in row.saturating_sub(2)..(row + 6).min(fresh_labels.len()) {
+                        eprintln!(
+                            "[resynth-label] row {r}: stored '{}' | fresh '{}'",
+                            stored_labels.get(r).map(String::as_str).unwrap_or(""),
+                            fresh_labels.get(r).map(String::as_str).unwrap_or("")
+                        );
+                    }
+                    shown = 1;
+                    break;
+                }
+            }
+            if shown == 0 {
+                eprintln!("[resynth-label] labels identical");
+            }
+        } else {
+            eprintln!(
+                "[resynth-label] labels unavailable (stored {}, fresh {})",
+                stored_labels.len(),
+                fresh_labels.len()
+            );
+        }
+        // Follow the permutation cycle of PI[34] in both circuits.
+        for (name, gates) in [("stored", &stored_gates), ("fresh", &fresh_gates)] {
+            let mut cycle = vec![(34usize, 0usize)];
+            let (mut row, mut col) = (34usize, 0usize);
+            for _ in 0..12 {
+                let wire = gates[row].wires[col];
+                if (wire.row, wire.col) == (34, 0) {
+                    break;
+                }
+                cycle.push((wire.row, wire.col));
+                row = wire.row;
+                col = wire.col;
+            }
+            eprintln!("[resynth-cycle] {name}: {cycle:?}");
+        }
+        // Follow the permutation cycle of PI[34] in both circuits.
+        for (name, gates) in [("stored", &stored_gates), ("fresh", &fresh_gates)] {
+            let mut cycle = vec![(34usize, 0usize)];
+            let (mut row, mut col) = (34usize, 0usize);
+            for _ in 0..12 {
+                let wire = gates[row].wires[col];
+                if (wire.row, wire.col) == (34, 0) {
+                    break;
+                }
+                cycle.push((wire.row, wire.col));
+                row = wire.row;
+                col = wire.col;
+            }
+            eprintln!("[resynth-cycle] {name}: {cycle:?}");
+        }
+        let first_diff = (0..stored_gates.len().min(fresh_gates.len()))
+            .find(|&r| stored_gates[r].typ != fresh_gates[r].typ);
+        eprintln!("[resynth-zone] first typ divergence at {first_diff:?}");
+        let base = first_diff.unwrap_or(10600).saturating_sub(12);
+        for r in (base..base + 40).filter(|&r| r < stored_gates.len().min(fresh_gates.len())) {
+            let a = &stored_gates[r];
+            let b = &fresh_gates[r];
+            let sl = stored_labels.get(r).map(String::as_str).unwrap_or("");
+            let fl = fresh_labels.get(r).map(String::as_str).unwrap_or("");
+            if !sl.is_empty() || !fl.is_empty() || a.typ != b.typ {
+                eprintln!(
+                    "[resynth-zone] row {r}: stored {:?} '{sl}' | fresh {:?} '{fl}'{}",
+                    a.typ,
+                    b.typ,
+                    if a.typ != b.typ { "  <== DIFF" } else { "" }
+                );
+            }
+        }
+        let mut diffs = 0;
+        for (row, (a, b)) in stored_gates.iter().zip(fresh_gates.iter()).enumerate() {
+            if a.wires != b.wires || a.typ != b.typ || a.coeffs != b.coeffs {
+                eprintln!(
+                    "[resynth] row {row}: typ {:?}/{:?} wires {:?} vs {:?}",
+                    a.typ, b.typ, a.wires, b.wires
+                );
+                diffs += 1;
+                if diffs >= 6 {
+                    break;
+                }
+            }
+        }
+        eprintln!(
+            "[resynth] gates {} vs {}, first-diffs printed: {diffs}",
+            stored_gates.len(),
+            fresh_gates.len()
+        );
+    }
     let (proof, _) = prover
         .prove_with_recursion_mask::<VestaBase, VestaScalar>(
             statement,

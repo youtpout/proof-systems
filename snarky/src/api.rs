@@ -297,6 +297,15 @@ where
             if let Err(err) = self.index.verify(&witness.0, &public_input_and_output) {
                 kimchi::live_trace::checkpoint(&format!("witness verify FAILED: {err:?}"));
                 eprintln!("[witness-debug] verify failed: {err:?}");
+                if std::env::var("SNARKY_DEBUG_PI").is_ok() {
+                    for (i, expected) in public_input_and_output.iter().enumerate() {
+                        let got = &witness.0[0][i];
+                        if got != expected {
+                            eprintln!("[witness-debug] PI[{i}] DIVERGES: claimed={expected} recomputed={got}");
+                        }
+                    }
+                    eprintln!("[witness-debug] PI comparison done ({} slots)", public_input_and_output.len());
+                }
                 let labels = self.gate_labels();
                 let gates = &self.index.cs.gates;
                 let dump = |row: usize| {
