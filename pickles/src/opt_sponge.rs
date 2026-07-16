@@ -185,7 +185,12 @@ fn cond_permute<F: PrimeField>(
 ) -> SnarkyResult<()> {
     let permuted = permute(sys, loc.clone(), state.clone());
     for (s, p) in state.iter_mut().zip(permuted) {
-        *s = sys.if_(loc.clone(), permute_flag.clone(), p, s.clone())?;
+        *s = sys.if_(
+            Cow::Borrowed("os:cond_permute_if"),
+            permute_flag.clone(),
+            p,
+            s.clone(),
+        )?;
     }
     Ok(())
 }
@@ -199,31 +204,44 @@ fn consume_pairs<F: PrimeField>(
 ) -> SnarkyResult<Boolean<F>> {
     let mut p = start_pos;
     for ((b, x), (b2, y)) in pairs {
-        let p2 = p.xor(b, sys, loc.clone())?;
-        let pos_after = p2.xor(b2, sys, loc.clone())?;
+        let p2 = p.xor(b, sys, Cow::Borrowed("os:xor1"))?;
+        let pos_after = p2.xor(b2, sys, Cow::Borrowed("os:xor2"))?;
 
-        let y = y.mul(&b2.to_field_var(), None, loc.clone(), sys)?;
+        let y = y.mul(&b2.to_field_var(), None, Cow::Borrowed("os:y*b2"), sys)?;
 
         // the only case where y is added after the permutation: b && b2 && p
-        let add_in_y_after_perm =
-            Boolean::all(&[b.clone(), b2.clone(), p.clone()], sys, loc.clone())?;
+        let add_in_y_after_perm = Boolean::all(
+            &[b.clone(), b2.clone(), p.clone()],
+            sys,
+            Cow::Borrowed("os:all3"),
+        )?;
         let add_in_y_before_perm = add_in_y_after_perm.not();
 
-        let x_masked = x.mul(&b.to_field_var(), None, loc.clone(), sys)?;
-        add_in(sys, loc.clone(), state, &p, &x_masked)?;
-        let y_before = y.mul(&add_in_y_before_perm.to_field_var(), None, loc.clone(), sys)?;
-        add_in(sys, loc.clone(), state, &p2, &y_before)?;
+        let x_masked = x.mul(&b.to_field_var(), None, Cow::Borrowed("os:x*b"), sys)?;
+        add_in(sys, Cow::Borrowed("os:add_in_x"), state, &p, &x_masked)?;
+        let y_before = y.mul(
+            &add_in_y_before_perm.to_field_var(),
+            None,
+            Cow::Borrowed("os:y*before"),
+            sys,
+        )?;
+        add_in(sys, Cow::Borrowed("os:add_in_yb"), state, &p2, &y_before)?;
 
         // permute iff (b && b2) || (p && (b || b2))
-        let b_and_b2 = b.and(b2, sys, loc.clone());
-        let b_or_b2 = b.or(b2, loc.clone(), sys);
-        let p_and_or = p.and(&b_or_b2, sys, loc.clone());
-        let permute_flag = Boolean::any(&[&b_and_b2, &p_and_or], sys, loc.clone())?;
+        let b_and_b2 = b.and(b2, sys, Cow::Borrowed("os:b&b2"));
+        let b_or_b2 = b.or(b2, Cow::Borrowed("os:b|b2"), sys);
+        let p_and_or = p.and(&b_or_b2, sys, Cow::Borrowed("os:p&or"));
+        let permute_flag = Boolean::any(&[&b_and_b2, &p_and_or], sys, Cow::Borrowed("os:any2"))?;
 
         cond_permute(sys, loc.clone(), &permute_flag, state)?;
 
-        let y_after = y.mul(&add_in_y_after_perm.to_field_var(), None, loc.clone(), sys)?;
-        add_in(sys, loc.clone(), state, &p2, &y_after)?;
+        let y_after = y.mul(
+            &add_in_y_after_perm.to_field_var(),
+            None,
+            Cow::Borrowed("os:y*after"),
+            sys,
+        )?;
+        add_in(sys, Cow::Borrowed("os:add_in_ya"), state, &p2, &y_after)?;
 
         p = pos_after;
     }

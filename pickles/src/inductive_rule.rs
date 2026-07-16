@@ -618,7 +618,8 @@ mod tests {
             rule.to_mina_field_elements::<Fp>(),
             [Fp::from(7u64), Fp::from(2u64), Fp::from(16u64)]
         );
-        assert_eq!(rule.branch_data().pack::<Fp>(), Fp::from(16u64 * 4 + 2));
+        // N2's prefix mask [true; true] packs to 3 (Mina wire encoding).
+        assert_eq!(rule.branch_data().pack::<Fp>(), Fp::from(16u64 * 4 + 3));
     }
 
     #[test]

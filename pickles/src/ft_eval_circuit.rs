@@ -27,6 +27,14 @@ use crate::expr_eval::pow_circuit;
 pub enum FinalizeDomain<F: PrimeField> {
     Fixed(D<F>),
     Selected(SelectedDomain<F>),
+    /// Deferred [`SelectedDomain`]: `finalize_deferred` materializes the
+    /// one-hot at OCaml's `domain_for_compiled` position (Step 3, between the
+    /// plonk scalar conversions and the `zetaw` multiply) so the equality
+    /// gadgets land on the same rows.
+    SelectFrom {
+        log2s: Vec<u32>,
+        domain_log2: FieldVar<F>,
+    },
 }
 
 /// The one-hot-selected pseudo domain (OCaml `Pseudo.Domain`).
@@ -220,6 +228,9 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
                 omega_to_zk,
             }
         }
+        FinalizeDomain::SelectFrom { .. } => {
+            unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
+        }
     };
 
     // zk_polynomial = (zeta - w^-1)(zeta - w^-2)(zeta - w^-3)
@@ -235,6 +246,9 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             &zeta_n - &FieldVar::constant(F::one())
         }
         FinalizeDomain::Selected(sel) => sel.vanishing_polynomial(sys, loc.clone(), zeta)?,
+        FinalizeDomain::SelectFrom { .. } => {
+            unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
+        }
     };
     let zeta_to_srs_length = pow_circuit(sys, loc, zeta, 1u64 << srs_length_log2)?;
 

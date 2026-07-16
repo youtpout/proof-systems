@@ -402,14 +402,35 @@ pub fn finalize_deferred<F: PrimeField>(
 
     // == OCaml finalize_other_proof order (wrap_verifier.ml:1495-1786) ==
 
+    // Step 1b (step side): OCaml `domain_for_compiled` (step_verifier.ml:
+    // 876-887) materializes the pseudo-domain one-hot HERE — its equality
+    // gadgets sit between the caller's plonk scalar conversions and the
+    // `zetaw` multiply.
+    let domain: crate::ft_eval_circuit::FinalizeDomain<F> = match &params.domain {
+        crate::ft_eval_circuit::FinalizeDomain::SelectFrom { log2s, domain_log2 } => {
+            crate::ft_eval_circuit::FinalizeDomain::Selected(
+                crate::ft_eval_circuit::SelectedDomain::create(
+                    sys,
+                    loc.clone(),
+                    log2s,
+                    domain_log2,
+                )?,
+            )
+        }
+        other => other.clone(),
+    };
+
     // Step 2: zetaw = domain generator * zeta (the generator is a constant
     // for a Fixed domain and a mask-constants linear combination for a
     // Selected pseudo-domain — no rows before the multiply itself).
-    let zetaw = match &params.domain {
+    let zetaw = match &domain {
         crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => witness.zeta.scale(d.group_gen),
         crate::ft_eval_circuit::FinalizeDomain::Selected(sel) => {
             sel.generator_var()
                 .mul(&witness.zeta, None, loc.clone(), sys)?
+        }
+        crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
+            unreachable!("materialized above")
         }
     };
 
@@ -490,7 +511,7 @@ pub fn finalize_deferred<F: PrimeField>(
     let env = scalars_env_circuit(
         sys,
         Cow::Owned(format!("{loc} | env")),
-        &params.domain,
+        &domain,
         params.srs_log2,
         &witness.alpha,
         witness.beta.clone(),
@@ -525,7 +546,7 @@ pub fn finalize_deferred<F: PrimeField>(
         }
     };
     let penv = PolishEnv {
-        domain: match &params.domain {
+        domain: match &domain {
             crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => {
                 crate::expr_eval::PolishDomain::Fixed(*d)
             }
@@ -534,6 +555,9 @@ pub fn finalize_deferred<F: PrimeField>(
                     omegas: &env.omegas,
                     zeta_to_n_minus_1: &env.zeta_to_n_minus_1,
                 }
+            }
+            crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
+                unreachable!("materialized above")
             }
         },
         endo_coefficient: params.endo,

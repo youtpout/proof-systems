@@ -650,7 +650,18 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 },
             )
         };
-        let expected_branch_data = &domain_log2.scale(Fq::from(4u64)) + &proofs_verified;
+        // `Branch_data.Checked.Wrap.pack { proofs_verified_mask =
+        // extend_front(rev(mask), 2, false); domain_log2 }` asserted against
+        // the branch_data statement slot (wrap_main.ml:180-189). With the
+        // reversed ones-vector, bit0 = mask[last] (pv≥2) and bit1 =
+        // mask[first] (pv≥1) — N0 → 0, N1 → 2, N2 → 3.
+        assert!(actual_proofs_verified_mask.len() <= 2, "max width two");
+        let pad = 2 - actual_proofs_verified_mask.len();
+        let mut expected_branch_data = domain_log2.scale(Fq::from(4u64));
+        for (i, bit) in actual_proofs_verified_mask.iter().rev().enumerate() {
+            expected_branch_data = &expected_branch_data
+                + &bit.to_field_var().scale(Fq::from(1u64 << (pad + i)));
+        }
         branch_data.assert_equals(sys, loc!(), &expected_branch_data)?;
         // OCaml `exists prev_proof_state` (wrap_main.ml:191, before
         // `choose_key`): the per-unfinalized DEFERRED VALUES — plonk

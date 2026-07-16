@@ -299,7 +299,13 @@ pub fn normalize_program_recursive_step<const PUBLIC_INPUT_LEN: usize>(
     let encoded = prepared.data.stmt[branch_index].into_bigint();
     assert!(encoded.as_ref()[1..].iter().all(|limb| *limb == 0));
     let encoded = encoded.as_ref()[0];
-    let proofs_verified = (encoded % 4) as usize;
+    // Low two bits are the proofs-verified prefix mask (0b00/0b10/0b11).
+    let proofs_verified = match encoded % 4 {
+        0b00 => 0usize,
+        0b10 => 1,
+        0b11 => 2,
+        invalid => panic!("normalize_program_recursive_step: invalid prefix mask {invalid:#04b}"),
+    };
     assert!(proofs_verified <= crate::common::MAX_PROOFS_VERIFIED);
     prepared.data.fixed_width_branch_data = Some((proofs_verified, (encoded / 4) as u8));
     let (dummy_wrap, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
@@ -399,14 +405,22 @@ pub fn align_program_recursive_step_finalize_domains<const PUBLIC_INPUT_LEN: usi
             // flags, 2 joint-combiner slots]` (see
             // `wrap_statement_to_field_elements_ocaml`).
             let branch_index = prepared.data.stmt.len() - 11;
+            let pack = |dl2: u8| {
+                crate::composition_types::BranchData {
+                    proofs_verified: crate::composition_types::ProofsVerified::from_usize(
+                        proofs_verified,
+                    ),
+                    domain_log2: dl2,
+                }
+                .pack::<Fp>()
+            };
             assert_eq!(
                 prepared.data.stmt[branch_index],
-                Fp::from(4u64 * u64::from(domain_log2) + proofs_verified as u64),
+                pack(domain_log2),
                 "branch-data statement slot"
             );
             prepared.data.fixed_width_branch_data = Some((proofs_verified, patched));
-            prepared.data.stmt[branch_index] =
-                Fp::from(4u64 * u64::from(patched) + proofs_verified as u64);
+            prepared.data.stmt[branch_index] = pack(patched);
         }
     }
     prepared
@@ -1953,7 +1967,13 @@ fn prepare_recursive_step_from_parts<
         let encoded = wrap_statement[13 + PREV_ROUNDS].into_bigint();
         assert!(encoded.as_ref()[1..].iter().all(|limb| *limb == 0));
         let encoded = encoded.as_ref()[0];
-        let proofs_verified = (encoded % 4) as usize;
+        // Low two bits are the proofs-verified prefix mask (0b00/0b10/0b11).
+        let proofs_verified = match encoded % 4 {
+            0b00 => 0usize,
+            0b10 => 1,
+            0b11 => 2,
+            invalid => panic!("prepare_recursive_step: invalid prefix mask {invalid:#04b}"),
+        };
         assert!(proofs_verified <= crate::common::MAX_PROOFS_VERIFIED);
         (proofs_verified, (encoded / 4) as u8)
     });
@@ -4364,34 +4384,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     };
 
     let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
-    // Fixed-width branch data as circuit variables (hoisted so the finalize
-    // domain selection below can be driven by the slot's `domain_log2`).
-    let fixed_width_vars = match d.fixed_width_branch_data {
-        Some((proofs_verified_value, domain_log2_value)) => {
-            let proofs_verified: FieldVar<Fp> =
-                sys.compute(loc!(), move |_| Fp::from(proofs_verified_value as u64))?;
-            let domain_log2: FieldVar<Fp> =
-                sys.compute(loc!(), move |_| Fp::from(u64::from(domain_log2_value)))?;
-            Some((proofs_verified, domain_log2))
-        }
-        None => None,
-    };
-    let finalize_domain = match (&d.finalize_domain_log2s[..], &fixed_width_vars) {
-        ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
-        (log2s, Some((_, domain_log2))) => crate::ft_eval_circuit::FinalizeDomain::Selected(
-            crate::ft_eval_circuit::SelectedDomain::create(sys, loc!(), log2s, domain_log2)?,
-        ),
-    };
-    let finalize_params = FinalizeParams {
-        tokens: &d.finalize_tokens,
-        domain: finalize_domain,
-        srs_log2: d.finalize_srs_log2,
-        endo: d.finalize_endo,
-        shifts: &d.finalize_shifts,
-        endo_r: *endo_p,
-        mds,
-        shift: ShiftKind::Type1,
-    };
+    // (The finalize params are assembled after the statement witnessing: the
+    // pseudo-domain selection is driven by the witnessed `domain_log2`, and
+    // its one-hot gadgets are emitted inside `finalize_deferred` at OCaml's
+    // `domain_for_compiled` position.)
     let public_evals = [
         wvec(sys, &d.public_evals[0])?,
         wvec(sys, &d.public_evals[1])?,
@@ -4494,7 +4490,57 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         challenge_polynomial_commitment: mkpt(sys, d.sg)?,
         h_generator: h.clone(),
     };
-    let sv = wvec(sys, &d.stmt)?;
+    let branch_slot = 13 + PREV_ROUNDS;
+    let sv = wvec(sys, &d.stmt[..branch_slot])?;
+    // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152 /
+    // branch_data.ml:135): the branch data is witnessed as the two
+    // prefix-mask BOOLEANS and `domain_log2` — one boolean row per mask bit,
+    // then a 16-bit `Scalar_challenge.to_field_checked` (one EndoMulScalar
+    // row) on `domain_log2`. The packed statement slot is not a witness; it
+    // is the lincom `4·domain_log2 + b0 + 2·b1` (`Branch_data.Checked.pack`).
+    let (branch_data_var, branch_mask, branch_domain_log2) = match d.fixed_width_branch_data {
+        Some((pv, dl2)) => {
+            debug_assert_eq!(
+                d.stmt[branch_slot],
+                crate::composition_types::BranchData {
+                    proofs_verified: crate::composition_types::ProofsVerified::from_usize(pv),
+                    domain_log2: dl2,
+                }
+                .pack::<Fp>(),
+                "flattened statement branch-data slot vs prefix-mask pack"
+            );
+            let b0: Boolean<Fp> = sys.compute(loc!(), move |_| pv >= 2)?;
+            let b1: Boolean<Fp> = sys.compute(loc!(), move |_| pv >= 1)?;
+            let domain_log2: FieldVar<Fp> =
+                sys.compute(loc!(), move |_| Fp::from(u64::from(dl2)))?;
+            let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+                sys,
+                loc!(),
+                &domain_log2,
+                *endo_p,
+                16,
+            )?;
+            let packed = &(&domain_log2.scale(Fp::from(4u64)) + &b0.to_field_var())
+                + &b1.to_field_var().scale(Fp::from(2u64));
+            (packed, Some(vec![b0, b1]), Some(domain_log2))
+        }
+        None => {
+            // Legacy fixed-arity path: the packed field is the witness and
+            // carries the 16-bit check itself.
+            let packed = w1(sys, d.stmt[branch_slot])?;
+            let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+                sys,
+                loc!(),
+                &packed,
+                *endo_p,
+                16,
+            )?;
+            (packed, None, None)
+        }
+    };
+    // The remaining flattened statement slots (feature flags, joint-combiner
+    // padding) keep their witness allocations as before.
+    let _sv_tail = wvec(sys, &d.stmt[branch_slot + 1..])?;
     let stmt = WrapStatementVars {
         combined_inner_product: sv[0].clone(),
         b: sv[1].clone(),
@@ -4509,21 +4555,28 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         sponge_digest_before_evaluations: sv[10].clone(),
         messages_for_next_wrap_proof_digest: sv[11].clone(),
         bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
-        branch_data: sv[13 + PREV_ROUNDS].clone(),
+        branch_data: branch_data_var,
         feature_flags: (0..8)
             .map(|_| sys.compute(loc!(), |_| false))
             .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
     };
-    // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152):
-    // the packed branch_data is range-checked with a 16-bit
-    // `Scalar_challenge.to_field_checked` (one EndoMulScalar row).
-    let _ = crate::scalar_challenge::scalar_to_field_with_bits(
-        sys,
-        loc!(),
-        &stmt.branch_data,
-        *endo_p,
-        16,
-    )?;
+    let finalize_domain = match (&d.finalize_domain_log2s[..], &branch_domain_log2) {
+        ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
+        (log2s, Some(domain_log2)) => crate::ft_eval_circuit::FinalizeDomain::SelectFrom {
+            log2s: log2s.to_vec(),
+            domain_log2: domain_log2.clone(),
+        },
+    };
+    let finalize_params = FinalizeParams {
+        tokens: &d.finalize_tokens,
+        domain: finalize_domain,
+        srs_log2: d.finalize_srs_log2,
+        endo: d.finalize_endo,
+        shifts: &d.finalize_shifts,
+        endo_r: *endo_p,
+        mds,
+        shift: ShiftKind::Type1,
+    };
 
     let (next_step_accumulator, next_step_challenges) = if dummy_slot {
         let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
@@ -4567,29 +4620,11 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     )?;
     let should_finalize = Boolean::create_unsafe(should_finalize);
     let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
-    let proofs_verified_mask = if let Some((proofs_verified, domain_log2)) = fixed_width_vars {
-        stmt.branch_data.assert_equals(
-            sys,
-            loc!(),
-            &(&domain_log2.scale(Fp::from(4u64)) + &proofs_verified),
-        )?;
-
-        // OCaml's `Util.ones_vector` produces the active-first mask and the
-        // physical proof vector is front-padded. Reverse it so the canonical
-        // dummy slots are skipped: N0=[F,F], N1=[F,T], N2=[T,T].
-        let is_zero = proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fp::from(0u64)))?;
-        let is_one = proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fp::from(1u64)))?;
-        let is_two = proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fp::from(2u64)))?;
-        let valid = Boolean::any(&[&is_zero, &is_one, &is_two], sys, loc!())?;
-        valid
-            .to_field_var()
-            .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
-        let first_active = is_zero.not();
-        let second_active = first_active.and(&is_one.not(), sys, loc!());
-        Some(vec![second_active, first_active])
-    } else {
-        None
-    };
+    // The proofs-verified mask is the pair of witnessed prefix-mask booleans
+    // (OCaml `branch_data.proofs_verified_mask`, used directly by
+    // `step_main.ml:63`). Physical order matches the front-padded proof
+    // vector: [b0 = pv≥2, b1 = pv≥1] ⇒ N0=[F,F], N1=[F,T], N2=[T,T].
+    let proofs_verified_mask = branch_mask;
 
     let proof = PerProofInput {
         finalize_params,

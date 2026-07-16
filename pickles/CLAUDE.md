@@ -2718,20 +2718,38 @@ identique en histogramme (168/1/3/1/1/319, 2^10). Restent UNIQUEMENT des
 - Les comptes packés (2 gadgets/ligne Generic) ne convergent qu'avec
   l'ordre exact — viser les sites un par un à l'anchor-walk étiqueté.
 
-PISTE EN COURS (session 2, fin) : les blocs +2 lignes (+4 gadgets)/bloc
-répétés ~9×/proof dans update rows ~500-1100 sont les PAIRES de
-l'Opt_sponge du hash OLD-digest (hash_messages_for_next_step_proof_opt,
-8 paires + reste pour 17 éléments opt). Diff gadget-à-gadget d'un bloc
-(jsoo 816-842 vs rust 776-804, 52 vs 56 gadgets) :
-  jsoo-only : 2× [1,1,c,0,0], 2× [-,c,c,0,c]
-  rust-only : 4× [c,0,c,0,1], 2× [c,1,c,0,1], 2× [-,1,c,0,c]
-Suspects : formes de gadgets de Boolean::any/xor/equal ou add_in dans
-opt_sponge::consume_pairs vs les formules OCaml (opt_sponge.ml:44-174).
-MÉTHODE DÉCISIVE : mini-circuit isolé n'appelant QUE consume_pairs sur
-2 paires, dumper son flux de gadgets (SNARKY_KEEP_LABELS) et comparer
-aux formules OCaml gadget par gadget. Nos if_ (1 r1cs) et all (sum+equal)
-sont déjà iso ; vérifier any (2 éléments: or vs not(equal(sum,0))), xor,
-et les seals d'add_in.
+RÉSOLU (session 3) — la piste opt-sponge a mené à la VRAIE cause,
+structurante : **branch_data**. En OCaml (`Branch_data.typ`,
+branch_data.ml:135 + `Prefix_mask.Step.typ`, proofs_verified.ml:91) le
+per-proof witness contient DIRECTEMENT les 2 booléens de masque préfixe
+[b0, b1] (check booléen chacun) + `domain_log2` (check EMS-16), et le champ
+packé du statement est la LINCOM `4·dl2 + b0 + 2·b1`
+(`Branch_data.Checked.Step.pack`). Encodage wire (`to_bool_vec`) :
+N0→0, **N1→2, N2→3** (la valeur 1 = [T,F] est INVALIDE). Nous witnessions
+le champ packé + dérivions le masque par 3 equal + any + not/and → d'où :
+- les gadgets excédentaires des paires opt-sponge : notre masque
+  `first_active = is_zero.not()` était une LINCOM (1−w) — chaque mul/xor
+  de l'opt-absorb payait un reduce en plus (rust-only [c,1,c,0,c] =
+  reduce de z=Σ−3 avec masque-lincom ; jsoo [-,c,c,0,c] = reduce avec
+  masque-var fusionné 2m). Preuve par dérivation complète : paire
+  same-var OCaml = 52 gadgets exactement (mesuré jsoo = 52).
+- une part du gap witness-intro (±179/±204) : 2 lignes booléennes + EMS
+  sur dl2 au lieu d'EMS sur le packé + toute la dérivation.
+- `domain_for_compiled` (step_verifier.ml:876-887) : les equal du
+  pseudo-domaine s'émettent DANS finalize (entre conversions scalaires
+  plonk et zetaw) — déplacés via `FinalizeDomain::SelectFrom` matérialisé
+  en tête de finalize_deferred (avant : émis très tôt, avant les evals).
+- wrap_main.ml:180-189 : le wrap assert `pack{rev(mask); dl2} == branch_data`
+  → lincom `4·dl2 + mask[1] + 2·mask[0]` (api.rs), plus de pv littéral.
+Fichiers : composition_types.rs (pack/unpack préfixe), mina_bin_prot.rs
+(decode {0,2,3}, rejet 1), recursive_step.rs (witness b0/b1/dl2 à la
+position Per_proof_witness, masque = les booléens witnessés, lincom pack),
+api.rs (wrap pack), finalize.rs + ft_eval_circuit.rs (SelectFrom).
+Primitives vérifiées iso au passage : if_ = 4 gadgets (reduce b-lincom +
+2 reduces 2-termes + mul) des deux côtés ; all3 = 7 ; or = 3 ; and = 1 ;
+xor = 3 ; add_in = 5 ; y*before = 2. Dump isolé :
+`SNARKY_KEEP_LABELS=1 cargo test -p pickles dump_consume_pairs -- --nocapture`
+(labels par op dans opt_sponge.rs).
 
 Après parité histogramme+ordre : câblage (differing rows → 0), puis les VK
 seront identiques (les constantes choose_pt suivent automatiquement).

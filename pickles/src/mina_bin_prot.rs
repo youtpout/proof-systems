@@ -1437,11 +1437,15 @@ fn field_low_u8<F: PrimeField>(field: &F) -> u8 {
 
 fn branch_data_proofs_verified(field: &Fq) -> Result<usize, BinProtError> {
     let byte = field_low_u8(field);
-    let value = (byte & 0b11) as usize;
-    if value > 2 {
-        return Err(BinProtError::InvalidProofsVerified(value as u8));
+    // The low two bits are the proofs-verified prefix mask
+    // (`Proofs_verified.to_bool_vec`): 0b00 → 0, 0b10 → 1, 0b11 → 2 proofs;
+    // 0b01 is not a valid prefix mask.
+    match byte & 0b11 {
+        0b00 => Ok(0),
+        0b10 => Ok(1),
+        0b11 => Ok(2),
+        invalid => Err(BinProtError::InvalidProofsVerified(invalid)),
     }
-    Ok(value)
 }
 
 fn branch_data_domain_log2(field: &Fq) -> Result<u8, BinProtError> {

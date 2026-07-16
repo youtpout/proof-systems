@@ -168,20 +168,30 @@ pub struct BranchData {
 
 impl BranchData {
     /// Packs into a single field element (`branch_data.ml`, `pack`): the low 2
-    /// bits are `proofs_verified`, the next 8 bits are `domain_log2`, i.e.
-    /// `domain_log2·4 + proofs_verified`.
+    /// bits are the proofs-verified **prefix mask** (`Proofs_verified.to_bool_vec`:
+    /// N0 → 00, N1 → 10, N2 → 11 in wire order, i.e. values 0, 2, 3), the next
+    /// 8 bits are `domain_log2`.
     pub fn pack<F: ark_ff::PrimeField>(&self) -> F {
-        let pv = self.proofs_verified.to_usize() as u64;
-        F::from(u64::from(self.domain_log2)) * F::from(4u64) + F::from(pv)
+        let [b0, b1] = self.proofs_verified.prefix_mask();
+        F::from(u64::from(self.domain_log2)) * F::from(4u64)
+            + F::from(b0 as u64)
+            + F::from((b1 as u64) << 1)
     }
 
     /// Unpacks a branch-data field element (`branch_data.ml`, `unpack`): low
-    /// two bits are `proofs_verified`, next eight bits are `domain_log2`.
+    /// two bits are the proofs-verified prefix mask (`of_bool_vec`; the mask
+    /// value 1 = `[true; false]` is invalid), next eight bits are
+    /// `domain_log2`.
     pub fn unpack<F: ark_ff::PrimeField>(x: F) -> Self {
         use ark_ff::BigInteger;
 
         let bits = x.into_bigint().to_bits_le();
-        let pv = usize::from(bits[0]) | (usize::from(bits[1]) << 1);
+        let proofs_verified = match (bits[0], bits[1]) {
+            (false, false) => ProofsVerified::N0,
+            (false, true) => ProofsVerified::N1,
+            (true, true) => ProofsVerified::N2,
+            (true, false) => panic!("BranchData::unpack: invalid prefix mask [true; false]"),
+        };
         let mut domain_log2 = 0u8;
         for i in 0..8 {
             if bits[2 + i] {
@@ -189,7 +199,7 @@ impl BranchData {
             }
         }
         Self {
-            proofs_verified: ProofsVerified::from_usize(pv),
+            proofs_verified,
             domain_log2,
         }
     }
@@ -773,9 +783,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ProofsVerified: expected 0, 1 or 2")]
-    fn branch_data_unpack_rejects_proofs_verified_3() {
-        let _ = BranchData::unpack::<Fq>(Fq::from(3u64));
+    fn branch_data_pack_uses_prefix_mask_encoding() {
+        // Mina wire values (`Proofs_verified.to_bool_vec` packed LSB-first):
+        // N0 → 0, N1 → 2, N2 → 3.
+        for (proofs_verified, low_bits) in [
+            (ProofsVerified::N0, 0u64),
+            (ProofsVerified::N1, 2u64),
+            (ProofsVerified::N2, 3u64),
+        ] {
+            let branch = BranchData {
+                proofs_verified,
+                domain_log2: 15,
+            };
+            assert_eq!(branch.pack::<Fq>(), Fq::from(15u64 * 4 + low_bits));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid prefix mask")]
+    fn branch_data_unpack_rejects_mask_value_1() {
+        let _ = BranchData::unpack::<Fq>(Fq::from(1u64));
     }
 
     #[test]
@@ -822,7 +849,7 @@ mod tests {
         .map(Fq::from)
         .collect();
         expected.extend((200..216).map(Fq::from)); // bulletproof_challenges
-        expected.push(Fq::from(15u64 * 4 + 2)); // branch_data pack
+        expected.push(Fq::from(15u64 * 4 + 3)); // branch_data pack (N2 prefix mask)
         expected.extend(std::iter::repeat_n(Fq::from(0u64), 8)); // feature_flags
         assert_eq!(fe, expected);
         assert_eq!(fe.len(), 5 + 2 + 3 + 3 + 16 + 1 + 8);
