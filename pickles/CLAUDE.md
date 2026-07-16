@@ -2671,39 +2671,53 @@ vert après tout ça.
   RecordedCompiledProgram (single-pass + donors déjà prêts), (5) VK
   canonique multi-méthodes → gate 'add' vert.
 
-## Chantier VK jsoo == rust (multi-branch) — état au 2026-07-16
+## Chantier VK jsoo == rust — état au 2026-07-16 (fin de session 2)
 
-Harnais : `o1js/src/tests/rust-pickles-program-gates-diff.ts` (MODE=jsoo puis
-MODE=rust ; dumps napi `rust_pickles_recorded_program_circuits_json`).
-Programme de référence : Add (init pv0 / update pv1 / merge pv2, state 2 Field).
-Attention : l'ordre des branches suit analyzeMethods = [init, merge, update].
+Harnais : `o1js/src/tests/rust-pickles-program-gates-diff.ts`
+(`SNARKY_KEEP_LABELS=1 MODE=rust ./run ...` — labels par ligne dans
+`/tmp/claude-1000/program-gates-rust.json`, jsoo dans program-gates-jsoo.json).
+Technique : « anchor-walk » — tous les types non-Generic servent d'ancres ;
+comparer les longueurs de runs Generic entre ancres, étiquetées par nos labels.
 
-Mesures (jsoo vs rust) :
-- update 16384==16384, merge 32768==32768 ; histos à ±1 près sur
-  VarBaseMul/EndoMul/EndoMulScalar ; deltas restants : CompleteAdd +34/+71,
-  Generic +191/+407, Poseidon +11.
-- init : 1024 vs 512 (rust sans VBM/EM/CA — préfixe wrap_hack/dummy IPA ?).
-- wrap : 2^14 vs 2^15 (jsoo dimensionne le wrap PAR FIXPOINT — Wrap_domains.f,
-  pas le max par pv) ; histos très proches (Poseidon/EndoMul identiques).
-- PI des steps : jsoo 67 vs rust 66. Cause EXACTE (composition_types.ml,
-  Step.Statement.spec) : `Vector(per_proof,2) + B Digest +
-  Vector(B Digest, proofs_verified)` = 64+1+2 — le digest
-  messages_for_next_WRAP est PAR PROOF (2 slots), nous n'en avons qu'un.
+FAIT cette session (tous commités/pushés, tests recorded 21/21 verts) :
+1. o1js dummy_constraints dans les branches récursives (EMS16/scale5/endo4).
+2. NOUVEAU digest accumulateur en hash PLAIN (step_main.ml:549) — l'_opt ne
+   sert qu'aux ANCIENS digests ; -1 permutation Poseidon par branche.
+3. On-curve (y²=x³+5) des 28 points VK wrap témoins (Inner_curve.typ).
+4. x_hat step via multiscale_known (step_verifier.ml:115) : scales groupés,
+   corrections hors circuit, flags constants ignorés ; CA aligné exactement.
+5. Check 16-bit branch_data (Branch_data.typ ~assert_16_bits) par proof.
+6. xi wrap = squeeze_scalar / xi step = squeeze_challenge (FrSpongeInputs.
+   xi_constrain_low_bits via ShiftKind). EMS exact partout (1/370/739, 536).
+7. finalize_deferred réordonné iso finalize_other_proof : zetaw → sg_evals
+   (tout-zeta puis tout-zetaw) → fr-sponge/xi/r → chaînes mortes zeta^2^n
+   (le TODO wart d'OCaml, wrap_verifier.ml:1628) → env → ft_eval0 → cip →
+   bp-challenges → b → perm.
+8. cip = 2 plis de Horner (Common.combined_evaluation) + r·(...), masques
+   Opt.Maybe en tête de liste.
+9. Lagranges hétéro one-hot sélectionnés+scellés DANS la boucle x_hat du
+   wrap (tête 426→158 vs jsoo 167).
+10. Sponge d'index wrap-VK émise PAR PROOF dans verify_one APRÈS finalize
+    (step_main.ml:45, le TODO « Don't rehash ») ; PerProofInput porte
+    dlog_index.
+11. On-curve de TOUS les points témoins per-proof SAUF les lr
+    (Bulletproof.typ les laisse nus ; le marqueur par round vient du
+    exists G.typ de endo_inv). stmt/branch_data témoignés APRÈS les points
+    du wrap_proof (ordre Per_proof_witness.typ).
 
-Ordre d'attaque :
-1. [FAIT — commit "one messages_for_next_wrap digest per statement slot"]
-   Statement 66 -> 67 ; PI 67==67 mesuré sur les 3 steps ; toutes suites
-   vertes. Reste à vérifier le binding PAR SLOT côté wrap (OCaml
-   Vector.map2 hash(acc_i, chals_i) == stmt slot i — voir wrap_main.ml:424).
-2. [FAIT — commit "shared program wrap at its natural domain"] Wrap
-   16384==16384 ; histos wrap : Poseidon/EndoMul/CompleteAdd/VarBaseMul
-   IDENTIQUES ; restent Generic +367, EndoMulScalar +16, Zero -383.
-3. Deltas steps (mesures fraîches, jsoo->rust) : Poseidon +11 UNIFORME sur
-   les 3 steps (= exactement UNE permutation de plus chez nous — suspecter
-   le hash messages/opt, comparer le nombre de permutes) ; CompleteAdd
-   +34 (update) / +71 (merge) ; Generic +192/+408. VBM/EM/EMS a ±1-3.
-4. init 512->1024 : il MANQUE chez nous EMS 1, CA 3, VBM 1, EM 1, ~59
-   Generic (mini-bloc dummy jsoo du pv0 ?) -> notre init tombe a 2^9 au
-   lieu de 2^10.
-5. wrap : Generic +367 / EMS +16 — probablement nos lagranges hetero
-   one-hot vs la forme jsoo (lagrange_with_correction), a diff-er par zone.
+ÉTAT : les 4 circuits ont l'ordre des ancres non-Generic IDENTIQUE à jsoo
+de bout en bout (init/update/merge/wrap, mismatch@-1). init est 100%
+identique en histogramme (168/1/3/1/1/319, 2^10). Restent UNIQUEMENT des
+écarts de runs Generic :
+- update : 136 sites, net +66 (déplacements ±179/±204 autour de l'intro
+  des témoins per-proof — l'ordre INTERNE du bloc de checks doit suivre
+  Per_proof_witness.typ exactement ; +53 dans env/linearization/cip ;
+  +34 vers recursive_step.rs:4767).
+- wrap : 199 sites, net +218 (région finalize +50/proof vers b/perm ;
+  jonctions x_hat ±1/±2 packing ; tête -9).
+- Les comptes packés (2 gadgets/ligne Generic) ne convergent qu'avec
+  l'ordre exact — viser les sites un par un à l'anchor-walk étiqueté.
+
+Après parité histogramme+ordre : câblage (differing rows → 0), puis les VK
+seront identiques (les constantes choose_pt suivent automatiquement).
+

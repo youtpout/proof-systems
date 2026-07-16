@@ -4328,11 +4328,16 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     use snarky::gadgets::curve::Point;
 
     assert_eq!(statement.len(), 17 + WRAP_ROUNDS);
+    // Every witnessed curve point of the per-proof witness goes through
+    // OCaml's `Inner_curve.typ`, whose check asserts y² = x³ + 5 — two
+    // Generic rows per point (per_proof_witness.ml typ).
     let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-        Ok(Point::new(
+        let point = Point::new(
             sys.compute(loc!(), move |_| p.0)?,
             sys.compute(loc!(), move |_| p.1)?,
-        ))
+        );
+        point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+        Ok(point)
     };
     let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
         ps.iter().map(|&p| mkpt(sys, p)).collect()
@@ -4420,36 +4425,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         evals,
     };
 
-    let sv = wvec(sys, &d.stmt)?;
-    let stmt = WrapStatementVars {
-        combined_inner_product: sv[0].clone(),
-        b: sv[1].clone(),
-        zeta_to_srs_length: sv[2].clone(),
-        zeta_to_domain_size: sv[3].clone(),
-        perm: sv[4].clone(),
-        beta: sv[5].clone(),
-        gamma: sv[6].clone(),
-        alpha: sv[7].clone(),
-        zeta: sv[8].clone(),
-        xi: sv[9].clone(),
-        sponge_digest_before_evaluations: sv[10].clone(),
-        messages_for_next_wrap_proof_digest: sv[11].clone(),
-        bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
-        branch_data: sv[13 + PREV_ROUNDS].clone(),
-        feature_flags: (0..8)
-            .map(|_| sys.compute(loc!(), |_| false))
-            .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
-    };
-    // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152):
-    // the packed branch_data is range-checked with a 16-bit
-    // `Scalar_challenge.to_field_checked` (one EndoMulScalar row).
-    let _ = crate::scalar_challenge::scalar_to_field_with_bits(
-        sys,
-        loc!(),
-        &stmt.branch_data,
-        *endo_p,
-        16,
-    )?;
 
     let vk_pts = d
         .wrap_vk_pts
@@ -4492,9 +4467,18 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .map(|&p| mkpt(sys, p))
             .collect::<SnarkyResult<Vec<_>>>()?,
     };
+    // The LR pairs are witnessed UNCHECKED (OCaml `Bulletproof.typ` leaves
+    // them plain pairs); each round's on-curve marker comes from `endo_inv`'s
+    // `exists G.typ` inside the bulletproof loop instead.
+    let mkpt_unchecked = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+        Ok(Point::new(
+            sys.compute(loc!(), move |_| p.0)?,
+            sys.compute(loc!(), move |_| p.1)?,
+        ))
+    };
     let lr =
         d.lr.iter()
-            .map(|&(l, r)| Ok((mkpt(sys, l)?, mkpt(sys, r)?)))
+            .map(|&(l, r)| Ok((mkpt_unchecked(sys, l)?, mkpt_unchecked(sys, r)?)))
             .collect::<SnarkyResult<Vec<_>>>()?;
     let h = cpt(d.h);
     let wt2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
@@ -4510,6 +4494,37 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         challenge_polynomial_commitment: mkpt(sys, d.sg)?,
         h_generator: h.clone(),
     };
+    let sv = wvec(sys, &d.stmt)?;
+    let stmt = WrapStatementVars {
+        combined_inner_product: sv[0].clone(),
+        b: sv[1].clone(),
+        zeta_to_srs_length: sv[2].clone(),
+        zeta_to_domain_size: sv[3].clone(),
+        perm: sv[4].clone(),
+        beta: sv[5].clone(),
+        gamma: sv[6].clone(),
+        alpha: sv[7].clone(),
+        zeta: sv[8].clone(),
+        xi: sv[9].clone(),
+        sponge_digest_before_evaluations: sv[10].clone(),
+        messages_for_next_wrap_proof_digest: sv[11].clone(),
+        bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
+        branch_data: sv[13 + PREV_ROUNDS].clone(),
+        feature_flags: (0..8)
+            .map(|_| sys.compute(loc!(), |_| false))
+            .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
+    };
+    // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152):
+    // the packed branch_data is range-checked with a 16-bit
+    // `Scalar_challenge.to_field_checked` (one EndoMulScalar row).
+    let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+        sys,
+        loc!(),
+        &stmt.branch_data,
+        *endo_p,
+        16,
+    )?;
+
     let (next_step_accumulator, next_step_challenges) = if dummy_slot {
         let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
         let sg = crate::dummy::pasta_dummy_wrap_sg();
