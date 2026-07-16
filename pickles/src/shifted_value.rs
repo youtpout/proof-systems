@@ -170,6 +170,41 @@ mod tests {
     }
 }
 
+/// `Impls.Step.Other_field.forbidden_shifted_values`: the 255-bit patterns
+/// whose Type2 shifted decoding is ambiguous modulo the Tock (Fq) modulus,
+/// split like the step-side `(low bits, high bit)` representation —
+/// `lo = x >> 1` as an Fp element (dropped when `lo ≥ p`, the OCaml filter)
+/// and `hi = bit 254 of x` (impls.ml:58-76).
+pub fn forbidden_shifted_values_fp_pairs() -> Vec<(mina_curves::pasta::Fp, bool)> {
+    use ark_ff::PrimeField;
+    use num_bigint::BigInt;
+    use num_traits::One;
+    let modulus_p = BigInt::from_bytes_le(
+        num_bigint::Sign::Plus,
+        &ark_ff::BigInteger::to_bytes_le(&<mina_curves::pasta::Fp as PrimeField>::MODULUS),
+    );
+    let modulus_q = BigInt::from_bytes_le(
+        num_bigint::Sign::Plus,
+        &ark_ff::BigInteger::to_bytes_le(&<mina_curves::pasta::Fq as PrimeField>::MODULUS),
+    );
+    let two_to_n = BigInt::one() << 255;
+    let mut out = Vec::new();
+    for base in [-&two_to_n, -&two_to_n - BigInt::one()] {
+        // all values equivalent to `base` mod q that fit in 255 bits
+        let mut x: BigInt = ((&base % &modulus_q) + &modulus_q) % &modulus_q;
+        while x < two_to_n {
+            let hi = x.bit(254);
+            let lo: BigInt = &x >> 1;
+            if lo < modulus_p {
+                let (_, bytes) = lo.to_bytes_le();
+                out.push((mina_curves::pasta::Fp::from_le_bytes_mod_order(&bytes), hi));
+            }
+            x += &modulus_q;
+        }
+    }
+    out
+}
+
 /// `Impls.Wrap.Other_field.forbidden_shifted_values`: the 255-bit patterns
 /// whose Type1 shifted decoding is ambiguous modulo the Tick (Fp) modulus,
 /// as Fq elements (patterns ≥ the Fq modulus are unrepresentable and

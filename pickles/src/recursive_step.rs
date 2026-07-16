@@ -4477,16 +4477,35 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .map(|&(l, r)| Ok((mkpt_unchecked(sys, l)?, mkpt_unchecked(sys, r)?)))
             .collect::<SnarkyResult<Vec<_>>>()?;
     let h = cpt(d.h);
+    // OCaml `Impls.Step.Other_field.typ` (impls.ml:50-107): a Tock scalar is
+    // witnessed as `(low bits, high bit)` — the Boolean check on the bit,
+    // then the forbidden-shifted-value equalities (`Other_field.check`).
+    let forbidden_fp = crate::shifted_value::forbidden_shifted_values_fp_pairs();
     let wt2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
-        let half = sys.compute(loc!(), move |_| p.0)?;
+        let half: FieldVar<Fp> = sys.compute(loc!(), move |_| p.0)?;
         let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+        let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
+        for &(lo, hi) in &forbidden_fp {
+            let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
+            let b_eq = if hi { odd.clone() } else { odd.not() };
+            eqs.push(x_eq.and(&b_eq, sys, loc!()));
+        }
+        let eq_refs: Vec<&Boolean<Fp>> = eqs.iter().collect();
+        let any = Boolean::any(&eq_refs, sys, loc!())?;
+        any.not()
+            .to_field_var()
+            .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
         Ok(ShiftedScalar::Type2(half, odd))
     };
+    // `Types.Step.Bulletproof.typ` check order: lr, z_1, z_2, delta,
+    // challenge_polynomial_commitment (record order).
+    let z1 = wt2(sys, d.z1)?;
+    let z2 = wt2(sys, d.z2)?;
     let openings = OpeningProof {
         lr,
         delta: mkpt(sys, d.delta)?,
-        z1: wt2(sys, d.z1)?,
-        z2: wt2(sys, d.z2)?,
+        z1,
+        z2,
         challenge_polynomial_commitment: mkpt(sys, d.sg)?,
         h_generator: h.clone(),
     };
@@ -4738,18 +4757,22 @@ impl<
                 &self.messages_for_next_step_vk_pts,
             ));
         let mut proofs = Vec::with_capacity(2);
+        // OCaml's `step_main` iterates the logical proof H-list only;
+        // `Unfinalized.dummy` is added afterwards when constructing the
+        // fixed-width public statement (its constant-pinning rows are the
+        // LAST rows of every jsoo step circuit, emitted as
+        // `Assert.equal (constant) (var)` — r-slot generic rows). The Kimchi
+        // recursion vector is still physically padded and masked in the
+        // prover below.
+        let mut deferred_dummy_pins: Vec<(Fp, FieldVar<Fp>)> = Vec::new();
         for i in 0..2 {
-            // OCaml's `step_main` iterates the logical proof H-list only;
-            // `Unfinalized.dummy` is added afterwards when constructing the
-            // fixed-width public statement. The Kimchi recursion vector is
-            // still physically padded and masked in the prover below.
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
                 for (actual, expected) in statement[i * per_proof..(i + 1) * per_proof]
                     .iter()
                     .zip(expected)
                 {
-                    actual.assert_equals(sys, loc!(), &FieldVar::constant(expected))?;
+                    deferred_dummy_pins.push((expected, actual.clone()));
                 }
                 continue;
             }
@@ -4809,7 +4832,14 @@ impl<
             <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
             255,
         )?;
-        digest.assert_equals(sys, loc!(), &statement[2 * (17 + WRAP_ROUNDS)])
+        digest.assert_equals(sys, loc!(), &statement[2 * (17 + WRAP_ROUNDS)])?;
+        // The dummy unfinalized statement segments are pinned to the
+        // canonical constants LAST, constant-first (`Equal(Constant, Var)` →
+        // r-slot rows), matching jsoo's trailing generic block.
+        for (expected, actual) in deferred_dummy_pins {
+            FieldVar::constant(expected).assert_equals(sys, loc!(), &actual)?;
+        }
+        Ok(())
     }
 }
 
