@@ -420,7 +420,7 @@ mod tests {
             let (_, endo_r_fq) = <Pallas as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
             let finalize_params = FinalizeParams {
                 tokens: &tokens,
-                domain: self.domain,
+                domain: crate::ft_eval_circuit::FinalizeDomain::Fixed(self.domain),
                 srs_log2: 12,
                 endo: Fq::from(3u64),
                 shifts: &self.shifts,

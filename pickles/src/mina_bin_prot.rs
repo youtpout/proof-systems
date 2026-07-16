@@ -263,9 +263,8 @@ impl SideLoadedVerificationKeyV2 {
             fields.push(y);
         }
         let mut packed = 0u64;
-        let one_hot = |proofs: usize| {
-            std::array::from_fn::<u64, 3, _>(|index| u64::from(index == proofs))
-        };
+        let one_hot =
+            |proofs: usize| std::array::from_fn::<u64, 3, _>(|index| u64::from(index == proofs));
         for bit in one_hot(self.max_proofs_verified.to_usize())
             .into_iter()
             .chain(one_hot(self.actual_wrap_domain_size.to_usize()))

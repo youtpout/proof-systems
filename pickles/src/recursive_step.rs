@@ -366,6 +366,40 @@ pub fn align_program_recursive_step_verifier<
 /// Aligns the same-field finalization constants with a stabilized program
 /// Step index. All program Step domains use the maximal Tick domain; branch
 /// data still selects the logical previous width in-circuit.
+/// Program mode: bakes the unique per-branch step-domain list into the
+/// prepared step (the circuit one-hot selects among them, OCaml
+/// `domain_for_compiled`). When the carried previous-proof branch data names
+/// a domain outside the list (canonical dummies, compile-time templates),
+/// its *witness value* is patched to the largest listed domain — OCaml pads
+/// with `Proof.dummy ~domain_log2:15` for the same reason: an all-false
+/// one-hot would make the masked generator zero.
+pub fn align_program_recursive_step_finalize_domains<const PUBLIC_INPUT_LEN: usize>(
+    mut prepared: PreparedRecursiveStep<PUBLIC_INPUT_LEN>,
+    log2s: &[u32],
+) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    assert!(!log2s.is_empty());
+    assert!(log2s.windows(2).all(|w| w[0] < w[1]), "sorted unique list");
+    prepared.data.finalize_domain_log2s = log2s.to_vec();
+    if let Some((proofs_verified, domain_log2)) = prepared.data.fixed_width_branch_data {
+        if !log2s.contains(&u32::from(domain_log2)) {
+            let patched = *log2s.iter().max().unwrap() as u8;
+            // The flattened wrap statement is `[.., branch_data, 8 feature
+            // flags, 2 joint-combiner slots]` (see
+            // `wrap_statement_to_field_elements_ocaml`).
+            let branch_index = prepared.data.stmt.len() - 11;
+            assert_eq!(
+                prepared.data.stmt[branch_index],
+                Fp::from(4u64 * u64::from(domain_log2) + proofs_verified as u64),
+                "branch-data statement slot"
+            );
+            prepared.data.fixed_width_branch_data = Some((proofs_verified, patched));
+            prepared.data.stmt[branch_index] =
+                Fp::from(4u64 * u64::from(patched) + proofs_verified as u64);
+        }
+    }
+    prepared
+}
+
 pub fn align_program_recursive_step_finalize_index<const PUBLIC_INPUT_LEN: usize>(
     mut prepared: PreparedRecursiveStep<PUBLIC_INPUT_LEN>,
     svi: &VerifierIndex<FULL_ROUNDS, Vesta, poly_commitment::ipa::SRS<Vesta>>,
@@ -535,6 +569,67 @@ pub fn flatten_wrap_proof_evaluations(
         pair(&evals.endomul_scalar_selector),
     ]);
     out
+}
+
+/// The wrap x_hat (Lagrange, correction) constant pair per expanded step
+/// statement slot, over one step domain's Lagrange basis.
+pub fn step_statement_lagranges_for_slots(
+    lgr: &[PolyComm<Vesta>],
+    step_statement: &[crate::api::WrapStepStatementSlot],
+) -> Vec<((Fq, Fq), (Fq, Fq))> {
+    let mut out = Vec::new();
+    let mut lagrange_slot = 0usize;
+    for slot in step_statement {
+        match slot {
+            crate::api::WrapStepStatementSlot::Field(_) => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                let c = crate::public_input::lagrange_correction(&l, 255);
+                out.push(((l.x, l.y), (c.x, c.y)));
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                out.push(((l.x, l.y), (l.x, l.y)));
+            }
+            crate::api::WrapStepStatementSlot::Packed { num_bits, .. } => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                let c = crate::public_input::lagrange_correction(&l, *num_bits);
+                out.push(((l.x, l.y), (c.x, c.y)));
+            }
+            crate::api::WrapStepStatementSlot::Bool(_) => {
+                let l = lgr[lagrange_slot].chunks[0];
+                lagrange_slot += 1;
+                out.push(((l.x, l.y), (l.x, l.y)));
+            }
+        }
+    }
+    out
+}
+
+/// [`step_statement_lagranges_for_slots`] over the Lagrange basis of a
+/// `2^log2` tick domain (SRS-cached).
+pub fn step_statement_lagranges_for_domain(
+    domain_log2: u32,
+    step_statement: &[crate::api::WrapStepStatementSlot],
+) -> Vec<((Fq, Fq), (Fq, Fq))> {
+    use ark_poly::EvaluationDomain;
+    use poly_commitment::SRS as _;
+    let srs = crate::common::tick_srs(1 << crate::common::TICK_ROUNDS);
+    let domain =
+        ark_poly::Radix2EvaluationDomain::<Fp>::new(1usize << domain_log2).expect("tick domain");
+    let lgr = srs.get_lagrange_basis(domain);
+    step_statement_lagranges_for_slots(&lgr, step_statement)
+}
+
+/// [`step_statement_lagranges_for_slots`] over a step verifier index's own
+/// domain basis — one branch's x_hat constants for the shared program wrap.
+pub fn step_statement_lagranges_for_index(
+    svi: &VerifierIndex<FULL_ROUNDS, Vesta, poly_commitment::ipa::SRS<Vesta>>,
+    step_statement: &[crate::api::WrapStepStatementSlot],
+) -> Vec<((Fq, Fq), (Fq, Fq))> {
+    use poly_commitment::SRS as _;
+    let lgr = svi.srs().get_lagrange_basis(svi.domain);
+    step_statement_lagranges_for_slots(&lgr, step_statement)
 }
 
 pub fn wrap_x_hat_lagranges(
@@ -734,6 +829,11 @@ fn wrap_unfinalized_from_parts(
 pub struct RecursiveStepData {
     pub finalize_tokens: Vec<StepPolishToken>,
     pub finalize_domain: ark_poly::Radix2EvaluationDomain<Fp>,
+    /// Program mode: the unique, sorted `log2` step-domain sizes of every
+    /// program branch. Non-empty (with `fixed_width_branch_data`) switches
+    /// the finalize to the OCaml `Pseudo.Domain` one-hot selection; empty
+    /// keeps the single-constant `finalize_domain` path.
+    pub finalize_domain_log2s: Vec<u32>,
     pub finalize_srs_log2: u32,
     pub finalize_endo: Fp,
     pub finalize_shifts: Vec<Fp>,
@@ -1817,6 +1917,7 @@ fn prepare_recursive_step_from_parts<
     let data = RecursiveStepData {
         finalize_tokens: svi.linearization.constant_term.clone(),
         finalize_domain: svi.domain,
+        finalize_domain_log2s: vec![],
         finalize_srs_log2: step_srs_log2,
         finalize_endo: svi.endo,
         finalize_shifts: svi.shift.to_vec(),
@@ -2348,6 +2449,29 @@ pub fn compile_prepared_recursive_step_width2_with_min_domain<
     .unwrap()
 }
 
+/// Constraint-system-only probe of the width-2 step circuit's natural
+/// domain: no SRS and no commitments are created (OCaml `Fix_domains`).
+pub fn domain_log2_prepared_recursive_step_width2<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+) -> u32 {
+    use snarky::api::SnarkyCircuit;
+    RecursiveStepWidth2Circuit::<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN, 2> {
+        proofs: prepared.proofs.clone(),
+        dummy_slots: prepared.dummy_slots,
+        app_state: prepared.app_state.clone(),
+        app,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+    }
+    .domain_log2()
+    .unwrap()
+}
+
 pub fn prove_prepared_recursive_step_width2_arity<
     const PREV_ROUNDS: usize,
     const WRAP_ROUNDS: usize,
@@ -2410,10 +2534,7 @@ pub fn prove_prepared_recursive_step_width2_arity<
     let (mut prover, verifier) = match indexes {
         Some(indexes) => indexes,
         None => circuit
-            .compile_to_indexes_with_domain_and_srs(
-                crate::common::TICK_ROUNDS as u32,
-                Some(crate::common::TICK_ROUNDS as u32),
-            )
+            .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
             .unwrap(),
     };
     let (proof, _) = prover
@@ -2702,37 +2823,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     .unwrap();
 
     let co = |p: &Vesta| (p.x, p.y);
-    let mut step_statement_lagranges = Vec::new();
-    let mut lagrange_slot = 0usize;
-    for slot in &step_statement {
-        match slot {
-            WrapStepStatementSlot::Field(_) => {
-                let l = lgr[lagrange_slot].chunks[0];
-                lagrange_slot += 1;
-                let c = crate::public_input::lagrange_correction(&l, 255);
-                step_statement_lagranges.push(((l.x, l.y), (c.x, c.y)));
-                let l = lgr[lagrange_slot].chunks[0];
-                lagrange_slot += 1;
-                step_statement_lagranges.push(((l.x, l.y), (l.x, l.y)));
-            }
-            WrapStepStatementSlot::Packed { num_bits, .. } => {
-                let l = lgr[lagrange_slot].chunks[0];
-                lagrange_slot += 1;
-                let c = crate::public_input::lagrange_correction(&l, *num_bits);
-                step_statement_lagranges.push(((l.x, l.y), (c.x, c.y)));
-            }
-            WrapStepStatementSlot::Bool(_) => {
-                let l = lgr[lagrange_slot].chunks[0];
-                lagrange_slot += 1;
-                step_statement_lagranges.push(((l.x, l.y), (l.x, l.y)));
-            }
-        }
-    }
-    assert_eq!(
-        lagrange_slot,
-        step_statement_lagranges.len(),
-        "recursive wrap x_hat Lagrange slots"
-    );
+    let step_statement_lagranges = step_statement_lagranges_for_slots(&lgr, &step_statement);
     let srs_h = svi.srs().h;
     let reconstructed_public_comm =
         reconstruct_step_statement_commitment(&step_statement, &step_statement_lagranges, srs_h);
@@ -2788,7 +2879,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         sg_olds: sg_olds.iter().map(co).collect(),
         unfinalized,
         step_statement,
-        step_statement_lagranges,
+        step_statement_lagranges: vec![step_statement_lagranges],
         h: (srs_h.x, srs_h.y),
         new_acc_dummies: next_wrap_dummy_challenges.clone(),
     };
@@ -3964,11 +4055,11 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     };
 
     let h = pt(data.h);
-    let x_hat = reconstruct_step_statement_commitment(
-        &data.step_statement,
-        &data.step_statement_lagranges,
-        h,
-    );
+    let branch_lagranges = data
+        .step_statement_lagranges
+        .get(data.which_branch)
+        .unwrap_or(&data.step_statement_lagranges[0]);
+    let x_hat = reconstruct_step_statement_commitment(&data.step_statement, branch_lagranges, h);
 
     let mut sponge =
         RefSponge::new(<Vesta as KimchiCurve<FULL_ROUNDS>>::other_curve_sponge_params());
@@ -4101,9 +4192,27 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     };
 
     let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
+    // Fixed-width branch data as circuit variables (hoisted so the finalize
+    // domain selection below can be driven by the slot's `domain_log2`).
+    let fixed_width_vars = match d.fixed_width_branch_data {
+        Some((proofs_verified_value, domain_log2_value)) => {
+            let proofs_verified: FieldVar<Fp> =
+                sys.compute(loc!(), move |_| Fp::from(proofs_verified_value as u64))?;
+            let domain_log2: FieldVar<Fp> =
+                sys.compute(loc!(), move |_| Fp::from(u64::from(domain_log2_value)))?;
+            Some((proofs_verified, domain_log2))
+        }
+        None => None,
+    };
+    let finalize_domain = match (&d.finalize_domain_log2s[..], &fixed_width_vars) {
+        ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
+        (log2s, Some((_, domain_log2))) => crate::ft_eval_circuit::FinalizeDomain::Selected(
+            crate::ft_eval_circuit::SelectedDomain::create(sys, loc!(), log2s, domain_log2)?,
+        ),
+    };
     let finalize_params = FinalizeParams {
         tokens: &d.finalize_tokens,
-        domain: d.finalize_domain,
+        domain: finalize_domain,
         srs_log2: d.finalize_srs_log2,
         endo: d.finalize_endo,
         shifts: &d.finalize_shifts,
@@ -4267,13 +4376,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     )?;
     let should_finalize = Boolean::create_unsafe(should_finalize);
     let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
-    let proofs_verified_mask = if let Some((proofs_verified_value, domain_log2_value)) =
-        d.fixed_width_branch_data
-    {
-        let proofs_verified: FieldVar<Fp> =
-            sys.compute(loc!(), move |_| Fp::from(proofs_verified_value as u64))?;
-        let domain_log2: FieldVar<Fp> =
-            sys.compute(loc!(), move |_| Fp::from(u64::from(domain_log2_value)))?;
+    let proofs_verified_mask = if let Some((proofs_verified, domain_log2)) = fixed_width_vars {
         stmt.branch_data.assert_equals(
             sys,
             loc!(),
@@ -4556,7 +4659,7 @@ impl<
         let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
         let finalize_params = FinalizeParams {
             tokens: &d.finalize_tokens,
-            domain: d.finalize_domain,
+            domain: crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
             srs_log2: d.finalize_srs_log2,
             endo: d.finalize_endo,
             shifts: &d.finalize_shifts,

@@ -789,8 +789,10 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         self.union_finds = DisjointSet::new();
         self.cached_constants.clear();
         self.cached_constants.shrink_to_fit();
-        self.gate_labels.clear();
-        self.gate_labels.shrink_to_fit();
+        if std::env::var_os("SNARKY_KEEP_LABELS").is_none() {
+            self.gate_labels.clear();
+            self.gate_labels.shrink_to_fit();
+        }
         if let Circuit::Compiled(digest, gates) = &mut self.gates {
             let digest = *digest;
             gates.clear();

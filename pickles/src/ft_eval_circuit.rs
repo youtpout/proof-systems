@@ -11,21 +11,156 @@ use std::borrow::Cow;
 use ark_ff::PrimeField;
 use ark_poly::Radix2EvaluationDomain as D;
 
-use snarky::{FieldVar, RunState, SnarkyResult};
+use snarky::{Boolean, FieldVar, RunState, SnarkyResult};
 
 use crate::expr_eval::pow_circuit;
+
+/// The step-proof evaluation domain used by `finalize_other_proof`.
+///
+/// `Fixed` is the historical constant path (single known domain baked into
+/// the circuit). `Selected` is the port of OCaml's
+/// `Step_verifier.domain_for_compiled` + `Pseudo.Domain`: the previous
+/// proof's `branch_data.domain_log2` (a witness) one-hot selects among the
+/// program's unique per-branch step domains, so one compiled circuit
+/// finalizes proofs from branches with different natural domains.
+#[derive(Clone)]
+pub enum FinalizeDomain<F: PrimeField> {
+    Fixed(D<F>),
+    Selected(SelectedDomain<F>),
+}
+
+/// The one-hot-selected pseudo domain (OCaml `Pseudo.Domain`).
+#[derive(Clone)]
+pub struct SelectedDomain<F: PrimeField> {
+    /// Unique, sorted `log2` sizes of the program's branch step domains.
+    pub log2s: Vec<u32>,
+    /// `which[i] = (branch_data.domain_log2 == log2s[i])`, from the witness.
+    pub which: Vec<Boolean<F>>,
+}
+
+impl<F: PrimeField> SelectedDomain<F> {
+    /// One-hot over the unique domain list from the (witness) `domain_log2`
+    /// variable — OCaml `domain_for_compiled`'s `which_log2`.
+    pub fn create(
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        log2s: &[u32],
+        domain_log2: &FieldVar<F>,
+    ) -> SnarkyResult<Self> {
+        let which = log2s
+            .iter()
+            .map(|&l| {
+                FieldVar::constant(F::from(u64::from(l))).equal(sys, loc.clone(), domain_log2)
+            })
+            .collect::<SnarkyResult<Vec<_>>>()?;
+        Ok(Self {
+            log2s: log2s.to_vec(),
+            which,
+        })
+    }
+
+    /// The domain generator for a `log2`-sized radix-2 domain.
+    pub fn generator_of(log2: u32) -> F
+    where
+        F: ark_ff::FftField,
+    {
+        use ark_poly::EvaluationDomain;
+        D::<F>::new(1usize << log2)
+            .expect("radix-2 domain")
+            .group_gen
+    }
+
+    /// OCaml `Pseudo.mask`: `Σ which[i] · constants[i]` — a pure linear
+    /// combination (no constraints).
+    pub fn mask_constants(&self, constants: &[F]) -> FieldVar<F> {
+        assert_eq!(constants.len(), self.which.len());
+        let mut acc = FieldVar::constant(F::zero());
+        for (b, &c) in self.which.iter().zip(constants) {
+            acc = &acc + &b.to_field_var().scale(c);
+        }
+        acc
+    }
+
+    /// OCaml `Pseudo.mask` over variables: `Σ which[i] · xs[i]`.
+    pub fn mask_vars(
+        &self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        xs: &[FieldVar<F>],
+    ) -> SnarkyResult<FieldVar<F>> {
+        assert_eq!(xs.len(), self.which.len());
+        let mut acc = FieldVar::constant(F::zero());
+        for (b, x) in self.which.iter().zip(xs) {
+            let term = b.to_field_var().mul(x, None, loc.clone(), sys)?;
+            acc = &acc + &term;
+        }
+        Ok(acc)
+    }
+
+    /// The masked generator `Σ which[i] · ω_i` (constants ⇒ no constraints).
+    pub fn generator_var(&self) -> FieldVar<F>
+    where
+        F: ark_ff::FftField,
+    {
+        let gens: Vec<F> = self.log2s.iter().map(|&l| Self::generator_of(l)).collect();
+        self.mask_constants(&gens)
+    }
+
+    /// OCaml `Pseudo.Domain.to_domain`'s `vanishing_polynomial x`:
+    /// `seal(choose(x^{2^log2_i}) - 1)` via a squaring chain to the largest
+    /// listed domain.
+    pub fn vanishing_polynomial(
+        &self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        x: &FieldVar<F>,
+    ) -> SnarkyResult<FieldVar<F>>
+    where
+        F: ark_ff::FftField,
+    {
+        let max_log2 = *self.log2s.iter().max().expect("non-empty domain list");
+        let mut pow2_pows = vec![x.clone()];
+        for i in 1..=max_log2 as usize {
+            let prev = pow2_pows[i - 1].clone();
+            pow2_pows.push(prev.mul(&prev, None, loc.clone(), sys)?);
+        }
+        let picks: Vec<FieldVar<F>> = self
+            .log2s
+            .iter()
+            .map(|&l| pow2_pows[l as usize].clone())
+            .collect();
+        let chosen = self.mask_vars(sys, loc.clone(), &picks)?;
+        (&chosen - &FieldVar::constant(F::one())).seal(sys, loc)
+    }
+}
+
+/// The precomputed `ω^{-k}` values of the finalize domain: constants on the
+/// `Fixed` path, circuit variables (division from the masked generator, as
+/// in OCaml `Plonk_checks.scalars_env`) on the `Selected` path.
+#[derive(Clone)]
+pub struct DomainOmegas<F: PrimeField> {
+    pub generator: FieldVar<F>,
+    pub omega_to_minus_1: FieldVar<F>,
+    /// `ω^{-2}` (`omega_to_zk_plus_1` for `zk_rows = 3`).
+    pub omega_to_zk_plus_1: FieldVar<F>,
+    /// `ω^{-3}` (`omega_to_zk` for `zk_rows = 3`).
+    pub omega_to_zk: FieldVar<F>,
+}
 
 /// The scalars environment as circuit variables (mirror of
 /// [crate::plonk_checks::ScalarsEnv]).
 pub struct ScalarsEnvVar<F: PrimeField> {
     pub alpha_pows: Vec<FieldVar<F>>,
     pub zk_polynomial: FieldVar<F>,
-    pub omega_to_minus_zk_rows: F,
+    pub omega_to_minus_zk_rows: FieldVar<F>,
     pub zeta_to_n_minus_1: FieldVar<F>,
     pub zeta_to_srs_length: FieldVar<F>,
     pub beta: FieldVar<F>,
     pub gamma: FieldVar<F>,
     pub zeta: FieldVar<F>,
+    /// The `ω^{-k}` chain, for the PolishToken evaluator's domain-dependent
+    /// tokens.
+    pub omegas: DomainOmegas<F>,
 }
 
 impl<F: PrimeField> ScalarsEnvVar<F> {
@@ -37,10 +172,10 @@ impl<F: PrimeField> ScalarsEnvVar<F> {
 /// Builds the in-circuit scalars environment from the challenge variables
 /// `alpha`, `beta`, `gamma`, `zeta` (`zk_rows = 3`).
 #[allow(clippy::too_many_arguments)]
-pub fn scalars_env_circuit<F: PrimeField>(
+pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
-    domain: &D<F>,
+    domain: &FinalizeDomain<F>,
     srs_length_log2: u32,
     alpha: &FieldVar<F>,
     beta: FieldVar<F>,
@@ -55,30 +190,64 @@ pub fn scalars_env_circuit<F: PrimeField>(
         alpha_pows.push(alpha.mul(&prev, None, loc.clone(), sys)?);
     }
 
-    let omega_to_minus_1 = domain.group_gen.inverse().unwrap();
-    let omega_to_zk_plus_1 = omega_to_minus_1.square();
-    let omega_to_zk = omega_to_zk_plus_1 * omega_to_minus_1;
+    // ω^{-k} chain: constants for a fixed known domain; for a pseudo domain,
+    // variables derived by division from the masked generator, exactly as in
+    // OCaml `Plonk_checks.scalars_env` (`one / gen`, then repeated products).
+    let omegas = match domain {
+        FinalizeDomain::Fixed(d) => {
+            let omega_to_minus_1 = d.group_gen.inverse().unwrap();
+            let omega_to_zk_plus_1 = omega_to_minus_1.square();
+            let omega_to_zk = omega_to_zk_plus_1 * omega_to_minus_1;
+            DomainOmegas {
+                generator: FieldVar::constant(d.group_gen),
+                omega_to_minus_1: FieldVar::constant(omega_to_minus_1),
+                omega_to_zk_plus_1: FieldVar::constant(omega_to_zk_plus_1),
+                omega_to_zk: FieldVar::constant(omega_to_zk),
+            }
+        }
+        FinalizeDomain::Selected(sel) => {
+            let generator = sel.generator_var();
+            let one = FieldVar::constant(F::one());
+            let omega_to_minus_1 =
+                crate::plonk_curve_ops::div_var(sys, loc.clone(), &one, &generator)?;
+            let omega_to_zk_plus_1 =
+                omega_to_minus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
+            let omega_to_zk = omega_to_zk_plus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
+            DomainOmegas {
+                generator,
+                omega_to_minus_1,
+                omega_to_zk_plus_1,
+                omega_to_zk,
+            }
+        }
+    };
 
     // zk_polynomial = (zeta - w^-1)(zeta - w^-2)(zeta - w^-3)
-    let f1 = zeta - &FieldVar::constant(omega_to_minus_1);
-    let f2 = zeta - &FieldVar::constant(omega_to_zk_plus_1);
-    let f3 = zeta - &FieldVar::constant(omega_to_zk);
+    let f1 = zeta - &omegas.omega_to_minus_1;
+    let f2 = zeta - &omegas.omega_to_zk_plus_1;
+    let f3 = zeta - &omegas.omega_to_zk;
     let f12 = f1.mul(&f2, None, loc.clone(), sys)?;
     let zk_polynomial = f12.mul(&f3, None, loc.clone(), sys)?;
 
-    let zeta_n = pow_circuit(sys, loc.clone(), zeta, domain.size)?;
-    let zeta_to_n_minus_1 = &zeta_n - &FieldVar::constant(F::one());
+    let zeta_to_n_minus_1 = match domain {
+        FinalizeDomain::Fixed(d) => {
+            let zeta_n = pow_circuit(sys, loc.clone(), zeta, d.size)?;
+            &zeta_n - &FieldVar::constant(F::one())
+        }
+        FinalizeDomain::Selected(sel) => sel.vanishing_polynomial(sys, loc.clone(), zeta)?,
+    };
     let zeta_to_srs_length = pow_circuit(sys, loc, zeta, 1u64 << srs_length_log2)?;
 
     Ok(ScalarsEnvVar {
         alpha_pows,
         zk_polynomial,
-        omega_to_minus_zk_rows: omega_to_zk,
+        omega_to_minus_zk_rows: omegas.omega_to_zk.clone(),
         zeta_to_n_minus_1,
         zeta_to_srs_length,
         beta,
         gamma,
         zeta: zeta.clone(),
+        omegas,
     })
 }
 
@@ -202,7 +371,7 @@ pub fn ft_eval0_circuit<F: PrimeField>(
 
     // + numerator / denominator
     let one = FieldVar::constant(F::one());
-    let om_zk = FieldVar::constant(env.omega_to_minus_zk_rows);
+    let om_zk = env.omega_to_minus_zk_rows.clone();
     let zeta_minus_omzk = zeta - &om_zk;
     let zeta_minus_1 = zeta - &one;
     let a1 = env.alpha_pow(PERM_ALPHA0 + 1);
@@ -316,7 +485,7 @@ mod tests {
             let env = scalars_env_circuit(
                 sys,
                 loc!(),
-                &self.domain,
+                &FinalizeDomain::Fixed(self.domain),
                 self.srs_log2,
                 &alpha,
                 beta.clone(),
@@ -369,7 +538,7 @@ mod tests {
                 col_map[&(col, matches!(row, CurrOrNext::Next))].clone()
             };
             let penv = PolishEnv {
-                domain: self.domain,
+                domain: crate::expr_eval::PolishDomain::Fixed(self.domain),
                 endo_coefficient: self.endo,
                 mds: &mds,
                 zk_rows: ZK_ROWS as u64,

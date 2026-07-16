@@ -385,7 +385,12 @@ pub struct WrapWitnessData {
     pub sg_olds: Vec<(Fq, Fq)>,
     pub unfinalized: Vec<WrapUnfinalizedWitnessData>,
     pub step_statement: Vec<WrapStepStatementSlot>,
-    pub step_statement_lagranges: Vec<((Fq, Fq), (Fq, Fq))>,
+    /// The x_hat (Lagrange, correction) constant pairs per expanded step
+    /// statement element, PER BRANCH (outer index). Branches whose step
+    /// domains all agree collapse to constants in-circuit (OCaml
+    /// `lagrange_with_correction`'s all-equal shortcut); heterogeneous
+    /// domains select via the which_branch one-hot.
+    pub step_statement_lagranges: Vec<Vec<((Fq, Fq), (Fq, Fq))>>,
     pub h: (Fq, Fq),
     pub new_acc_dummies: Vec<Vec<Fq>>,
 }
@@ -694,11 +699,17 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 WrapStepStatementSlot::Packed { .. } | WrapStepStatementSlot::Bool(_) => 1,
             })
             .sum();
-        assert_eq!(
-            expanded_step_statement_len,
-            w.step_statement_lagranges.len(),
-            "one Lagrange slot per expanded step statement element"
+        assert!(
+            !w.step_statement_lagranges.is_empty(),
+            "at least one branch Lagrange set"
         );
+        for set in &w.step_statement_lagranges {
+            assert_eq!(
+                expanded_step_statement_len,
+                set.len(),
+                "one Lagrange slot per expanded step statement element"
+            );
+        }
         let mut elements = Vec::with_capacity(w.step_statement.len());
         for (slot_index, slot) in w.step_statement.iter().enumerate() {
             match *slot {
@@ -918,7 +929,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             };
             let finalize_params = FinalizeParams {
                 tokens: &u.finalize_tokens,
-                domain: u.finalize_domain,
+                domain: crate::ft_eval_circuit::FinalizeDomain::Fixed(u.finalize_domain),
                 srs_log2: u.finalize_srs_log2,
                 endo: u.finalize_endo,
                 shifts: &u.finalize_shifts,
@@ -1023,11 +1034,44 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             bulletproof_challenges: bp,
         };
 
-        let lagranges: Vec<(Point<Fq>, Point<Fq>)> = w
-            .step_statement_lagranges
-            .iter()
-            .map(|&(l, c)| (cpt(l), cpt(c)))
-            .collect();
+        // OCaml `lagrange_with_correction` (wrap_verifier.ml:382): if every
+        // branch shares one step domain the constants are used directly;
+        // otherwise the per-branch constants combine through the which_branch
+        // one-hot (b·x sums) and are sealed.
+        let lagrange_sets = &w.step_statement_lagranges;
+        let hetero =
+            lagrange_sets.len() > 1 && lagrange_sets.iter().any(|set| set != &lagrange_sets[0]);
+        let lagranges: Vec<(Point<Fq>, Point<Fq>)> = if !hetero {
+            lagrange_sets[0]
+                .iter()
+                .map(|&(l, c)| (cpt(l), cpt(c)))
+                .collect()
+        } else {
+            assert_eq!(
+                lagrange_sets.len(),
+                branch_count,
+                "one Lagrange set per branch"
+            );
+            let mut out = Vec::with_capacity(lagrange_sets[0].len());
+            for element in 0..lagrange_sets[0].len() {
+                let select = |pick: &dyn Fn(&((Fq, Fq), (Fq, Fq))) -> (Fq, Fq),
+                              sys: &mut RunState<Fq>|
+                 -> SnarkyResult<Point<Fq>> {
+                    let mut x = FieldVar::zero();
+                    let mut y = FieldVar::zero();
+                    for (branch, set) in branches.iter().zip(lagrange_sets) {
+                        let (px, py) = pick(&set[element]);
+                        x = x + branch.to_field_var().scale(px);
+                        y = y + branch.to_field_var().scale(py);
+                    }
+                    Ok(Point::new(x.seal(sys, loc!())?, y.seal(sys, loc!())?))
+                };
+                let l = select(&|entry| entry.0, sys)?;
+                let c = select(&|entry| entry.1, sys)?;
+                out.push((l, c));
+            }
+            out
+        };
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
         let is_base_case =
@@ -1724,7 +1768,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
                 value: Fq::from(0u64),
                 num_bits: 255,
             }],
-            step_statement_lagranges: vec![(co(&l0), co(&correction))],
+            step_statement_lagranges: vec![vec![(co(&l0), co(&correction))]],
             h: (svi.srs().h.x, svi.srs().h.y),
             new_acc_dummies: dummy_wrap_chals,
         };
@@ -2003,7 +2047,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
             value: fp_to_fq(digest),
             num_bits: 255,
         }],
-        step_statement_lagranges: vec![(co(&l0), co(&correction))],
+        step_statement_lagranges: vec![vec![(co(&l0), co(&correction))]],
         h: (srs_h.x, srs_h.y),
         new_acc_dummies: dummy_wrap_chals.clone(),
     };

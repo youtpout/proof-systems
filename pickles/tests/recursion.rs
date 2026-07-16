@@ -377,6 +377,18 @@ fn program_wrap_index_is_shared_by_n0_n1_n2() {
     {
         wrap.data.which_branch = which;
         wrap.data.branches = branches.clone();
+        // The shared wrap circuit carries one x_hat Lagrange set per branch
+        // (selected by the which_branch one-hot when domains differ), so
+        // every prove must supply the full per-branch list.
+        wrap.data.step_statement_lagranges = [&n0_step, &n1_step, &n2_step]
+            .into_iter()
+            .map(|step| {
+                pickles::recursive_step::step_statement_lagranges_for_index(
+                    &step.verifier.index,
+                    &wrap.data.step_statement,
+                )
+            })
+            .collect();
         wrap.domain_log2 = pickles::common::TOCK_ROUNDS as u32;
     }
     assert!(recursive_wrap_ipa_equation_holds(&n0_wrap));

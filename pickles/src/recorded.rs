@@ -1342,9 +1342,11 @@ impl RecordedCompiledBase {
             .as_ref()
             .expect("compiled Wrap indexes")
             .1;
-        let key =
-            crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(step_domain_log2, wrap_verifier)
-                .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
+        let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+            step_domain_log2,
+            wrap_verifier,
+        )
+        .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
         let stable = key.to_stable_v2();
         let base64 = BASE64_STANDARD.encode(
             stable
@@ -1537,8 +1539,10 @@ impl RecordedCompiledN1 {
         prepared_wrap.data.which_branch = 1;
         prepared_wrap.data.branches = wrap_branches.clone();
         let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
-        let bootstrap_wrap =
-            crate::recursive_step::dummy_recursive_wrap_proof(&prepared_wrap, wrap_indexes.1.clone());
+        let bootstrap_wrap = crate::recursive_step::dummy_recursive_wrap_proof(
+            &prepared_wrap,
+            wrap_indexes.1.clone(),
+        );
         // The next prepare asserts `sg == commit(b_poly(chals))` over the
         // challenges materialized in the wrap statement; make the donor
         // consistent (values stay witness-only either way).
@@ -2289,6 +2293,7 @@ fn compile_recorded_program_steps(
             poly_commitment::ipa::SRS<Vesta>,
         >,
     >,
+    finalize_domain_log2s: &[u32],
 ) -> Vec<Option<RecordedProgramStepIndexes>> {
     branches
         .iter()
@@ -2299,6 +2304,7 @@ fn compile_recorded_program_steps(
                 wrap_vk,
                 wrap_index,
                 finalize_index,
+                finalize_domain_log2s,
             ))
         })
         .collect()
@@ -2317,11 +2323,19 @@ fn compile_recorded_program_steps_single_pass(
         Pallas,
         poly_commitment::ipa::SRS<Pallas>,
     >,
+    finalize_domain_log2s: &[u32],
 ) -> Vec<Option<RecordedProgramStepIndexes>> {
     use rayon::prelude::*;
     let first_n0 = branches.iter().position(|b| b.proofs_verified == 0);
     let n0_indexes = first_n0.map(|i| {
-        compile_recorded_program_step_branch(&branches[i], template, wrap_vk, wrap_index, None)
+        compile_recorded_program_step_branch(
+            &branches[i],
+            template,
+            wrap_vk,
+            wrap_index,
+            None,
+            finalize_domain_log2s,
+        )
     });
     let finalize_index = n0_indexes.as_ref().map(|indexes| &indexes.1.index);
     let rest: Vec<usize> = (0..branches.len())
@@ -2338,6 +2352,7 @@ fn compile_recorded_program_steps_single_pass(
                     wrap_vk,
                     wrap_index,
                     finalize_index,
+                    finalize_domain_log2s,
                 ),
             )
         })
@@ -2353,6 +2368,93 @@ fn compile_recorded_program_steps_single_pass(
     out
 }
 
+/// OCaml `Fix_domains.rough_domains` (2^20): the placeholder finalize
+/// domain list every branch is synthesized with when *probing* its own
+/// natural domain, before the real per-branch list exists.
+const FIX_DOMAINS_ROUGH_LOG2: u32 = 20;
+
+type StepFinalizeIndex = kimchi::verifier_index::VerifierIndex<
+    { snarky::FULL_ROUNDS },
+    Vesta,
+    poly_commitment::ipa::SRS<Vesta>,
+>;
+
+/// The shared prepared-step construction of the program step compiles and
+/// the domain probe.
+fn build_recorded_program_step_prepared(
+    branch: &RecordedProgramBranch,
+    template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+    finalize_index: Option<&StepFinalizeIndex>,
+    finalize_domain_log2s: &[u32],
+) -> (
+    crate::recursive_step::PreparedRecursiveStepWidth2<
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >,
+    crate::recursive_step::EmbeddedAppMain,
+) {
+    let branch = branch.clone();
+    let app_state = branch.circuit.state(&branch.witness);
+    let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
+        RecordedProgramTemplateApp,
+        16,
+        RECORDED_BASE_WRAP_ROUNDS,
+        40,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(
+        template,
+        wrap_vk.to_vec(),
+        vec![Fp::from(0u64)],
+        app_state.clone(),
+    );
+    let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
+    let prepared = crate::recursive_step::align_program_recursive_step_verifier::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(prepared, wrap_index);
+    let prepared = match finalize_index {
+        Some(index) => {
+            crate::recursive_step::align_program_recursive_step_finalize_index(prepared, index)
+        }
+        None => prepared,
+    };
+    let prepared = crate::recursive_step::align_program_recursive_step_finalize_domains(
+        prepared,
+        finalize_domain_log2s,
+    );
+    let prepared = match branch.proofs_verified {
+        0 => crate::recursive_step::prepare_recursive_step_n0::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared, app_state),
+        1 => crate::recursive_step::prepare_recursive_step_n1::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared, app_state),
+        2 => crate::recursive_step::prepare_recursive_step_width2::<
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            RECORDED_N2_STEP_STMT_LEN,
+        >(prepared.clone(), prepared, app_state),
+        _ => unreachable!(),
+    };
+    let app = RecordedApp {
+        circuit: branch.circuit.clone(),
+    };
+    let witness = branch.witness.clone();
+    let main: crate::recursive_step::EmbeddedAppMain =
+        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+    (prepared, main)
+}
+
 fn compile_recorded_program_step_branch(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
@@ -2362,78 +2464,52 @@ fn compile_recorded_program_step_branch(
         Pallas,
         poly_commitment::ipa::SRS<Pallas>,
     >,
-    finalize_index: Option<
-        &kimchi::verifier_index::VerifierIndex<
-            { snarky::FULL_ROUNDS },
-            Vesta,
-            poly_commitment::ipa::SRS<Vesta>,
-        >,
-    >,
+    finalize_index: Option<&StepFinalizeIndex>,
+    finalize_domain_log2s: &[u32],
 ) -> RecordedProgramStepIndexes {
-    let branch = branch.clone();
-    {
-        {
-            let app_state = branch.circuit.state(&branch.witness);
-            let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
-                RecordedProgramTemplateApp,
-                16,
-                RECORDED_BASE_WRAP_ROUNDS,
-                40,
-                RECORDED_N1_STEP_STMT_LEN,
-            >(
-                template,
-                wrap_vk.to_vec(),
-                vec![Fp::from(0u64)],
-                app_state.clone(),
-            );
-            let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
-            let prepared = crate::recursive_step::align_program_recursive_step_verifier::<
-                RECORDED_N1_STEP_ROUNDS,
-                RECORDED_N1_STEP_STMT_LEN,
-            >(prepared, wrap_index);
-            let prepared = match finalize_index {
-                Some(index) => crate::recursive_step::align_program_recursive_step_finalize_index(
-                    prepared, index,
-                ),
-                None => prepared,
-            };
-            let prepared = match branch.proofs_verified {
-                0 => crate::recursive_step::prepare_recursive_step_n0::<
-                    RECORDED_BASE_WRAP_ROUNDS,
-                    RECORDED_N1_STEP_STMT_LEN,
-                    RECORDED_N2_STEP_STMT_LEN,
-                >(prepared, app_state),
-                1 => crate::recursive_step::prepare_recursive_step_n1::<
-                    RECORDED_BASE_WRAP_ROUNDS,
-                    RECORDED_N1_STEP_STMT_LEN,
-                    RECORDED_N2_STEP_STMT_LEN,
-                >(prepared, app_state),
-                2 => crate::recursive_step::prepare_recursive_step_width2::<
-                    RECORDED_BASE_WRAP_ROUNDS,
-                    RECORDED_N1_STEP_STMT_LEN,
-                    RECORDED_N2_STEP_STMT_LEN,
-                >(prepared.clone(), prepared, app_state),
-                _ => unreachable!(),
-            };
-            let app = RecordedApp {
-                circuit: branch.circuit.clone(),
-            };
-            let witness = branch.witness.clone();
-            let main: crate::recursive_step::EmbeddedAppMain =
-                std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
-            // TODO(shared-wrap): natural domain once the wrap selects the
-            // x_hat Lagrange commitments per branch (OCaml wrap_verifier's
-            // `lagrange ~domain:(which_branch, step_domains)`); the shared
-            // wrap currently embeds a single Lagrange set, so every program
-            // step must share one domain.
-            crate::recursive_step::compile_prepared_recursive_step_width2_with_min_domain::<
-                RECORDED_N1_STEP_ROUNDS,
-                RECORDED_BASE_WRAP_ROUNDS,
-                RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N2_STEP_STMT_LEN,
-            >(&prepared, Some(main), crate::common::TICK_ROUNDS as u32)
-        }
-    }
+    let (prepared, main) = build_recorded_program_step_prepared(
+        branch,
+        template,
+        wrap_vk,
+        wrap_index,
+        finalize_index,
+        finalize_domain_log2s,
+    );
+    crate::recursive_step::compile_prepared_recursive_step_width2::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >(&prepared, Some(main))
+}
+
+/// OCaml `Fix_domains.domains`: synthesizes the branch's step constraint
+/// system with the rough placeholder domain list and returns its natural
+/// domain. No SRS or commitment work happens here.
+fn recorded_program_step_branch_domain_log2(
+    branch: &RecordedProgramBranch,
+    template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    wrap_vk: &[(Fp, Fp)],
+    wrap_index: &kimchi::verifier_index::VerifierIndex<
+        { snarky::FULL_ROUNDS },
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+) -> u32 {
+    let (prepared, main) = build_recorded_program_step_prepared(
+        branch,
+        template,
+        wrap_vk,
+        wrap_index,
+        None,
+        &[FIX_DOMAINS_ROUGH_LOG2],
+    );
+    crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >(&prepared, Some(main))
 }
 
 fn recorded_program_wrap_branches(
@@ -2457,6 +2533,19 @@ fn recorded_program_wrap_branches(
 pub struct RecordedCompiledProgram {
     branches: Vec<RecordedProgramBranch>,
     wrap_branches: Vec<crate::api::WrapBranchData>,
+    /// Per-branch x_hat Lagrange constants of the shared wrap — must be
+    /// injected into every prove's wrap witness data so synthesis matches
+    /// the compiled (possibly branch-selecting) circuit.
+    wrap_statement_lagranges: Vec<
+        Vec<(
+            (mina_curves::pasta::Fq, mina_curves::pasta::Fq),
+            (mina_curves::pasta::Fq, mina_curves::pasta::Fq),
+        )>,
+    >,
+    /// The unique per-branch step-domain list the steps' finalize one-hot
+    /// selects over — must be re-injected into every prove-time prepared
+    /// step.
+    finalize_domain_log2s: Vec<u32>,
     step_indexes: Vec<Option<RecordedProgramStepIndexes>>,
     wrap_indexes: Option<
         crate::recursive_step::RecursiveWrapIndexes<
@@ -2587,9 +2676,43 @@ impl RecordedCompiledProgram {
         );
         let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap.1);
 
-        // Single steps pass: the first N0 branch compiles without finalize
-        // alignment (aligning it to its own index is a no-op), every other
-        // branch aligns to that shared finalize index.
+        // Probe every branch's natural step domain (OCaml `Fix_domains`, at
+        // rough placeholder domains): constraint systems only, no SRS work.
+        // The probed domains fix the wrap's per-branch x_hat Lagrange
+        // constants *and* the unique-domain list the steps' finalize
+        // one-hot selects over, before anything expensive compiles.
+        let branch_domain_log2s: Vec<u32> = phase!("step domain probe", {
+            use rayon::prelude::*;
+            branches
+                .par_iter()
+                .map(|branch| {
+                    recorded_program_step_branch_domain_log2(
+                        branch,
+                        &template,
+                        &structure_vk,
+                        &structure_wrap.1.index,
+                    )
+                })
+                .collect()
+        });
+        let finalize_domain_log2s: Vec<u32> = {
+            let mut list = branch_domain_log2s.clone();
+            list.sort_unstable();
+            list.dedup();
+            list
+        };
+        if profile {
+            eprintln!(
+                "[program compile] probed step domains: {branch_domain_log2s:?} (unique {finalize_domain_log2s:?})"
+            );
+        }
+
+        // Single steps pass against the structure wrap: the wrap VK enters
+        // the step data as WITNESS values only (the step indexes are stable
+        // under wrap VK values), so compiling against the donor is safe. The
+        // first N0 branch compiles without finalize alignment (aligning it
+        // to its own index is a no-op), every other branch aligns to that
+        // shared finalize index.
         let step_indexes = phase!(
             "steps compile",
             compile_recorded_program_steps_single_pass(
@@ -2597,14 +2720,42 @@ impl RecordedCompiledProgram {
                 &template,
                 &structure_vk,
                 &structure_wrap.1.index,
+                &finalize_domain_log2s,
             )
         );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
+        for (i, indexes) in step_indexes.iter().enumerate() {
+            let compiled_log2 = indexes
+                .as_ref()
+                .expect("compiled branch step")
+                .1
+                .index
+                .domain
+                .log_size_of_group;
+            assert_eq!(
+                compiled_log2, branch_domain_log2s[i],
+                "branch {i}: compiled step domain diverged from the probe"
+            );
+        }
 
-        // Final wrap: the real branch VKs plus the finalize alignment. The
-        // alignment only reads structural fields, which the structure donor
-        // already carries.
+        // Final wrap: OCaml's `choose_key` bakes the branch step VKs as
+        // circuit CONSTANTS, so the shared wrap must compile after the steps
+        // with the real branch data. The per-branch x_hat Lagrange constants
+        // come from the probed domains (equal to each step index's own —
+        // asserted above through the domain check). With equal branch
+        // domains they collapse to constants in-circuit (OCaml's all-equal
+        // shortcut), otherwise the which_branch one-hot selects.
         prepared_wrap.data.branches = wrap_branches.clone();
+        let wrap_statement_lagranges: Vec<Vec<_>> = branch_domain_log2s
+            .iter()
+            .map(|&log2| {
+                crate::recursive_step::step_statement_lagranges_for_domain(
+                    log2,
+                    &prepared_wrap.data.step_statement,
+                )
+            })
+            .collect();
+        prepared_wrap.data.step_statement_lagranges = wrap_statement_lagranges.clone();
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
             &structure_wrap.1.index,
@@ -2653,6 +2804,8 @@ impl RecordedCompiledProgram {
         Ok(Self {
             branches,
             wrap_branches,
+            wrap_statement_lagranges,
+            finalize_domain_log2s,
             step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
@@ -2710,6 +2863,27 @@ impl RecordedCompiledProgram {
         let template = phase!("template base prove #1", template_compiled.prove(()));
         let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
 
+        let branch_domain_log2s: Vec<u32> = phase!("step domain probe", {
+            use rayon::prelude::*;
+            branches
+                .par_iter()
+                .map(|branch| {
+                    recorded_program_step_branch_domain_log2(
+                        branch,
+                        &template,
+                        &bootstrap_vk,
+                        &template.wrap_verifier.index,
+                    )
+                })
+                .collect()
+        });
+        let finalize_domain_log2s: Vec<u32> = {
+            let mut list = branch_domain_log2s.clone();
+            list.sort_unstable();
+            list.dedup();
+            list
+        };
+
         let step_indexes = phase!(
             "steps pass #1",
             compile_recorded_program_steps(
@@ -2718,6 +2892,7 @@ impl RecordedCompiledProgram {
                 &bootstrap_vk,
                 &template.wrap_verifier.index,
                 None,
+                &finalize_domain_log2s,
             )
         );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
@@ -2784,6 +2959,7 @@ impl RecordedCompiledProgram {
                 &first_wrap_vk,
                 &first_wrap_indexes.1.index,
                 None,
+                &finalize_domain_log2s,
             )
         );
         let second_wrap_branches = recorded_program_wrap_branches(&branches, &second_step_indexes);
@@ -2827,6 +3003,7 @@ impl RecordedCompiledProgram {
                 &final_wrap_vk,
                 &wrap_indexes.1.index,
                 finalize_index,
+                &finalize_domain_log2s,
             )
         );
         let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
@@ -2840,6 +3017,16 @@ impl RecordedCompiledProgram {
             }
         }
         prepared_wrap.data.branches = wrap_branches.clone();
+        let wrap_statement_lagranges: Vec<Vec<_>> = step_indexes
+            .iter()
+            .map(|indexes| {
+                crate::recursive_step::step_statement_lagranges_for_index(
+                    &indexes.as_ref().expect("compiled branch step").1.index,
+                    &prepared_wrap.data.step_statement,
+                )
+            })
+            .collect();
+        prepared_wrap.data.step_statement_lagranges = wrap_statement_lagranges.clone();
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
             &wrap_indexes.1.index,
@@ -2878,6 +3065,7 @@ impl RecordedCompiledProgram {
                 &final_wrap_vk,
                 &wrap_indexes.1.index,
                 finalize_index,
+                &finalize_domain_log2s,
             )
         );
         let stable_wrap_branches = recorded_program_wrap_branches(&branches, &stable_step_indexes);
@@ -2889,6 +3077,8 @@ impl RecordedCompiledProgram {
         Ok(Self {
             branches,
             wrap_branches,
+            wrap_statement_lagranges,
+            finalize_domain_log2s,
             step_indexes: stable_step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
@@ -2900,6 +3090,33 @@ impl RecordedCompiledProgram {
     #[doc(hidden)]
     pub fn wrap_branches_for_tests(&self) -> &[crate::api::WrapBranchData] {
         &self.wrap_branches
+    }
+
+    /// Emission labels of the shared wrap's gates in `[from, to)` — debug
+    /// tooling for locating a failing row.
+    #[doc(hidden)]
+    pub fn wrap_gate_labels_for_tests(&self, from: usize, to: usize) -> Vec<(usize, String)> {
+        let prover = &self.wrap_indexes.as_ref().unwrap().0;
+        let labels = prover.gate_labels();
+        let gates = &prover.index.cs.gates;
+        eprintln!(
+            "labels.len()={} gates.len()={} domain=2^{}",
+            labels.len(),
+            gates.len(),
+            prover.index.cs.domain.d1.log_size_of_group
+        );
+        (from..to.min(gates.len()))
+            .map(|i| {
+                (
+                    i,
+                    format!(
+                        "{:?} | {}",
+                        gates[i].typ,
+                        labels.get(i).cloned().unwrap_or_default()
+                    ),
+                )
+            })
+            .collect()
     }
 
     pub fn wrap_verification_key_points(&self) -> Vec<(Fp, Fp)> {
@@ -2943,6 +3160,10 @@ impl RecordedCompiledProgram {
             app_state.clone(),
         );
         let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
+        let prepared = crate::recursive_step::align_program_recursive_step_finalize_domains(
+            prepared,
+            &self.finalize_domain_log2s,
+        );
         let prepared = crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
@@ -3004,6 +3225,7 @@ impl RecordedCompiledProgram {
         >(&self.template, &step);
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
+        prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
         prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
@@ -3119,6 +3341,15 @@ impl RecordedCompiledProgram {
                 ),
             );
         }
+        let prepared_previous: Vec<_> = prepared_previous
+            .into_iter()
+            .map(|prepared| {
+                crate::recursive_step::align_program_recursive_step_finalize_domains(
+                    prepared,
+                    &self.finalize_domain_log2s,
+                )
+            })
+            .collect();
         let mut prepared_previous = prepared_previous.into_iter();
         let prepared = match previous.len() {
             1 => crate::recursive_step::prepare_recursive_step_n1::<
@@ -3198,6 +3429,7 @@ impl RecordedCompiledProgram {
         >(&step, real_unfinalized);
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
+        prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
         prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
@@ -3628,8 +3860,9 @@ mod wrap_wdata_independence_tests {
             .cs
             .gates
             .to_vec();
-        let actual_points =
-            crate::api::wrap_verification_key_points(&compiled.compiled.wrap_indexes.as_ref().unwrap().1);
+        let actual_points = crate::api::wrap_verification_key_points(
+            &compiled.compiled.wrap_indexes.as_ref().unwrap().1,
+        );
 
         // Path B: full dump path — wrap compiled fresh with the REAL wdata.
         let (_, dump) = crate::api::prove_base_case_with_wrap_dump::<RecordedApp, 16, 40>(

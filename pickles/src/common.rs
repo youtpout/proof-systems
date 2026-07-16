@@ -166,8 +166,11 @@ fn cache_dir() -> Option<std::path::PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
         return Some(std::path::PathBuf::from(xdg).join("pickles-rs"));
     }
-    std::env::var_os("HOME")
-        .map(|home| std::path::PathBuf::from(home).join(".cache").join("pickles-rs"))
+    std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".cache")
+            .join("pickles-rs")
+    })
 }
 
 /// Loads the Lagrange basis for `2^domain_log2` from the disk cache into the
@@ -179,8 +182,8 @@ where
     G: ark_serialize::CanonicalSerialize + ark_serialize::CanonicalDeserialize,
     poly_commitment::ipa::SRS<G>: poly_commitment::SRS<G>,
 {
-    use poly_commitment::SRS as _;
     use ark_poly::EvaluationDomain as _;
+    use poly_commitment::SRS as _;
     let domain_size = 1usize << domain_log2;
     let path = cache_dir().map(|dir| {
         dir.join(format!(

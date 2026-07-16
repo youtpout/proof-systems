@@ -891,7 +891,7 @@ mod tests {
             let (_, endo_r) = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos();
             let finalize_params = crate::finalize::FinalizeParams {
                 tokens: &tokens,
-                domain: self.domain,
+                domain: crate::ft_eval_circuit::FinalizeDomain::Fixed(self.domain),
                 srs_log2: 12,
                 endo: Fp::from(3u64),
                 shifts: &self.shifts,

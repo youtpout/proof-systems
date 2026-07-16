@@ -292,9 +292,35 @@ where
             if std::env::var("SNARKY_DEBUG_WITNESS").is_ok() {
                 witness.debug();
             }
-            self.index
-                .verify(&witness.0, &public_input_and_output)
-                .unwrap();
+            if let Err(err) = self.index.verify(&witness.0, &public_input_and_output) {
+                eprintln!("[witness-debug] verify failed: {err:?}");
+                let labels = self.gate_labels();
+                let gates = &self.index.cs.gates;
+                let dump = |row: usize| {
+                    let typ = gates.get(row).map(|g| format!("{:?}", g.typ));
+                    let coeffs = gates
+                        .get(row)
+                        .map(|g| g.coeffs.iter().map(ToString::to_string).collect::<Vec<_>>());
+                    eprintln!(
+                        "[witness-debug] row {row}: typ={typ:?} label={:?} coeffs={coeffs:?}",
+                        labels.get(row)
+                    );
+                    for col in 0..15 {
+                        eprintln!(
+                            "[witness-debug]   w[{col}][{row}] = {}",
+                            witness.0[col][row]
+                        );
+                    }
+                };
+                if let Ok(spec) = std::env::var("SNARKY_DEBUG_ROWS") {
+                    for part in spec.split(',') {
+                        if let Ok(row) = part.trim().parse::<usize>() {
+                            dump(row);
+                        }
+                    }
+                }
+                panic!("witness verification failed: {err:?}");
+            }
         }
 
         // produce a proof

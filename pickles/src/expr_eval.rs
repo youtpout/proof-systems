@@ -22,12 +22,25 @@ use kimchi::circuits::{
 
 use snarky::{FieldVar, RunState, SnarkyResult};
 
+/// The finalize domain as seen by the polish evaluator: either a fixed
+/// known domain (constants) or the one-hot-selected pseudo domain, whose
+/// `ω^{-k}` chain and `ζ^n - 1` were built by `scalars_env_circuit`.
+pub enum PolishDomain<'a, F: PrimeField> {
+    Fixed(D<F>),
+    Selected {
+        omegas: &'a crate::ft_eval_circuit::DomainOmegas<F>,
+        zeta_to_n_minus_1: &'a FieldVar<F>,
+    },
+}
+
 /// The environment an in-circuit polish evaluation needs: the challenges and
 /// column evaluations as circuit variables, plus the constants of the proof's
 /// curve. Column/challenge lookups return already-witnessed variables.
 pub struct PolishEnv<'a, F: PrimeField> {
-    /// The evaluation domain of the proof being verified.
-    pub domain: D<F>,
+    /// The evaluation domain of the proof being verified. `Selected` carries
+    /// the pseudo-domain variables precomputed by
+    /// [`crate::ft_eval_circuit::scalars_env_circuit`].
+    pub domain: PolishDomain<'a, F>,
     /// `c.endo_coefficient`.
     pub endo_coefficient: F,
     /// The Poseidon MDS matrix.
@@ -134,26 +147,80 @@ pub fn eval_polish<F: FftField + PrimeField>(
                 stack.push(FieldVar::constant(env.mds[*row][*col]))
             }
             Constant(ConstantTerm::Literal(x)) => stack.push(FieldVar::constant(*x)),
-            VanishesOnZeroKnowledgeAndPreviousRows => stack.push(vanishes_on_last_n_rows(
-                sys,
-                loc.clone(),
-                &env.domain,
-                env.zk_rows + 1,
-                &env.pt,
-            )?),
+            VanishesOnZeroKnowledgeAndPreviousRows => match &env.domain {
+                PolishDomain::Fixed(d) => stack.push(vanishes_on_last_n_rows(
+                    sys,
+                    loc.clone(),
+                    d,
+                    env.zk_rows + 1,
+                    &env.pt,
+                )?),
+                PolishDomain::Selected { omegas, .. } => {
+                    // (pt - ω^{-(zk+1)})(pt - ω^{-zk})..(pt - ω^{-1}), from
+                    // the precomputed ω^{-k} variables (zk_rows = 3).
+                    assert_eq!(env.zk_rows, 3, "selected domain assumes zk_rows = 3");
+                    let omega_to_zk_minus_1 =
+                        omegas
+                            .omega_to_zk
+                            .mul(&omegas.omega_to_minus_1, None, loc.clone(), sys)?;
+                    let mut acc = &env.pt - &omega_to_zk_minus_1;
+                    for w in [
+                        &omegas.omega_to_zk,
+                        &omegas.omega_to_zk_plus_1,
+                        &omegas.omega_to_minus_1,
+                    ] {
+                        let factor = &env.pt - w;
+                        acc = acc.mul(&factor, None, loc.clone(), sys)?;
+                    }
+                    stack.push(acc)
+                }
+            },
             UnnormalizedLagrangeBasis(RowOffset { zk_rows, offset }) => {
                 let off = if *zk_rows {
                     -(env.zk_rows as i32) + offset
                 } else {
                     *offset
                 };
-                stack.push(unnormalized_lagrange_basis(
-                    sys,
-                    loc.clone(),
-                    &env.domain,
-                    off,
-                    &env.pt,
-                )?)
+                match &env.domain {
+                    PolishDomain::Fixed(d) => stack.push(unnormalized_lagrange_basis(
+                        sys,
+                        loc.clone(),
+                        d,
+                        off,
+                        &env.pt,
+                    )?),
+                    PolishDomain::Selected {
+                        omegas,
+                        zeta_to_n_minus_1,
+                    } => {
+                        // OCaml env's `unnormalized_lagrange_basis`:
+                        // (ζ^n - 1) / (ζ - ω^off), reusing the precomputed
+                        // vanishing value and ω^{-k} chain.
+                        let w_to_i = match off {
+                            0 => FieldVar::constant(F::one()),
+                            1 => omegas.generator.clone(),
+                            -1 => omegas.omega_to_minus_1.clone(),
+                            -2 => omegas.omega_to_zk_plus_1.clone(),
+                            -3 => omegas.omega_to_zk.clone(),
+                            -4 => omegas.omega_to_zk.mul(
+                                &omegas.omega_to_minus_1,
+                                None,
+                                loc.clone(),
+                                sys,
+                            )?,
+                            other => {
+                                panic!("unnormalized_lagrange_basis({other}) on a pseudo domain")
+                            }
+                        };
+                        let denominator = &env.pt - &w_to_i;
+                        stack.push(crate::plonk_curve_ops::div_var(
+                            sys,
+                            loc.clone(),
+                            zeta_to_n_minus_1,
+                            &denominator,
+                        )?)
+                    }
+                }
             }
             Cell(v) => stack.push((env.column)(v.col, v.row)),
             Dup => stack.push(stack[stack.len() - 1].clone()),
@@ -290,7 +357,7 @@ mod tests {
                 col_map[&(col, is_next)].clone()
             };
             let env = PolishEnv {
-                domain: self.domain,
+                domain: PolishDomain::Fixed(self.domain),
                 endo_coefficient: self.endo,
                 mds: &mds,
                 zk_rows: ZK_ROWS as u64,

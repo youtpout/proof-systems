@@ -121,10 +121,10 @@ pub fn b_actual<F: PrimeField>(
     loc: Cow<'static, str>,
     chals: &[FieldVar<F>],
     zeta: &FieldVar<F>,
-    domain_generator: F,
+    zetaw: &FieldVar<F>,
     r: &FieldVar<F>,
 ) -> SnarkyResult<FieldVar<F>> {
-    let zetaw = zeta.scale(domain_generator);
+    let zetaw = zetaw.clone();
     let h_zeta = challenge_polynomial_circuit(sys, loc.clone(), chals, zeta)?;
     let h_zetaw = challenge_polynomial_circuit(sys, loc.clone(), chals, &zetaw)?;
     let r_h_zetaw = r.mul(&h_zetaw, None, loc, sys)?;
@@ -233,14 +233,8 @@ pub fn finalize_other_proof<F: PrimeField>(
         cip_entries,
         endo,
     )?;
-    let b_derived = b_actual(
-        sys,
-        loc.clone(),
-        b_chals,
-        zeta,
-        domain_generator,
-        &core.r_field,
-    )?;
+    let zetaw = zeta.scale(domain_generator);
+    let b_derived = b_actual(sys, loc.clone(), b_chals, zeta, &zetaw, &core.r_field)?;
     let cip_claimed = type1_to_field(cip_claimed_repr);
     let b_claimed = type1_to_field(b_claimed_repr);
     let perm_claimed = type1_to_field(perm_claimed_repr);
@@ -266,8 +260,9 @@ pub struct FinalizeParams<'a, F: PrimeField> {
         kimchi::circuits::berkeley_columns::Column,
         kimchi::circuits::berkeley_columns::BerkeleyChallengeTerm,
     >],
-    /// The step proof's evaluation domain.
-    pub domain: ark_poly::Radix2EvaluationDomain<F>,
+    /// The step proof's evaluation domain (fixed constant or the pseudo
+    /// domain one-hot selected by the previous proof's `branch_data`).
+    pub domain: crate::ft_eval_circuit::FinalizeDomain<F>,
     /// log2 of the SRS length.
     pub srs_log2: u32,
     /// The expression-evaluation endo coefficient (`index.endo`).
@@ -433,7 +428,17 @@ pub fn finalize_deferred<F: PrimeField>(
         }
     };
     let penv = PolishEnv {
-        domain: params.domain,
+        domain: match &params.domain {
+            crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => {
+                crate::expr_eval::PolishDomain::Fixed(*d)
+            }
+            crate::ft_eval_circuit::FinalizeDomain::Selected(_) => {
+                crate::expr_eval::PolishDomain::Selected {
+                    omegas: &env.omegas,
+                    zeta_to_n_minus_1: &env.zeta_to_n_minus_1,
+                }
+            }
+        },
         endo_coefficient: params.endo,
         mds: params.mds,
         zk_rows: ZK_ROWS as u64,
@@ -466,7 +471,15 @@ pub fn finalize_deferred<F: PrimeField>(
     // polynomials come first, then public, [ft0, ft1], mandatory columns.
     // A logical base case has no previous challenges; a fixed-width program
     // supplies the same vector shape with an all-false mask.
-    let zetaw = witness.zeta.scale(params.domain.group_gen);
+    let zetaw = match &params.domain {
+        crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => witness.zeta.scale(d.group_gen),
+        crate::ft_eval_circuit::FinalizeDomain::Selected(_) => {
+            // OCaml: `Field.mul domain#generator plonk.zeta`.
+            env.omegas
+                .generator
+                .mul(&witness.zeta, None, loc.clone(), sys)?
+        }
+    };
     let mut masked_cip_entries = Vec::new();
     let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
     for (index, old_challenges) in witness.prev_challenges.iter().enumerate() {
@@ -520,7 +533,7 @@ pub fn finalize_deferred<F: PrimeField>(
         loc.clone(),
         &challenges,
         &witness.zeta,
-        params.domain.group_gen,
+        &zetaw,
         &core.r_field,
     )?;
     let cip_claimed = params.shift.to_field(&witness.cip_repr);
@@ -684,7 +697,7 @@ mod tests {
                 .collect();
             let params = FinalizeParams {
                 tokens: &self.tokens,
-                domain: self.domain,
+                domain: crate::ft_eval_circuit::FinalizeDomain::Fixed(self.domain),
                 srs_log2: self.srs_log2,
                 endo: self.endo,
                 shifts: &self.shifts,
@@ -780,7 +793,8 @@ mod tests {
             }
             let zeta: FieldVar<Fp> = sys.compute(loc!(), |_| self.zeta)?;
             let r: FieldVar<Fp> = sys.compute(loc!(), |_| self.r)?;
-            b_actual(sys, loc!(), &chals, &zeta, self.gen, &r)
+            let zetaw = zeta.scale(self.gen);
+            b_actual(sys, loc!(), &chals, &zeta, &zetaw, &r)
         }
     }
 

@@ -16,6 +16,32 @@ fn tiny_circuit() -> pickles::recorded::RecordedCircuit {
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "program".into());
+
+    if mode == "wrap-labels" {
+        let branches = vec![
+            pickles::recorded::RecordedProgramBranch {
+                circuit: tiny_circuit(),
+                witness: vec![Fp::from(6u64), Fp::from(36u64)],
+                proofs_verified: 0,
+            },
+            pickles::recorded::RecordedProgramBranch {
+                circuit: tiny_circuit(),
+                witness: vec![Fp::from(6u64), Fp::from(36u64)],
+                proofs_verified: 1,
+            },
+            pickles::recorded::RecordedProgramBranch {
+                circuit: tiny_circuit(),
+                witness: vec![Fp::from(6u64), Fp::from(36u64)],
+                proofs_verified: 2,
+            },
+        ];
+        let compiled =
+            pickles::recorded::RecordedCompiledProgram::compile(branches).expect("compile");
+        for (i, label) in compiled.wrap_gate_labels_for_tests(5225, 5245) {
+            eprintln!("row {i}: {label}");
+        }
+        return;
+    }
     let witness = vec![Fp::from(6u64), Fp::from(36u64)];
 
     if mode == "method" {
@@ -40,21 +66,24 @@ fn main() {
         for log2 in [9u32, 13, 14, 15] {
             let t = Instant::now();
             if log2 <= 15 {
-                let d = ark_poly::EvaluationDomain::<mina_curves::pasta::Fp>::new(1usize << log2).unwrap();
+                let d = ark_poly::EvaluationDomain::<mina_curves::pasta::Fp>::new(1usize << log2)
+                    .unwrap();
                 let _ = tick.get_lagrange_basis(d);
                 eprintln!("tick lagrange 2^{log2}: {:.2}s", t.elapsed().as_secs_f64());
             }
         }
         for log2 in [13u32, 15] {
             let t = Instant::now();
-            let d = ark_poly::EvaluationDomain::<mina_curves::pasta::Fq>::new(1usize << log2).unwrap();
+            let d =
+                ark_poly::EvaluationDomain::<mina_curves::pasta::Fq>::new(1usize << log2).unwrap();
             let _ = tock.get_lagrange_basis(d);
             eprintln!("tock lagrange 2^{log2}: {:.2}s", t.elapsed().as_secs_f64());
         }
         // Mimic mina-runtime compile_circuit for pv=2 (the slowest branch).
         let t0 = Instant::now();
-        let base = pickles::recorded::RecordedCompiledBase::compile(tiny_circuit(), witness.clone())
-            .expect("base");
+        let base =
+            pickles::recorded::RecordedCompiledBase::compile(tiny_circuit(), witness.clone())
+                .expect("base");
         eprintln!("base compile: {:.2}s", t0.elapsed().as_secs_f64());
         let t1 = Instant::now();
         let donor = base.donor_handle(&witness).expect("donor");
@@ -69,12 +98,8 @@ fn main() {
         .expect("n2");
         eprintln!("N2 compile: {:.2}s", t2.elapsed().as_secs_f64());
         let t3 = Instant::now();
-        let _n1 = pickles::recorded::RecordedCompiledN1::compile(
-            &donor,
-            tiny_circuit(),
-            witness,
-        )
-        .expect("n1");
+        let _n1 = pickles::recorded::RecordedCompiledN1::compile(&donor, tiny_circuit(), witness)
+            .expect("n1");
         eprintln!("N1 compile: {:.2}s", t3.elapsed().as_secs_f64());
         eprintln!("TOTAL: {:.2}s", t0.elapsed().as_secs_f64());
         return;
@@ -107,7 +132,6 @@ fn main() {
         },
     ];
     let t0 = Instant::now();
-    let _compiled =
-        pickles::recorded::RecordedCompiledProgram::compile(branches).expect("compile");
+    let _compiled = pickles::recorded::RecordedCompiledProgram::compile(branches).expect("compile");
     eprintln!("TOTAL program compile: {:.1}s", t0.elapsed().as_secs_f64());
 }
