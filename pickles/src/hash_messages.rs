@@ -103,7 +103,7 @@ pub fn hash_messages_for_next_step_proof_opt<F: PrimeField>(
     for value in app_state {
         prefix.absorb(sys, loc.clone(), std::slice::from_ref(value));
     }
-    let mut sponge = crate::opt_sponge::OptSponge::from_sponge(prefix);
+    let mut sponge = crate::opt_sponge::OptSponge::from_sponge(prefix, sys, loc.clone());
     for ((commitment, challenges), keep) in challenge_polynomial_commitments
         .iter()
         .zip(old_bulletproof_challenges)
@@ -447,6 +447,36 @@ mod tests {
             let (_, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
             assert_eq!(*out, expected, "mask = {mask:?}");
         }
+    }
+
+    #[test]
+    fn optional_step_hash_accepts_full_pending_rate_with_no_proofs() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        let pt = |rng: &mut _| {
+            let p = (Pallas::generator() * Fq::rand(rng)).into_affine();
+            (p.x, p.y)
+        };
+        let vk_comms: Vec<(Fp, Fp)> = (0..PERMUTS + COLUMNS + 6).map(|_| pt(&mut rng)).collect();
+        // 56 VK coordinates + 2 app fields leaves DuplexState at
+        // Absorbed(RATE), exactly the fixed-width N0 program case.
+        let app_state = vec![Fp::rand(&mut rng), Fp::rand(&mut rng)];
+        let expected = hash_messages_for_next_step_proof_ref(
+            Vesta::sponge_params(),
+            &vk_comms,
+            &app_state,
+            &[],
+            &[],
+        );
+        let circ = HashCircuit {
+            vk_comms,
+            app_state,
+            cpcs: vec![],
+            old_chals: vec![],
+            mask: Some(vec![]),
+        };
+        let (mut pi, _) = circ.compile_to_indexes().unwrap();
+        let (_, out) = pi.prove::<BaseSponge, ScalarSponge>((), (), true).unwrap();
+        assert_eq!(*out, expected);
     }
 
     struct WrapHashCircuit {

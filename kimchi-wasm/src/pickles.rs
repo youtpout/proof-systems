@@ -364,6 +364,7 @@ pub fn rust_pickles_compile_recorded_base(
     circuit_json: String,
     witness_decimal: Vec<String>,
 ) -> Result<WasmRecordedCompiledBase, JsError> {
+    console_error_panic_hook::set_once();
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_decimals(witness_decimal, "witness")?;
@@ -379,6 +380,7 @@ pub fn rust_pickles_compile_recorded_base_bytes(
     circuit_json: String,
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedCompiledBase, JsError> {
+    console_error_panic_hook::set_once();
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
         .map_err(|err| JsError::new(&format!("invalid recorded circuit JSON: {err}")))?;
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
@@ -508,6 +510,7 @@ pub fn rust_pickles_export_lagrange_basis(curve: String, domain_log2: u32) -> Ve
 pub fn rust_pickles_compile_recorded_program(
     branches_json: String,
 ) -> Result<js_sys::Array, JsError> {
+    console_error_panic_hook::set_once();
     #[derive(serde::Deserialize)]
     struct Branch {
         circuit: pickles::recorded::RecordedCircuit,
@@ -594,6 +597,7 @@ pub struct WasmRecordedProgram(pickles::recorded::RecordedCompiledProgram);
 pub fn rust_pickles_compile_recorded_program_shared(
     branches_json: String,
 ) -> Result<WasmRecordedProgram, JsError> {
+    console_error_panic_hook::set_once();
     #[derive(serde::Deserialize)]
     struct Branch {
         circuit: pickles::recorded::RecordedCircuit,
@@ -625,6 +629,7 @@ pub fn rust_pickles_debug_program_stage(
     branches_json: String,
     stage: u32,
 ) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
     #[derive(serde::Deserialize)]
     struct Branch {
         circuit: pickles::recorded::RecordedCircuit,
@@ -657,6 +662,7 @@ pub fn rust_pickles_debug_probe_branch(
     branch_index: u32,
     mode: u32,
 ) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
     #[derive(serde::Deserialize)]
     struct Branch {
         circuit: pickles::recorded::RecordedCircuit,
@@ -701,6 +707,7 @@ pub fn rust_pickles_program_prove_n0_bytes(
     branch_index: u32,
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedBaseHandle, JsError> {
+    console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| program.0.prove_n0(branch_index as usize, witness))
         .map_err(|err| JsError::new(&format!("program N0 proving failed: {err:?}")))?;
@@ -714,6 +721,7 @@ pub fn rust_pickles_program_prove_n1_bytes(
     previous: &WasmRecordedBaseHandle,
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedBaseHandle, JsError> {
+    console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {
         program
@@ -732,6 +740,7 @@ pub fn rust_pickles_program_prove_n2_bytes(
     second: &WasmRecordedBaseHandle,
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedBaseHandle, JsError> {
+    console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {
         program

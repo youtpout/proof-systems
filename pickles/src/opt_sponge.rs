@@ -56,20 +56,32 @@ impl<F: PrimeField> OptSponge<F> {
     /// Continues from a plain sponge in absorbing mode. OCaml switches from
     /// `Sponge` to `Opt_sponge` at the first optional accumulator input; the
     /// pending rate position is therefore part of the protocol state.
-    pub fn from_sponge(sponge: crate::sponge::PoseidonSponge<F>) -> Self {
-        let (state, absorbed) = sponge.into_var_state_absorbed();
-        assert!(absorbed < RATE, "invalid absorbed Poseidon rate position");
+    pub fn from_sponge(
+        sponge: crate::sponge::PoseidonSponge<F>,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+    ) -> Self {
+        let (mut state, absorbed) = sponge.into_var_state_absorbed();
+        assert!(absorbed <= RATE, "invalid absorbed Poseidon rate position");
+        // `DuplexState` legitimately leaves `Absorbed(RATE)` as a pending
+        // permutation. OptSponge's boolean position can encode only 0/1, so
+        // materialize that permutation now. If every optional input is
+        // skipped, squeeze must then reuse this already-permuted state.
+        let pending_full_rate = absorbed == RATE;
+        if pending_full_rate {
+            state = permute(sys, loc, state);
+        }
         Self {
             state,
             sponge_state: SpongeState::Absorbing {
-                next_index: if absorbed == 0 {
+                next_index: if absorbed == 0 || pending_full_rate {
                     Boolean::false_()
                 } else {
                     Boolean::true_()
                 },
                 xs: vec![],
             },
-            needs_final_permute_if_empty: true,
+            needs_final_permute_if_empty: !pending_full_rate,
         }
     }
 
