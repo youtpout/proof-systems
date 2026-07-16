@@ -2587,7 +2587,7 @@ impl RecordedCompiledProgram {
             }
         }
 
-        let profile = std::env::var_os("PICKLES_PROFILE").is_some();
+        let profile = std::env::var_os("PICKLES_PROFILE").is_some() || cfg!(target_arch = "wasm32");
         macro_rules! phase {
             ($label:expr, $body:expr) => {{
                 let t = snarky::wasm_instant::Instant::now();
