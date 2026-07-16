@@ -328,8 +328,9 @@ pub fn verify_one<F, C>(
     finalize_params: &crate::finalize::FinalizeParams<'_, F>,
     finalize_evals: &FinalizeEvals<F>,
     stmt: &WrapStatementVars<F>,
-    // accumulator digest
-    sponge_after_index: &crate::sponge::PoseidonSponge<F>,
+    // the wrap VK for the accumulator digest (the index sponge is emitted
+    // here, after finalize — OCaml step_main.ml:45)
+    dlog_index: &crate::composition_types::PlonkVerificationKeyEvals<Point<F>>,
     share_index_sponge: bool,
     app_state: &[FieldVar<F>],
     messages_for_next_step_accumulators: &[Point<F>],
@@ -415,6 +416,12 @@ where
             .to_field_var()
             .assert_equals(sys, Cow::Borrowed(label), &FieldVar::constant(F::one()))?;
     }
+
+    // OCaml (step_main.ml:45): the wrap-VK index sponge is (re)emitted here,
+    // per proof, AFTER finalize — `hash_messages_for_next_step_proof_opt
+    // ~index:d.wrap_key` eagerly absorbs the 56 coordinates.
+    let sponge_after_index =
+        &crate::hash_messages::sponge_after_index(sys, loc.clone(), dlog_index);
 
     // the previous accumulator digest, recomputed in-circuit
     let msgs_step_digest = match proofs_verified_mask {
@@ -897,7 +904,7 @@ mod tests {
                 emul_comm: it.next().unwrap(),
                 endomul_scalar_comm: it.next().unwrap(),
             };
-            let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &vk28);
+
             let app_state = wvec(sys, &self.app_state)?;
             let prev_cpcs = vec![mkpt(sys, self.prev_cpc)?];
             let prev_chals = vec![wvec(sys, &self.prev_chals)?];
@@ -1056,7 +1063,7 @@ mod tests {
                 finalize_params,
                 finalize_evals,
                 stmt,
-                sponge_after_index: after_index,
+                dlog_index: vk28.clone(),
                 share_index_sponge: true,
                 prev_app_state: app_state.clone(),
                 messages_for_next_step_accumulators: prev_cpcs.clone(),

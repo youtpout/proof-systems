@@ -4467,7 +4467,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         emul_comm: it.next().unwrap(),
         endomul_scalar_comm: it.next().unwrap(),
     };
-    let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
     let prev_app_state = wvec(sys, &d.prev_app_state)?;
     let vk = VerificationKeyComm {
         generic: mkpt(sys, d.generic)?,
@@ -4581,7 +4580,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         finalize_params,
         finalize_evals,
         stmt,
-        sponge_after_index: after_index,
+        dlog_index: dlog_index.clone(),
         share_index_sponge: d.share_index_sponge,
         prev_app_state,
         messages_for_next_step_accumulators: d
@@ -4945,7 +4944,7 @@ impl<
             emul_comm: it.next().unwrap(),
             endomul_scalar_comm: it.next().unwrap(),
         };
-        let after_index = crate::hash_messages::sponge_after_index(sys, loc!(), &dlog_index);
+
         let next_vk_pts = d
             .messages_for_next_step_vk_pts
             .iter()
@@ -5051,7 +5050,7 @@ impl<
             finalize_params,
             finalize_evals,
             stmt,
-            sponge_after_index: after_index,
+            dlog_index: dlog_index.clone(),
             share_index_sponge: d.share_index_sponge,
             prev_app_state,
             messages_for_next_step_accumulators: d

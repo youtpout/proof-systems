@@ -39,8 +39,10 @@ pub struct PerProofInput<'a, F: PrimeField> {
     /// The wrap proof's statement (its `messages_for_next_step_proof` digest
     /// is recomputed in-circuit from the four fields below).
     pub stmt: WrapStatementVars<F>,
-    // the previous accumulator hashed into the wrap statement
-    pub sponge_after_index: crate::sponge::PoseidonSponge<F>,
+    // the wrap VK the previous accumulator digest absorbs; the index sponge
+    // itself is (re)emitted inside `verify_one`, after finalize — OCaml's
+    // per-proof `hash_messages_for_next_step_proof_opt` (step_main.ml:45).
+    pub dlog_index: PlonkVerificationKeyEvals<Point<F>>,
     /// Transitional cycles whose statement was produced with a different VK
     /// recompute the verifier digest; stabilized cycles share this sponge.
     pub share_index_sponge: bool,
@@ -110,7 +112,7 @@ where
             &p.finalize_params,
             &p.finalize_evals,
             &p.stmt,
-            &p.sponge_after_index,
+            &p.dlog_index,
             p.share_index_sponge,
             &p.prev_app_state,
             &p.messages_for_next_step_accumulators,
