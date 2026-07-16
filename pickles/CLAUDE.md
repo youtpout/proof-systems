@@ -2777,3 +2777,25 @@ checked) ; forme bool OCaml = Constraint::Boolean ([-0010]) PAS
 assert_r1cs(v,v,v) ([001-0]) ; l'« ordre on-curve différent » vu au LCS
 n'était que la phase de packing (init=0 le prouve).
 
+DÉCOUVERTE MAJEURE (session 3) — **dérive kimchi upstream vs pin o1js** :
+le commit upstream 64129ce4eb (23/02/2026, « kimchi: update endosclmul
+gate ») ajoute une 12e contrainte EndoMul `(xp−xr)(xr−xs)·inv = 1`
+(colonne inv = w2) APRÈS le pin o1js (nightly 2026-02-05). Toute VK/preuve
+jsoo/Mina bake la version 11 contraintes → REVERTÉ sur pickle-rs
+(f8fc66979a). Diagnostic : bisect par sélecteur de gate (zéroïsation) +
+sonde par perturbation (delta sensible à Index(EndoMul), w2, w4, w4n, w7).
+⚠ À CHAQUE rebase/update de kimchi : vérifier qu'aucun gate/linearization
+n'a bougé vs le pin (tests scalars_ml_value_matches_kimchi +
+scalars_ml_offline_repro le détectent).
+
+LINEARIZATION EN CIRCUIT = l'arbre EXACT du scalars.ml généré (module
+pickles/src/scalars_ml.rs, scalars_{tick,tock}.json parsés par
+parse_scalars.py — scratchpad session). Sémantique reproduite : partage
+par let top-level + ré-expansions internes (shadowing), évaluation
+OCaml droite-à-gauche (opérande DROIT d'abord), Field.square (gadget
+Square [00-10], ≠ mul [001-0]), pow = récursion Plonk_checks.pow,
+if_feature → branche else (Features.none), joint_combiner = 0,
+lagrange = (ζⁿ−1)/(ζ−ω^off) avec numérateur partagé et ω^{-4} LAZY.
+Le flux Polish de kimchi calcule la même valeur mais avec une séquence
+de gadgets différente (~+238 muls / −47 squares / −89 reduces).
+
