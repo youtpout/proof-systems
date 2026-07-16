@@ -430,7 +430,11 @@ impl<F: PrimeField> ConstraintSystem<F> {
         });
 
         // check each rows' wiring
+        crate::live_trace::checkpoint("cs verify: begin");
         for (row, gate) in self.gates.iter().enumerate() {
+            if row % 2048 == 0 {
+                crate::live_trace::checkpoint(&format!("cs verify: row {row}"));
+            }
             // check if wires are connected
             for col in 0..PERMUTS {
                 let wire = gate.wires[col];
