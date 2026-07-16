@@ -2695,9 +2695,15 @@ Ordre d'attaque :
    Statement 66 -> 67 ; PI 67==67 mesuré sur les 3 steps ; toutes suites
    vertes. Reste à vérifier le binding PAR SLOT côté wrap (OCaml
    Vector.map2 hash(acc_i, chals_i) == stmt slot i — voir wrap_main.ml:424).
-2. Wrap au domaine naturel (probe fixpoint comme les steps) + répercuter dans
-   les aligns step-side (finalize wrap 2^14) et la side-loaded VK
-   (actual_wrap_domain_size devient N1 pour Add).
-3. init 512->1024 : identifier le préfixe jsoo manquant (EMS 1, CA 3, VBM 1,
-   EM 1, +60 Generic → signature d'un scale/endo dummy).
-4. Deltas fins des steps récursifs (CA/G/P) après 1-3.
+2. [FAIT — commit "shared program wrap at its natural domain"] Wrap
+   16384==16384 ; histos wrap : Poseidon/EndoMul/CompleteAdd/VarBaseMul
+   IDENTIQUES ; restent Generic +367, EndoMulScalar +16, Zero -383.
+3. Deltas steps (mesures fraîches, jsoo->rust) : Poseidon +11 UNIFORME sur
+   les 3 steps (= exactement UNE permutation de plus chez nous — suspecter
+   le hash messages/opt, comparer le nombre de permutes) ; CompleteAdd
+   +34 (update) / +71 (merge) ; Generic +192/+408. VBM/EM/EMS a ±1-3.
+4. init 512->1024 : il MANQUE chez nous EMS 1, CA 3, VBM 1, EM 1, ~59
+   Generic (mini-bloc dummy jsoo du pv0 ?) -> notre init tombe a 2^9 au
+   lieu de 2^10.
+5. wrap : Generic +367 / EMS +16 — probablement nos lagranges hetero
+   one-hot vs la forme jsoo (lagrange_with_correction), a diff-er par zone.
