@@ -4706,10 +4706,15 @@ impl<
             proofs.push(proof);
         }
         let mk_next_point = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-            Ok(Point::new(
+            // OCaml witnesses the wrap key through `Inner_curve.typ`, whose
+            // `check` asserts y² = x³ + 5 (2 rows per point — the 56 Generic
+            // rows before the index sponge in every jsoo step circuit).
+            let point = Point::new(
                 sys.compute(loc!(), move |_| p.0)?,
                 sys.compute(loc!(), move |_| p.1)?,
-            ))
+            );
+            point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+            Ok(point)
         };
         let next_vk_pts = messages_for_next_step_vk_pts
             .iter()
@@ -4923,7 +4928,14 @@ impl<
         let next_vk_pts = d
             .messages_for_next_step_vk_pts
             .iter()
-            .map(|&p| mkpt(sys, p))
+            .map(|&p| {
+                // OCaml witnesses the wrap key through `Inner_curve.typ`
+                // (on-curve check, 2 rows per point) — see mk_next_point in
+                // the width-2 circuit.
+                let point = mkpt(sys, p)?;
+                point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+                Ok(point)
+            })
             .collect::<SnarkyResult<Vec<_>>>()?;
         let mut next_it = next_vk_pts.into_iter();
         let next_dlog_index = PlonkVerificationKeyEvals {
