@@ -2890,7 +2890,7 @@ impl RecordedCompiledProgram {
                 )
             })
             .collect();
-        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        prepared_wrap.domain_log2 = 0; // natural wrap domain (jsoo Wrap_domains fixpoint)
         let structure_wrap = phase!(
             "wrap structure compile",
             crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
@@ -3175,7 +3175,7 @@ impl RecordedCompiledProgram {
         >(&template, &bootstrap_step);
         prepared_wrap.data.which_branch = 0;
         prepared_wrap.data.branches = wrap_branches.clone();
-        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        prepared_wrap.domain_log2 = 0; // natural wrap domain (jsoo Wrap_domains fixpoint)
         let first_wrap_indexes = phase!(
             "wrap compile #1",
             crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
@@ -3499,7 +3499,7 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
-        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        prepared_wrap.domain_log2 = 0; // natural wrap domain (jsoo Wrap_domains fixpoint)
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
             &self
@@ -3784,7 +3784,7 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
         prove_stage!("wrap prepared");
-        prepared_wrap.domain_log2 = crate::common::TOCK_ROUNDS as u32;
+        prepared_wrap.domain_log2 = 0; // natural wrap domain (jsoo Wrap_domains fixpoint)
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
             &self
