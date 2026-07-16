@@ -55,8 +55,20 @@ pub const fn width1_step_statement_len(wrap_rounds: usize) -> usize {
     step_statement_len(1, wrap_rounds)
 }
 
+/// Index of the `messages_for_next_step` digest inside a flattened step
+/// statement of the given total length: `[per_proof × slots | step digest |
+/// wrap digests × slots]` with `per_proof = 17 + TOCK_ROUNDS`.
+pub const fn step_statement_digest_slot(statement_len: usize) -> usize {
+    let per_proof = 17 + crate::common::TOCK_ROUNDS;
+    let slots = (statement_len - 1) / (per_proof + 1);
+    slots * per_proof
+}
+
 pub const fn step_statement_len(proofs: usize, wrap_rounds: usize) -> usize {
-    proofs * (17 + wrap_rounds) + 2
+    // OCaml `Step.Statement.spec`: Vector(per_proof, n) + B Digest
+    // (messages_for_next_step) + Vector(B Digest, n) — ONE
+    // messages_for_next_wrap digest PER previous proof.
+    proofs * (17 + wrap_rounds) + 1 + proofs
 }
 
 pub fn embed_fq_to_fp(x: Fq) -> Fp {
@@ -436,6 +448,32 @@ pub fn align_program_recursive_wrap_finalize_index<
     prepared
 }
 
+/// The canonical `messages_for_next_wrap` digest of a DUMMY program slot:
+/// what the shared wrap recomputes for an inactive slot
+/// (`hash(Wrap_hack padding, dummy challenges, dummy sg)`), embedded into the
+/// step statement's Fp. One protocol constant, shared by the statement
+/// builders and the wrap binding.
+pub fn program_dummy_wrap_messages_digest() -> Fp {
+    static DIGEST: std::sync::OnceLock<Fp> = std::sync::OnceLock::new();
+    *DIGEST.get_or_init(|| {
+        let dummy_wrap_raw_chals: Vec<Vec<Fq>> = vec![
+            crate::dummy::pasta_ipa_wrap_and_step()
+                .0
+                .prechallenges
+                .clone();
+            crate::common::MAX_PROOFS_VERIFIED
+        ];
+        let sg = crate::dummy::pasta_dummy_step_sg();
+        let digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
+            Pallas::sponge_params(),
+            &dummy_wrap_raw_chals,
+            &[],
+            (sg.x, sg.y),
+        );
+        embed_fq_to_fp(digest)
+    })
+}
+
 pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_LEN: usize>(
     witness: &crate::step_witness::StepWitness,
     xi_raw: Fq,
@@ -447,7 +485,7 @@ pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_
     let statement = build_step_statement::<WRAP_ROUNDS>(
         &[(witness, xi_raw, should_finalize)],
         messages_for_next_step_digest,
-        messages_for_next_wrap_digest,
+        &[messages_for_next_wrap_digest],
     );
     statement.try_into().unwrap_or_else(|_| unreachable!())
 }
@@ -455,8 +493,13 @@ pub fn build_width1_step_statement<const WRAP_ROUNDS: usize, const PUBLIC_INPUT_
 pub fn build_step_statement<const WRAP_ROUNDS: usize>(
     proofs: &[(&crate::step_witness::StepWitness, Fq, bool)],
     messages_for_next_step_digest: Fp,
-    messages_for_next_wrap_digest: Fp,
+    messages_for_next_wrap_digests: &[Fp],
 ) -> Vec<Fp> {
+    assert_eq!(
+        messages_for_next_wrap_digests.len(),
+        proofs.len(),
+        "one messages_for_next_wrap digest per previous proof"
+    );
     let mut statement = Vec::with_capacity(step_statement_len(proofs.len(), WRAP_ROUNDS));
     for &(witness, xi_raw, should_finalize) in proofs {
         assert_eq!(witness.bulletproof_prechallenges.len(), WRAP_ROUNDS);
@@ -479,7 +522,7 @@ pub fn build_step_statement<const WRAP_ROUNDS: usize>(
         });
     }
     statement.push(messages_for_next_step_digest);
-    statement.push(messages_for_next_wrap_digest);
+    statement.extend_from_slice(messages_for_next_wrap_digests);
     statement
 }
 
@@ -1220,7 +1263,7 @@ impl<
             &[self.first.step.verified_wrap_accumulator],
             &[self.first.step.finalized_step_challenges.clone()],
         );
-        if self.first.step.statement[SS - 2] != digest {
+        if self.first.step.statement[step_statement_digest_slot(SS)] != digest {
             return Err(DirectRecursiveBackendError::PublicDigestMismatch);
         }
         Ok(())
@@ -1243,7 +1286,7 @@ impl<
             &[cycle.step.verified_wrap_accumulator],
             &[cycle.step.finalized_step_challenges.clone()],
         );
-        if cycle.step.statement[STABLE_STEP_STMT_LEN - 2] != digest {
+        if cycle.step.statement[step_statement_digest_slot(STABLE_STEP_STMT_LEN)] != digest {
             return Err(DirectRecursiveBackendError::PublicDigestMismatch);
         }
         Ok(())
@@ -1633,7 +1676,7 @@ impl<
             &proof.accumulators,
             &proof.challenges,
         );
-        if proof.step.statement[SS - 2] != digest {
+        if proof.step.statement[step_statement_digest_slot(SS)] != digest {
             return Err(DirectRecursiveBackendError::PublicDigestMismatch);
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1688,7 +1731,7 @@ impl<
             &[proof.cycle.step.verified_wrap_accumulator],
             &[proof.cycle.step.finalized_step_challenges.clone()],
         );
-        if proof.cycle.step.statement[SS - 2] != digest {
+        if proof.cycle.step.statement[step_statement_digest_slot(SS)] != digest {
             return Err(DirectRecursiveBackendError::PublicDigestMismatch);
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2186,10 +2229,6 @@ pub fn prepare_recursive_step_width2<
         first.messages_for_next_step_vk_pts,
         second.messages_for_next_step_vk_pts
     );
-    assert_eq!(
-        first.statement[WIDTH1_INPUT_LEN - 1],
-        second.statement[WIDTH1_INPUT_LEN - 1]
-    );
 
     let cpcs = [
         first.verified_wrap_accumulator,
@@ -2227,7 +2266,9 @@ pub fn prepare_recursive_step_width2<
     statement.extend_from_slice(&first.statement[..per_proof]);
     statement.extend_from_slice(&second.statement[..per_proof]);
     statement.push(combined_digest);
+    // One messages_for_next_wrap digest per slot (OCaml Step.Statement.spec).
     statement.push(first.statement[WIDTH1_INPUT_LEN - 1]);
+    statement.push(second.statement[WIDTH1_INPUT_LEN - 1]);
 
     PreparedRecursiveStepWidth2 {
         proofs: [first.data, second.data],
@@ -2272,6 +2313,8 @@ pub fn prepare_recursive_step_n1<
     statement.extend(dummy_statement);
     statement.extend_from_slice(&real.statement[..per_proof]);
     statement.push(combined_digest);
+    // Slot order: dummy first, real second (N1 mask [F, T]).
+    statement.push(program_dummy_wrap_messages_digest());
     statement.push(real.statement[WIDTH1_INPUT_LEN - 1]);
 
     let step_srs = SRS::<Vesta>::create(1 << crate::common::TICK_ROUNDS);
@@ -2333,7 +2376,8 @@ pub fn prepare_recursive_step_n0<
     statement.extend_from_slice(&dummy_statement);
     statement.extend_from_slice(&dummy_statement);
     statement.push(combined_digest);
-    statement.push(template.statement[WIDTH1_INPUT_LEN - 1]);
+    statement.push(program_dummy_wrap_messages_digest());
+    statement.push(program_dummy_wrap_messages_digest());
 
     let step_srs = crate::common::tick_srs(1 << crate::common::TICK_ROUNDS);
     let dummy_step_sg = crate::dummy::compute_sg(&step_srs, &dummy_challenges);
@@ -2924,7 +2968,13 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         &branch,
         embed_fp_to_fq(ww.sponge_digest),
         msgs_wrap_digest,
-        embed_fp_to_fq(step_statement_values[step_statement_values.len() - 2]),
+        // The messages_for_next_step digest sits before the per-slot wrap
+        // digests: [per_proof × slots | step digest | wrap digests × slots],
+        // where `slots` is the PHYSICAL width (fixed-width programs pad to
+        // two slots regardless of the branch's proofs_verified).
+        embed_fp_to_fq(
+            step_statement_values[step_statement_digest_slot(step_statement_values.len())],
+        ),
     );
     assert_eq!(statement.len(), WRAP_STMT_LEN);
     let mut stable_next_wrap_challenges = next_wrap_dummy_raw_challenges;
@@ -4692,7 +4742,7 @@ impl<
             <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
             255,
         )?;
-        digest.assert_equals(sys, loc!(), &statement[PUBLIC_INPUT_LEN - 2])
+        digest.assert_equals(sys, loc!(), &statement[2 * (17 + WRAP_ROUNDS)])
     }
 }
 
@@ -5090,13 +5140,16 @@ mod tests {
                 (&witness, Fq::from(16u64), true),
             ],
             Fp::from(17u64),
-            Fp::from(18u64),
+            &[Fp::from(18u64), Fp::from(19u64)],
         );
         assert_eq!(width2.len(), step_statement_len(2, WRAP_ROUNDS));
         assert_eq!(&width2[..19], &statement[..19]);
         assert_eq!(width2[19], Fp::zero());
         assert_eq!(&width2[20..40], &statement[..20]);
-        assert_eq!(&width2[40..], &statement[20..]);
+        // step digest, then ONE wrap digest per slot
+        assert_eq!(width2[40], Fp::from(17u64));
+        assert_eq!(width2[41], Fp::from(18u64));
+        assert_eq!(width2[42], Fp::from(19u64));
     }
 
     #[test]
