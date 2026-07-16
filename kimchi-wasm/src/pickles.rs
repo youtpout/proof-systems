@@ -446,11 +446,7 @@ pub fn rust_pickles_recorded_base_vk_envelope(
 /// cache files and passes them in. Returns false on any mismatch (the basis
 /// is then recomputed on demand — never trusted blindly for size).
 #[wasm_bindgen]
-pub fn rust_pickles_seed_lagrange_basis(
-    curve: String,
-    domain_log2: u32,
-    bytes: &[u8],
-) -> bool {
+pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: &[u8]) -> bool {
     let domain_size = 1usize << domain_log2;
     match curve.as_str() {
         "vesta" => {
@@ -576,11 +572,161 @@ pub fn rust_pickles_compile_recorded_program(
             entry.map_err(|err| JsError::new(&format!("program compile failed: {err}")))?;
         let triple = js_sys::Array::new();
         triple.push(&JsValue::from(WasmRecordedCompiledBase(base)));
-        triple.push(&n1.map_or(JsValue::NULL, |n1| JsValue::from(WasmRecordedCompiledN1(n1))));
-        triple.push(&n2.map_or(JsValue::NULL, |n2| JsValue::from(WasmRecordedCompiledN2(n2))));
+        triple.push(&n1.map_or(JsValue::NULL, |n1| {
+            JsValue::from(WasmRecordedCompiledN1(n1))
+        }));
+        triple.push(&n2.map_or(JsValue::NULL, |n2| {
+            JsValue::from(WasmRecordedCompiledN2(n2))
+        }));
         out.push(&triple);
     }
     Ok(out)
+}
+
+/// One compiled shared-wrap program (OCaml `Pickles.compile` shape): every
+/// branch shares a single wrap index and canonical verification key.
+#[wasm_bindgen]
+pub struct WasmRecordedProgram(pickles::recorded::RecordedCompiledProgram);
+
+/// Compiles a recorded program with ONE shared wrap circuit. Same input as
+/// [`rust_pickles_compile_recorded_program`].
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_program_shared(
+    branches_json: String,
+) -> Result<WasmRecordedProgram, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(&branches_json)
+        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = parse_fp_decimals(branch.witness, "witness")?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit: branch.circuit,
+            witness,
+            proofs_verified: branch.proofs_verified,
+        });
+    }
+    let program =
+        crate::rayon::run_in_pool(|| pickles::recorded::RecordedCompiledProgram::compile(parsed))
+            .map_err(|err| JsError::new(&format!("program compile failed: {err:?}")))?;
+    Ok(WasmRecordedProgram(program))
+}
+
+/// `{"base64": .., "hash": ..}` — the program's single canonical Mina
+/// side-loaded verification key.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_program_vk_envelope(
+    program: &WasmRecordedProgram,
+) -> Result<String, JsError> {
+    let (base64, hash) = program
+        .0
+        .verification_key_envelope()
+        .map_err(|err| JsError::new(&format!("program VK envelope failed: {err:?}")))?;
+    serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
+        .map_err(|err| JsError::new(&format!("VK envelope encoding failed: {err}")))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_program_prove_n0_bytes(
+    program: &mut WasmRecordedProgram,
+    branch_index: u32,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| program.0.prove_n0(branch_index as usize, witness))
+        .map_err(|err| JsError::new(&format!("program N0 proving failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_program_prove_n1_bytes(
+    program: &mut WasmRecordedProgram,
+    branch_index: u32,
+    previous: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| {
+        program
+            .0
+            .prove_n1(branch_index as usize, &previous.0, witness)
+    })
+    .map_err(|err| JsError::new(&format!("program N1 proving failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+#[wasm_bindgen]
+pub fn rust_pickles_program_prove_n2_bytes(
+    program: &mut WasmRecordedProgram,
+    branch_index: u32,
+    first: &WasmRecordedBaseHandle,
+    second: &WasmRecordedBaseHandle,
+    witness_bytes: &[u8],
+) -> Result<WasmRecordedBaseHandle, JsError> {
+    let witness = parse_fp_bytes(witness_bytes, "witness")?;
+    let handle = crate::rayon::run_in_pool(|| {
+        program
+            .0
+            .prove_n2(branch_index as usize, [&first.0, &second.0], witness)
+    })
+    .map_err(|err| JsError::new(&format!("program N2 proving failed: {err:?}")))?;
+    Ok(WasmRecordedBaseHandle(handle))
+}
+
+/// The N1-shaped recursive verification envelope of a program proof handle.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_program_n1_envelope(
+    handle: &WasmRecordedBaseHandle,
+) -> Result<String, JsError> {
+    let (accumulators, challenges, dlog_plonk_index) = handle
+        .0
+        .program_verification_messages()
+        .ok_or_else(|| JsError::new("proof handle is not a program proof"))?;
+    let proved = handle.0.to_recorded_proof();
+    let accumulator = accumulators
+        .first()
+        .ok_or_else(|| JsError::new("program proof carries no accumulator"))?;
+    let old = challenges
+        .first()
+        .ok_or_else(|| JsError::new("program proof carries no challenges"))?;
+    recorded_n1_envelope(
+        &proved.app_state,
+        &proved.proof,
+        accumulator,
+        old,
+        &dlog_plonk_index,
+        None,
+    )
+}
+
+/// The N2-shaped recursive verification envelope of a program proof handle.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_program_n2_envelope(
+    handle: &WasmRecordedBaseHandle,
+) -> Result<String, JsError> {
+    let (accumulators, challenges, dlog_plonk_index) = handle
+        .0
+        .program_verification_messages()
+        .ok_or_else(|| JsError::new("proof handle is not a program proof"))?;
+    if accumulators.len() != 2 || challenges.len() != 2 {
+        return Err(JsError::new(
+            "program proof does not carry two accumulators",
+        ));
+    }
+    let proved = handle.0.to_recorded_proof();
+    recorded_n2_envelope(pickles::recorded::RecordedN2Proof {
+        app_state: proved.app_state,
+        proof: proved.proof,
+        challenge_polynomial_commitments: [accumulators[0], accumulators[1]],
+        old_bulletproof_challenges: [challenges[0].clone(), challenges[1].clone()],
+        dlog_plonk_index,
+    })
 }
 
 #[wasm_bindgen]
