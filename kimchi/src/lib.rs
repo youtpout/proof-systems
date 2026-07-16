@@ -69,16 +69,33 @@ macro_rules! loc {
 /// prover phases in real time. No-op unless a hook is installed.
 pub mod live_trace {
     static HOOK: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
+    /// Recorded checkpoints, readable from another thread over the shared
+    /// wasm memory while the main thread is blocked inside a call.
+    static RECORD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
     pub fn set_hook(hook: fn(&str)) {
         *HOOK.lock().unwrap() = Some(hook);
     }
 
     pub fn checkpoint(name: &str) {
+        if let Ok(mut record) = RECORD.lock() {
+            record.push(name.to_string());
+            if record.len() > 512 {
+                record.remove(0);
+            }
+        }
         if let Ok(hook) = HOOK.lock() {
             if let Some(hook) = *hook {
                 hook(name);
             }
         }
+    }
+
+    /// Drains the recorded checkpoints (tracer-thread polling).
+    pub fn take_recorded() -> Vec<String> {
+        RECORD
+            .lock()
+            .map(|mut record| std::mem::take(&mut *record))
+            .unwrap_or_default()
     }
 }

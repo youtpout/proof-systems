@@ -586,6 +586,13 @@ pub fn rust_pickles_compile_recorded_program(
     Ok(out)
 }
 
+/// Drains the live-trace checkpoints — called by the tracer worker over the
+/// shared memory while the main thread is blocked.
+#[wasm_bindgen]
+pub fn rust_pickles_debug_take_trace() -> String {
+    kimchi::live_trace::take_recorded().join("\n")
+}
+
 fn live_trace_to_console(message: &str) {
     crate::console_log(message);
 }
