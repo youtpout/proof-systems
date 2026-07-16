@@ -3725,6 +3725,16 @@ impl RecordedCompiledProgram {
                 stage_timings.join(" | ")
             )));
         }
+        let prepared = if debug_stage == Some(31) {
+            // All-dummy recursion mask: same circuit, same stored index, no
+            // kept previous challenge — isolates kimchi's kept-challenge
+            // path (the proof itself is meaningless).
+            let mut prepared = prepared;
+            prepared.dummy_slots = [true, true];
+            prepared
+        } else {
+            prepared
+        };
         let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
             prepared,
             Some(main),
@@ -3732,6 +3742,12 @@ impl RecordedCompiledProgram {
         );
         self.step_indexes[branch_index] = Some(indexes);
         prove_stage!("step proved");
+        if debug_stage == Some(31) {
+            return Err(RecordedProveError::Program(format!(
+                "DEBUG-STAGE 31 OK — {}",
+                stage_timings.join(" | ")
+            )));
+        }
 
         let real_unfinalized = previous_cycles
             .iter()
