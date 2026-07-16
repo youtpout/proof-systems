@@ -837,6 +837,37 @@ pub fn rust_pickles_recorded_step_circuit_json(circuit_json: String) -> Result<S
         .map_err(|err| Error::from_reason(format!("circuit encoding failed: {err}")))
 }
 
+/// Compiles a shared-wrap program and dumps every branch step circuit plus
+/// the shared wrap circuit (`{ steps: [{public_input_size, gates}], wrap }`)
+/// — the Rust half of the multi-branch gates parity diff.
+#[napi(js_name = "rust_pickles_recorded_program_circuits_json")]
+pub fn rust_pickles_recorded_program_circuits_json(branches_json: String) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(&branches_json)
+        .map_err(|err| Error::from_reason(format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = branch
+            .witness
+            .iter()
+            .map(|value| parse_fp_decimal(value, "witness"))
+            .collect::<Result<Vec<_>>>()?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit: branch.circuit,
+            witness,
+            proofs_verified: branch.proofs_verified,
+        });
+    }
+    pickles::recorded::dump_recorded_program_circuits(parsed)
+        .map_err(|err| Error::from_reason(format!("program dump failed: {err:?}")))
+}
+
 /// Serializes the wrap circuit of a recorded base-case program in the same
 /// `{ public_input_size, gates }` JSON schema as the jsoo wasm's
 /// `fq_prover_to_json` — the Rust half of the wrap-circuit parity diff.

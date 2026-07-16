@@ -4163,6 +4163,52 @@ macro_rules! wrap_dump_at_rounds {
 /// Serializes the full wrap circuit of a recorded base-case program as
 /// `{ public_input_size, gates }` JSON (Fq gates) — the Rust half of the
 /// wrap-circuit parity diff against jsoo's `fq_prover_to_json`.
+/// Compiles a shared-wrap program and dumps every branch step circuit and
+/// the shared wrap circuit in the `{ public_input_size, gates }` JSON schema
+/// used by the jsoo parity harnesses.
+#[doc(hidden)]
+pub fn dump_recorded_program_circuits(
+    branches: Vec<RecordedProgramBranch>,
+) -> Result<String, RecordedProveError> {
+    #[derive(serde::Serialize)]
+    struct StepCircuitDump {
+        public_input_size: usize,
+        gates: Vec<kimchi::circuits::gate::CircuitGate<Fp>>,
+    }
+    #[derive(serde::Serialize)]
+    struct WrapCircuitDump {
+        public_input_size: usize,
+        gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+    }
+    #[derive(serde::Serialize)]
+    struct ProgramDump {
+        steps: Vec<StepCircuitDump>,
+        wrap: WrapCircuitDump,
+    }
+    let program = RecordedCompiledProgram::compile(branches)?;
+    let steps = program
+        .step_indexes
+        .iter()
+        .map(|indexes| {
+            let prover = &indexes.as_ref().expect("compiled branch step").0;
+            StepCircuitDump {
+                public_input_size: prover.index.cs.public,
+                gates: prover.index.cs.gates.to_vec(),
+            }
+        })
+        .collect();
+    let wrap_prover = &program.wrap_indexes.as_ref().expect("compiled wrap").0;
+    let dump = ProgramDump {
+        steps,
+        wrap: WrapCircuitDump {
+            public_input_size: wrap_prover.index.cs.public,
+            gates: wrap_prover.index.cs.gates.to_vec(),
+        },
+    };
+    serde_json::to_string(&dump)
+        .map_err(|err| RecordedProveError::Program(format!("dump encoding failed: {err}")))
+}
+
 pub fn dump_recorded_wrap_circuit(
     circuit: RecordedCircuit,
     witness: Vec<Fp>,
