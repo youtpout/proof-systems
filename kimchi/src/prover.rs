@@ -234,6 +234,7 @@ where
         };
 
         internal_tracing::checkpoint!(internal_traces; create_recursive);
+        crate::live_trace::checkpoint("create_recursive");
         let d1_size = index.cs.domain.d1.size();
 
         let (_, endo_r) = G::endos();
@@ -284,6 +285,7 @@ where
         //~ 1. Pad the witness columns with Zero gates to make them the same length as the domain.
         //~    Then, randomize the last `zk_rows` of each columns.
         internal_tracing::checkpoint!(internal_traces; pad_witness);
+        crate::live_trace::checkpoint("pad_witness");
         for w in &mut witness {
             if w.len() != length_witness {
                 return Err(ProverError::WitnessCsInconsistent);
@@ -300,6 +302,7 @@ where
 
         //~ 1. Setup the Fq-Sponge.
         internal_tracing::checkpoint!(internal_traces; set_up_fq_sponge);
+        crate::live_trace::checkpoint("set_up_fq_sponge");
         let mut fq_sponge = EFqSponge::new(G::other_curve_sponge_params());
 
         //~ 1. Absorb the digest of the VerifierIndex.
@@ -356,6 +359,7 @@ where
         //~    Note: since the witness is in evaluation form,
         //~    we can use the `commit_evaluation` optimization.
         internal_tracing::checkpoint!(internal_traces; commit_to_witness_columns);
+        crate::live_trace::checkpoint("commit_to_witness_columns");
         // generate blinders if not given externally
         let blinders_final: Vec<PolyComm<G::ScalarField>> = match blinders {
             None => (0..COLUMNS)
@@ -700,6 +704,7 @@ where
 
         //~ 1. Compute the permutation aggregation polynomial $z$.
         internal_tracing::checkpoint!(internal_traces; z_permutation_aggregation_polynomial);
+        crate::live_trace::checkpoint("z_permutation_aggregation_polynomial");
         let z_poly = index.perm_aggreg(&witness, &beta, &gamma, rng)?;
 
         //~ 1. Commit (hiding) to the permutation aggregation polynomial $z$.
@@ -742,8 +747,10 @@ where
         };
 
         internal_tracing::checkpoint!(internal_traces; eval_witness_polynomials_over_domains);
+        crate::live_trace::checkpoint("eval_witness_polynomials_over_domains");
         let lagrange = index.cs.evaluate(&witness_poly, &z_poly);
         internal_tracing::checkpoint!(internal_traces; compute_index_evals);
+        crate::live_trace::checkpoint("compute_index_evals");
         let env = {
             let mut index_evals = HashMap::new();
             use GateType::*;
@@ -814,6 +821,7 @@ where
         let mut cache = expr::Cache::default();
 
         internal_tracing::checkpoint!(internal_traces; compute_quotient_poly);
+        crate::live_trace::checkpoint("compute_quotient_poly");
 
         let quotient_poly = {
             // generic
@@ -1030,9 +1038,11 @@ where
         //~    TODO: do we want to specify more on that? It seems unnecessary except for the t polynomial (or if for some reason someone sets that to a low value)
 
         internal_tracing::checkpoint!(internal_traces; lagrange_basis_eval_zeta_poly);
+        crate::live_trace::checkpoint("lagrange_basis_eval_zeta_poly");
         let zeta_evals =
             LagrangeBasisEvaluations::new(index.max_poly_size, index.cs.domain.d1, zeta);
         internal_tracing::checkpoint!(internal_traces; lagrange_basis_eval_zeta_omega_poly);
+        crate::live_trace::checkpoint("lagrange_basis_eval_zeta_omega_poly");
         let zeta_omega_evals =
             LagrangeBasisEvaluations::new(index.max_poly_size, index.cs.domain.d1, zeta_omega);
 
@@ -1049,6 +1059,7 @@ where
             };
 
         internal_tracing::checkpoint!(internal_traces; chunk_eval_zeta_omega_poly);
+        crate::live_trace::checkpoint("chunk_eval_zeta_omega_poly");
         let chunked_evals = ProofEvaluations::<PointEvaluations<Vec<G::ScalarField>>> {
             public: {
                 let chunked = public_poly.to_chunked_polynomial(num_chunks, index.max_poly_size);
@@ -1168,6 +1179,7 @@ where
         //~ 1. Compute the ft polynomial.
         //~    This is to implement [Maller's optimization](https://o1-labs.github.io/proof-systems/kimchi/maller_15.html).
         internal_tracing::checkpoint!(internal_traces; compute_ft_poly);
+        crate::live_trace::checkpoint("compute_ft_poly");
         let ft: DensePolynomial<G::ScalarField> = {
             let f_chunked = {
                 // TODO: compute the linearization polynomial in evaluation form so
@@ -1217,6 +1229,7 @@ where
 
         //~ 1. Evaluate the ft polynomial at $\zeta\omega$ only.
         internal_tracing::checkpoint!(internal_traces; ft_eval_zeta_omega);
+        crate::live_trace::checkpoint("ft_eval_zeta_omega");
         let ft_eval1 = ft.evaluate(&zeta_omega);
 
         //~ 1. Setup the Fr-Sponge
@@ -1244,6 +1257,7 @@ where
 
         //~ 1. Compute evaluations for the previous recursion challenges.
         internal_tracing::checkpoint!(internal_traces; build_polynomials);
+        crate::live_trace::checkpoint("build_polynomials");
         let polys = prev_challenges
             .iter()
             .zip(prev_challenges_mask)
@@ -1498,6 +1512,7 @@ where
 
         //~ 1. Create an aggregated evaluation proof for all of these polynomials at $\zeta$ and $\zeta\omega$ using $u$ and $v$.
         internal_tracing::checkpoint!(internal_traces; create_aggregated_ipa);
+        crate::live_trace::checkpoint("create_aggregated_ipa");
         let proof = OpenProof::open(
             &*index.srs,
             group_map,
@@ -1532,6 +1547,7 @@ where
         };
 
         internal_tracing::checkpoint!(internal_traces; create_recursive_done);
+        crate::live_trace::checkpoint("create_recursive_done");
 
         Ok(proof)
     }

@@ -286,6 +286,7 @@ where
         let public_output =
             Circuit::PublicOutput::value_of_field_elements(public_output_values, aux);
 
+        kimchi::live_trace::checkpoint("snarky: witness generated");
         // verify the witness
         // TODO: return error instead of panicking
         if debug {
@@ -323,6 +324,7 @@ where
             }
         }
 
+        kimchi::live_trace::checkpoint("snarky: witness verified");
         // produce a proof
         let group_map = <Circuit::Curve as CommitmentCurve>::Map::setup();
 

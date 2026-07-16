@@ -63,3 +63,22 @@ macro_rules! loc {
         ::alloc::borrow::Cow::Owned(format!("{}:{}", file!(), line!()))
     }};
 }
+
+/// Minimal live checkpoint hook: wasm has no stderr and a hung pool never
+/// returns, so hosts (kimchi-wasm) can install a console-backed hook to see
+/// prover phases in real time. No-op unless a hook is installed.
+pub mod live_trace {
+    static HOOK: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
+
+    pub fn set_hook(hook: fn(&str)) {
+        *HOOK.lock().unwrap() = Some(hook);
+    }
+
+    pub fn checkpoint(name: &str) {
+        if let Ok(hook) = HOOK.lock() {
+            if let Some(hook) = *hook {
+                hook(name);
+            }
+        }
+    }
+}

@@ -2663,6 +2663,23 @@ pub fn debug_probe_branch(
     }
 }
 
+/// Live trace hook (wasm: console.log via kimchi-wasm) — lets the host see
+/// checkpoints from pool workers in real time, since wasm has no stderr and
+/// a hung pool never returns.
+static TRACE_HOOK: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
+
+pub fn set_trace_hook(hook: fn(&str)) {
+    *TRACE_HOOK.lock().unwrap() = Some(hook);
+}
+
+pub(crate) fn trace(message: &str) {
+    if let Ok(hook) = TRACE_HOOK.lock() {
+        if let Some(hook) = *hook {
+            hook(message);
+        }
+    }
+}
+
 /// Probe sub-step timings, readable through the debug-stage report (wasm has
 /// no stderr).
 static PROBE_TIMINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());

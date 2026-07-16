@@ -586,6 +586,10 @@ pub fn rust_pickles_compile_recorded_program(
     Ok(out)
 }
 
+fn live_trace_to_console(message: &str) {
+    crate::console_log(message);
+}
+
 /// One compiled shared-wrap program (OCaml `Pickles.compile` shape): every
 /// branch shares a single wrap index and canonical verification key.
 #[wasm_bindgen]
@@ -722,6 +726,7 @@ pub fn rust_pickles_program_prove_n1_bytes(
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
+    kimchi::live_trace::set_hook(live_trace_to_console);
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {
         program
