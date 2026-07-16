@@ -83,7 +83,7 @@ pub struct StepCircuit<A: StepApp> {
 /// every rule so that the optional EC selector columns are always present in
 /// the proving key. VK parity requires the Rust step circuit to emit the same
 /// selector shape before the user circuit.
-fn o1js_dummy_constraints(sys: &mut RunState<Fp>) -> SnarkyResult<()> {
+pub(crate) fn o1js_dummy_constraints(sys: &mut RunState<Fp>) -> SnarkyResult<()> {
     use ark_ec::{AffineRepr, CurveGroup};
     use snarky::gadgets::curve::Point;
 

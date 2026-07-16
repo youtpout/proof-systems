@@ -4652,6 +4652,9 @@ impl<
     ) -> SnarkyResult<()> {
         assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
         assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+        // o1js prepends `dummy_constraints ()` to every rule's main
+        // (pickles_bindings.ml) so each step circuit uses every EC gate type.
+        crate::api::o1js_dummy_constraints(sys)?;
         let per_proof = 17 + WRAP_ROUNDS;
         let mds: Vec<Vec<Fp>> = Vesta::sponge_params()
             .mds
@@ -4778,6 +4781,9 @@ impl<
 
         assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(WIDTH, WRAP_ROUNDS));
         assert!((1..=crate::common::MAX_PROOFS_VERIFIED).contains(&WIDTH));
+        // o1js prepends `dummy_constraints ()` to every rule's main
+        // (pickles_bindings.ml) so each step circuit uses every EC gate type.
+        crate::api::o1js_dummy_constraints(sys)?;
         let (data, app) = private
             .map(|private| (&private.d, &private.app))
             .unwrap_or((&self.d, &self.app));
