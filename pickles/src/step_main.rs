@@ -98,10 +98,7 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
-    use crate::hash_messages::{
-        hash_messages_for_next_step_proof, hash_messages_for_next_step_proof_opt,
-        sponge_after_index,
-    };
+    use crate::hash_messages::{hash_messages_for_next_step_proof, sponge_after_index};
 
     // verify every previous proof
     let mut chalss: Vec<Vec<FieldVar<F>>> = Vec::with_capacity(proofs.len());
@@ -171,24 +168,12 @@ where
         .iter()
         .map(|p| p.next_step_accumulator.clone())
         .collect();
-    if proofs
-        .iter()
-        .all(|proof| proof.proofs_verified_mask.is_some())
-    {
-        let current_proof_mask: Vec<Boolean<F>> = proofs
-            .iter()
-            .map(|proof| proof.must_verify.clone())
-            .collect();
-        hash_messages_for_next_step_proof_opt(
-            sys,
-            loc,
-            &after_index,
-            app_state,
-            &cpcs,
-            &chalss,
-            &current_proof_mask,
-        )
-    } else {
-        hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
-    }
+    // OCaml `step_main` (step_main.ml:549) computes the NEW accumulator
+    // digest with the PLAIN `hash_messages_for_next_step_proof` —
+    // unconditional absorbs, no `Opt_sponge`. The `_opt` variant is only
+    // used for the OLD digests inside `Step_verifier.verify`. The prover
+    // computes the same digest out of circuit with the same unconditional
+    // absorbs (`hash_messages_for_next_step_proof_ref`), dummy accumulators
+    // included, so masking here would diverge from both.
+    hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
 }
