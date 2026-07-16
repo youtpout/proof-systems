@@ -369,3 +369,72 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod gadget_dump_tests {
+    use super::*;
+    use mina_curves::pasta::{Fp, Vesta};
+    use poly_commitment::ipa::OpeningProof;
+    use snarky::{api::SnarkyCircuit, loc, Boolean, RunState, SnarkyResult};
+
+    /// Exactly one `consume_pairs` worth of work: 5 flagged absorbs
+    /// (2 pairs + 1 remaining), squeeze. Run with
+    /// `SNARKY_KEEP_LABELS=1 cargo test -p pickles dump_consume_pairs -- --nocapture`
+    /// to print every gadget with its emission label — the parity reference
+    /// for OCaml `opt_sponge.ml consume_pairs`.
+    struct DumpCircuit {}
+    impl SnarkyCircuit for DumpCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = ();
+        type PublicInput = ();
+        type PublicOutput = snarky::FieldVar<Fp>;
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _p: Self::PublicInput,
+            _priv: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mut sponge = OptSponge::new();
+            for i in 0..5u64 {
+                let x: snarky::FieldVar<Fp> =
+                    sys.compute(loc!(), move |_| Fp::from(100 + i))?;
+                let flag: Boolean<Fp> = sys.compute(loc!(), move |_| i != 2)?;
+                sponge.absorb((flag, x));
+            }
+            sponge.squeeze(sys, loc!())
+        }
+    }
+
+    #[test]
+    fn dump_consume_pairs_gadgets() {
+        let circuit = DumpCircuit {};
+        let (prover_index, _v) = circuit.compile_to_indexes().unwrap();
+        let labels = prover_index.gate_labels().to_vec();
+        for (i, gate) in prover_index.index.cs.gates.iter().enumerate() {
+            if format!("{:?}", gate.typ) == "Zero" {
+                continue;
+            }
+            let sig: Vec<String> = gate
+                .coeffs
+                .iter()
+                .map(|c| {
+                    let s = c.to_string();
+                    if s == "0" || s == "1" {
+                        s
+                    } else if s.starts_with("28948") {
+                        "-".into()
+                    } else {
+                        "c".into()
+                    }
+                })
+                .collect();
+            println!(
+                "{i:4} {:12} [{}] {}",
+                format!("{:?}", gate.typ),
+                sig.join(","),
+                labels.get(i).cloned().unwrap_or_default()
+            );
+        }
+    }
+}
