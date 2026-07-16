@@ -2568,6 +2568,30 @@ impl RecordedCompiledProgram {
     /// converged to (see `compile_multipass_reference` and the
     /// `program_single_pass_matches_multipass_reference` test).
     pub fn compile(branches: Vec<RecordedProgramBranch>) -> Result<Self, RecordedProveError> {
+        Self::compile_with_debug_stage(branches, None)
+    }
+
+    /// Debug bisection: runs the single-pass compile up to `stage` (1-based
+    /// phase index) and returns the accumulated phase timings as an error
+    /// string prefixed with `DEBUG-STAGE`. For locating wasm hangs.
+    #[doc(hidden)]
+    pub fn debug_compile_stage(
+        branches: Vec<RecordedProgramBranch>,
+        stage: usize,
+    ) -> Result<String, RecordedProveError> {
+        match Self::compile_with_debug_stage(branches, Some(stage)) {
+            Err(RecordedProveError::Program(message)) if message.starts_with("DEBUG-STAGE") => {
+                Ok(message)
+            }
+            Err(err) => Err(err),
+            Ok(_) => Ok(format!("DEBUG-STAGE {stage}: full compile finished")),
+        }
+    }
+
+    fn compile_with_debug_stage(
+        branches: Vec<RecordedProgramBranch>,
+        debug_stage: Option<usize>,
+    ) -> Result<Self, RecordedProveError> {
         if branches.is_empty() {
             return Err(RecordedProveError::Program(
                 "recorded program has no branches".into(),
@@ -2587,13 +2611,23 @@ impl RecordedCompiledProgram {
             }
         }
 
-        let profile = std::env::var_os("PICKLES_PROFILE").is_some() || cfg!(target_arch = "wasm32");
+        let profile = std::env::var_os("PICKLES_PROFILE").is_some();
+        let mut phase_timings: Vec<String> = Vec::new();
+        let mut phase_index = 0usize;
         macro_rules! phase {
             ($label:expr, $body:expr) => {{
                 let t = snarky::wasm_instant::Instant::now();
                 let out = $body;
                 if profile {
                     eprintln!("[program compile] {}: {:.2?}", $label, t.elapsed());
+                }
+                phase_index += 1;
+                phase_timings.push(format!("{}: {:.2?}", $label, t.elapsed()));
+                if debug_stage == Some(phase_index) {
+                    return Err(RecordedProveError::Program(format!(
+                        "DEBUG-STAGE {phase_index} OK — {}",
+                        phase_timings.join(" | ")
+                    )));
                 }
                 out
             }};

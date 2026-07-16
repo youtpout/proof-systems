@@ -618,6 +618,37 @@ pub fn rust_pickles_compile_recorded_program_shared(
     Ok(WasmRecordedProgram(program))
 }
 
+/// Debug bisection of the shared program compile: runs up to phase `stage`
+/// and returns the accumulated timings. For locating wasm hangs.
+#[wasm_bindgen]
+pub fn rust_pickles_debug_program_stage(
+    branches_json: String,
+    stage: u32,
+) -> Result<String, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(&branches_json)
+        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = parse_fp_decimals(branch.witness, "witness")?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit: branch.circuit,
+            witness,
+            proofs_verified: branch.proofs_verified,
+        });
+    }
+    crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledProgram::debug_compile_stage(parsed, stage as usize)
+    })
+    .map_err(|err| JsError::new(&format!("debug stage failed: {err:?}")))
+}
+
 /// `{"base64": .., "hash": ..}` — the program's single canonical Mina
 /// side-loaded verification key.
 #[wasm_bindgen]
