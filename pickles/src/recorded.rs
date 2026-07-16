@@ -3123,8 +3123,43 @@ impl RecordedCompiledProgram {
         crate::api::wrap_verification_key_points(&self.wrap_indexes.as_ref().unwrap().1)
     }
 
+    /// The canonical Mina side-loaded verification key of the program — ONE
+    /// key shared by every branch (the stable encoding carries only the
+    /// shared wrap commitments, `max_proofs_verified` and the actual wrap
+    /// domain): the bin_prot bytes base64-encoded and the Mina account-level
+    /// hash.
+    pub fn verification_key_envelope(&self) -> Result<(String, String), RecordedProveError> {
+        use base64::prelude::*;
+        // Not part of the stable encoding; recorded for validation only.
+        let step_domain_log2 = *self
+            .finalize_domain_log2s
+            .iter()
+            .max()
+            .expect("compiled program has step domains") as u8;
+        let wrap_verifier = &self.wrap_indexes.as_ref().expect("compiled Wrap indexes").1;
+        let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+            step_domain_log2,
+            wrap_verifier,
+        )
+        .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
+        let stable = key.to_stable_v2();
+        let base64 = BASE64_STANDARD.encode(
+            stable
+                .to_bin_prot()
+                .map_err(|err| RecordedProveError::Program(format!("VK encoding: {err:?}")))?,
+        );
+        Ok((base64, stable.mina_hash().to_string()))
+    }
+
     pub fn branch_count(&self) -> usize {
         self.branches.len()
+    }
+
+    /// The declared `proofs_verified` of a branch.
+    pub fn branch_proofs_verified(&self, branch_index: usize) -> Option<u8> {
+        self.branches
+            .get(branch_index)
+            .map(|branch| branch.proofs_verified)
     }
 
     pub fn prove_n0(
