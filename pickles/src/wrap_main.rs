@@ -92,7 +92,7 @@ pub fn wrap_main<F, C, W>(
     // inside `incrementally_verify_proof` from `vk`, as in OCaml)
     vk: &VerificationKeyComm<F>,
     step_statement_elements: &[StepStatementElement<F>],
-    lagranges: &[(Point<F>, Point<F>)],
+    lagranges: &crate::public_input::StatementLagranges<'_, F>,
     h_generator: &Point<F>,
     // Witnesses `openings_proof` (wrap_main.ml:440) then `messages` (:470):
     // called after the finalize/hash-prev block so the `exists` constraints
@@ -564,7 +564,7 @@ mod tests {
                 std::slice::from_ref(&per_unf.prev_step_acc),
                 &vk,
                 &elements,
-                &lagranges,
+                &crate::public_input::StatementLagranges::Prepared(&lagranges),
                 &h,
                 witness_proof,
                 &advice,

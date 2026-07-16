@@ -100,7 +100,7 @@ pub enum XHatInput<'a, F: PrimeField> {
     },
     Statement {
         elements: &'a [StatementElement<F>],
-        lagranges: &'a [(Point<F>, Point<F>)],
+        lagranges: &'a crate::public_input::StatementLagranges<'a, F>,
         h_generator: &'a Point<F>,
     },
 }

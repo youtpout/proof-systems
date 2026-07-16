@@ -49,23 +49,64 @@ pub enum StatementElement<F: PrimeField> {
 /// Builds x_hat [`Term`]s from Pickles statement elements. Full-field elements
 /// expand per OCaml `Spec.pack`/`wrap_main.split_field`: `Split(x)` becomes
 /// `[Packed(x_div_2, 255), Cond(x_odd)]`.
+/// Where the x_hat Lagrange constants come from, per statement slot.
+pub enum StatementLagranges<'a, F: PrimeField> {
+    /// Pre-built (constant or already-selected) `(L_i, correction_i)` points.
+    Prepared(&'a [(Point<F>, Point<F>)]),
+    /// Heterogeneous branch step-domains: per-branch constant sets combined
+    /// through the `which_branch` one-hot ON DEMAND, slot by slot — OCaml's
+    /// wrap-side `lagrange`/`lagrange_with_correction` (wrap_verifier.ml:334,
+    /// :382) build each slot's masked sum inside the x_hat term loop, so the
+    /// materialization rows land there, not at the circuit head.
+    OneHot {
+        sets: &'a [Vec<((F, F), (F, F))>],
+        branches: &'a [Boolean<F>],
+    },
+}
+
 pub fn statement_terms<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     elements: &[StatementElement<F>],
-    lagranges: &[(Point<F>, Point<F>)],
+    lagranges: &StatementLagranges<'_, F>,
 ) -> SnarkyResult<Vec<Term<F>>> {
     let mut terms = Vec::new();
     let mut slot = 0usize;
-    let next = |slot: &mut usize| -> (Point<F>, Point<F>) {
-        let l = lagranges[*slot].clone();
+    let slot_count = match lagranges {
+        StatementLagranges::Prepared(l) => l.len(),
+        StatementLagranges::OneHot { sets, .. } => sets[0].len(),
+    };
+    let next = |sys: &mut RunState<F>, slot: &mut usize| -> SnarkyResult<(Point<F>, Point<F>)> {
+        let index = *slot;
         *slot += 1;
-        l
+        Ok(match lagranges {
+            StatementLagranges::Prepared(l) => l[index].clone(),
+            StatementLagranges::OneHot { sets, branches } => {
+                let mut select =
+                    |pick: &dyn Fn(&((F, F), (F, F))) -> (F, F),
+                     sys: &mut RunState<F>|
+                     -> SnarkyResult<Point<F>> {
+                        let mut x = FieldVar::zero();
+                        let mut y = FieldVar::zero();
+                        for (branch, set) in branches.iter().zip(*sets) {
+                            let (px, py) = pick(&set[index]);
+                            x = x + branch.to_field_var().scale(px);
+                            y = y + branch.to_field_var().scale(py);
+                        }
+                        // materialize the masked sums once, here in the term
+                        // loop, so every consumer shares the same vars
+                        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
+                    };
+                let l = select(&|e| e.0, sys)?;
+                let c = select(&|e| e.1, sys)?;
+                (l, c)
+            }
+        })
     };
     for e in elements {
         match e {
             StatementElement::Packed { value, num_bits } => {
-                let (lagrange, correction) = next(&mut slot);
+                let (lagrange, correction) = next(sys, &mut slot)?;
                 terms.push(Term::Packed {
                     value: value.clone(),
                     num_bits: *num_bits,
@@ -75,19 +116,19 @@ pub fn statement_terms<F: PrimeField>(
             }
             StatementElement::Split(x) => {
                 let (y, odd) = split_field(sys, loc.clone(), x)?;
-                let (lagrange, correction) = next(&mut slot);
+                let (lagrange, correction) = next(sys, &mut slot)?;
                 terms.push(Term::Packed {
                     value: y,
                     num_bits: 255,
                     lagrange,
                     correction,
                 });
-                let (lagrange, _) = next(&mut slot);
+                let (lagrange, _) = next(sys, &mut slot)?;
                 terms.push(Term::Cond { bit: odd, lagrange });
             }
             StatementElement::Bool(b) => {
                 b.check(sys, loc.clone())?;
-                let (lagrange, _) = next(&mut slot);
+                let (lagrange, _) = next(sys, &mut slot)?;
                 terms.push(Term::Cond {
                     bit: b.clone(),
                     lagrange,
@@ -95,7 +136,7 @@ pub fn statement_terms<F: PrimeField>(
             }
         }
     }
-    assert_eq!(slot, lagranges.len(), "statement_terms: slot count");
+    assert_eq!(slot, slot_count, "statement_terms: slot count");
     Ok(terms)
 }
 

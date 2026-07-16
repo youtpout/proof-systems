@@ -1037,40 +1037,28 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // OCaml `lagrange_with_correction` (wrap_verifier.ml:382): if every
         // branch shares one step domain the constants are used directly;
         // otherwise the per-branch constants combine through the which_branch
-        // one-hot (b·x sums) and are sealed.
+        // one-hot INSIDE the x_hat term loop (StatementLagranges::OneHot), so
+        // the materialization rows land in the verify region as in jsoo.
         let lagrange_sets = &w.step_statement_lagranges;
         let hetero =
             lagrange_sets.len() > 1 && lagrange_sets.iter().any(|set| set != &lagrange_sets[0]);
-        let lagranges: Vec<(Point<Fq>, Point<Fq>)> = if !hetero {
-            lagrange_sets[0]
+        let prepared: Vec<(Point<Fq>, Point<Fq>)>;
+        let lagranges: crate::public_input::StatementLagranges<'_, Fq> = if !hetero {
+            prepared = lagrange_sets[0]
                 .iter()
                 .map(|&(l, c)| (cpt(l), cpt(c)))
-                .collect()
+                .collect();
+            crate::public_input::StatementLagranges::Prepared(&prepared)
         } else {
             assert_eq!(
                 lagrange_sets.len(),
                 branch_count,
                 "one Lagrange set per branch"
             );
-            let mut out = Vec::with_capacity(lagrange_sets[0].len());
-            for element in 0..lagrange_sets[0].len() {
-                let select = |pick: &dyn Fn(&((Fq, Fq), (Fq, Fq))) -> (Fq, Fq),
-                              sys: &mut RunState<Fq>|
-                 -> SnarkyResult<Point<Fq>> {
-                    let mut x = FieldVar::zero();
-                    let mut y = FieldVar::zero();
-                    for (branch, set) in branches.iter().zip(lagrange_sets) {
-                        let (px, py) = pick(&set[element]);
-                        x = x + branch.to_field_var().scale(px);
-                        y = y + branch.to_field_var().scale(py);
-                    }
-                    Ok(Point::new(x.seal(sys, loc!())?, y.seal(sys, loc!())?))
-                };
-                let l = select(&|entry| entry.0, sys)?;
-                let c = select(&|entry| entry.1, sys)?;
-                out.push((l, c));
+            crate::public_input::StatementLagranges::OneHot {
+                sets: lagrange_sets,
+                branches: &branches,
             }
-            out
         };
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
