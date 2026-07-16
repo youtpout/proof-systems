@@ -2670,3 +2670,33 @@ vert après tout ça.
   wrap width-2 programme, (4) migration o1js/mina-runtime vers
   RecordedCompiledProgram (single-pass + donors déjà prêts), (5) VK
   canonique multi-méthodes → gate 'add' vert.
+
+## Chantier VK jsoo == rust (multi-branch) — état au 2026-07-16
+
+Harnais : `o1js/src/tests/rust-pickles-program-gates-diff.ts` (MODE=jsoo puis
+MODE=rust ; dumps napi `rust_pickles_recorded_program_circuits_json`).
+Programme de référence : Add (init pv0 / update pv1 / merge pv2, state 2 Field).
+Attention : l'ordre des branches suit analyzeMethods = [init, merge, update].
+
+Mesures (jsoo vs rust) :
+- update 16384==16384, merge 32768==32768 ; histos à ±1 près sur
+  VarBaseMul/EndoMul/EndoMulScalar ; deltas restants : CompleteAdd +34/+71,
+  Generic +191/+407, Poseidon +11.
+- init : 1024 vs 512 (rust sans VBM/EM/CA — préfixe wrap_hack/dummy IPA ?).
+- wrap : 2^14 vs 2^15 (jsoo dimensionne le wrap PAR FIXPOINT — Wrap_domains.f,
+  pas le max par pv) ; histos très proches (Poseidon/EndoMul identiques).
+- PI des steps : jsoo 67 vs rust 66. Cause EXACTE (composition_types.ml,
+  Step.Statement.spec) : `Vector(per_proof,2) + B Digest +
+  Vector(B Digest, proofs_verified)` = 64+1+2 — le digest
+  messages_for_next_WRAP est PAR PROOF (2 slots), nous n'en avons qu'un.
+
+Ordre d'attaque :
+1. Statement 66 -> 67 : messages_for_next_wrap digest par slot (stmt len,
+   build_step_statement, slots x_hat +1 lagrange, wrap statement mapping,
+   prepares, dummies).
+2. Wrap au domaine naturel (probe fixpoint comme les steps) + répercuter dans
+   les aligns step-side (finalize wrap 2^14) et la side-loaded VK
+   (actual_wrap_domain_size devient N1 pour Add).
+3. init 512->1024 : identifier le préfixe jsoo manquant (EMS 1, CA 3, VBM 1,
+   EM 1, +60 Generic → signature d'un scale/endo dummy).
+4. Deltas fins des steps récursifs (CA/G/P) après 1-3.
