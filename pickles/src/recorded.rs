@@ -2496,6 +2496,7 @@ fn recorded_program_step_branch_domain_log2(
         poly_commitment::ipa::SRS<Pallas>,
     >,
 ) -> u32 {
+    let t0 = snarky::wasm_instant::Instant::now();
     let (prepared, main) = build_recorded_program_step_prepared(
         branch,
         template,
@@ -2504,12 +2505,37 @@ fn recorded_program_step_branch_domain_log2(
         None,
         &[FIX_DOMAINS_ROUGH_LOG2],
     );
-    crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+    let t1 = snarky::wasm_instant::Instant::now();
+    let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
         RECORDED_N1_STEP_ROUNDS,
         RECORDED_BASE_WRAP_ROUNDS,
         RECORDED_N1_STEP_STMT_LEN,
         RECORDED_N2_STEP_STMT_LEN,
-    >(&prepared, Some(main))
+    >(&prepared, Some(main));
+    crate::recorded::record_probe_timing(format!(
+        "pv{} prepare {:.2?} + synth/cs {:.2?} -> 2^{log2}",
+        branch.proofs_verified,
+        t1 - t0,
+        t1.elapsed()
+    ));
+    log2
+}
+
+/// Probe sub-step timings, readable through the debug-stage report (wasm has
+/// no stderr).
+static PROBE_TIMINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn record_probe_timing(entry: String) {
+    if let Ok(mut timings) = PROBE_TIMINGS.lock() {
+        timings.push(entry);
+    }
+}
+
+fn take_probe_timings() -> Vec<String> {
+    PROBE_TIMINGS
+        .lock()
+        .map(|mut timings| std::mem::take(&mut *timings))
+        .unwrap_or_default()
 }
 
 fn recorded_program_wrap_branches(
@@ -2624,9 +2650,11 @@ impl RecordedCompiledProgram {
                 phase_index += 1;
                 phase_timings.push(format!("{}: {:.2?}", $label, t.elapsed()));
                 if debug_stage == Some(phase_index) {
+                    let probe = take_probe_timings();
                     return Err(RecordedProveError::Program(format!(
-                        "DEBUG-STAGE {phase_index} OK — {}",
-                        phase_timings.join(" | ")
+                        "DEBUG-STAGE {phase_index} OK — {} || probe: {}",
+                        phase_timings.join(" | "),
+                        probe.join(" | ")
                     )));
                 }
                 out
