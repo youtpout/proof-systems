@@ -130,7 +130,9 @@ impl<F: PrimeField> SelectedDomain<F> {
         let mut pow2_pows = vec![x.clone()];
         for i in 1..=max_log2 as usize {
             let prev = pow2_pows[i - 1].clone();
-            pow2_pows.push(prev.mul(&prev, None, loc.clone(), sys)?);
+            // OCaml `Pseudo.Domain.vanishing_polynomial` squares with
+            // `Field.square` (pseudo.ml:118) — a Square constraint.
+            pow2_pows.push(crate::expr_eval::square_circuit(sys, loc.clone(), &prev)?);
         }
         let picks: Vec<FieldVar<F>> = self
             .log2s
@@ -218,8 +220,10 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             let one = FieldVar::constant(F::one());
             let omega_to_minus_1 =
                 crate::plonk_curve_ops::div_var(sys, loc.clone(), &one, &generator)?;
+            // OCaml: `omega_to_minus_2 = square omega_to_minus_1`
+            // (plonk_checks.ml:250) — a Square constraint.
             let omega_to_zk_plus_1 =
-                omega_to_minus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
+                crate::expr_eval::square_circuit(sys, loc.clone(), &omega_to_minus_1)?;
             let omega_to_zk = omega_to_zk_plus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
             DomainOmegas {
                 generator,

@@ -106,26 +106,53 @@ fn unnormalized_lagrange_basis<F: FftField + PrimeField>(
     crate::plonk_curve_ops::div_var(sys, loc, &numerator, &denominator)
 }
 
-/// `base^exp` in circuit, by square-and-multiply.
+/// `x²` via a Square constraint (OCaml `Field.square` — NOT a mul's R1CS;
+/// the gadget signs differ: square `[0,0,-1,1,0]` vs mul `[0,0,1,-1,0]`).
+pub fn square_circuit<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    x: &FieldVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    if let FieldVar::Constant(c) = x {
+        return Ok(FieldVar::constant(*c * c));
+    }
+    let x_clone = x.clone();
+    let z: FieldVar<F> = sys.compute(loc.clone(), move |env| {
+        let v: F = env.read_var(&x_clone);
+        v * v
+    })?;
+    sys.add_constraint(
+        snarky::runner::Constraint::BasicSnarkyConstraint(
+            snarky::constraint_system::BasicSnarkyConstraint::Square(x.clone(), z.clone()),
+        ),
+        Some("square".into()),
+        loc,
+    )?;
+    Ok(z)
+}
+
+/// `base^exp` in circuit — OCaml `Plonk_checks.pow`'s exact recursion
+/// (plonk_checks.ml:226): `pow x n = x * pow (square x) (n/2)` when odd,
+/// `pow (square x) (n/2)` when even; squarings are Square constraints.
 pub fn pow_circuit<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     base: &FieldVar<F>,
     exp: u64,
 ) -> SnarkyResult<FieldVar<F>> {
-    let mut acc = FieldVar::constant(F::one());
-    let mut sq = base.clone();
-    let mut e = exp;
-    while e > 0 {
-        if e & 1 == 1 {
-            acc = acc.mul(&sq, None, loc.clone(), sys)?;
-        }
-        e >>= 1;
-        if e > 0 {
-            sq = sq.mul(&sq, None, loc.clone(), sys)?;
+    match exp {
+        0 => Ok(FieldVar::constant(F::one())),
+        1 => Ok(base.clone()),
+        _ => {
+            let sq = square_circuit(sys, loc.clone(), base)?;
+            let y = pow_circuit(sys, loc.clone(), &sq, exp / 2)?;
+            if exp & 1 == 1 {
+                base.mul(&y, None, loc, sys)
+            } else {
+                Ok(y)
+            }
         }
     }
-    Ok(acc)
 }
 
 /// Evaluates a polish token stream over circuit variables, mirroring
@@ -479,5 +506,320 @@ mod tests {
             .unwrap();
         assert_eq!(*out, expected, "in-circuit constant term matches kimchi");
         verifier.verify::<BaseSponge, ScalarSponge>(proof2, (), *out);
+    }
+
+    /// The generated-scalars.ml tree evaluates to the same value as kimchi's
+    /// PolishToken stream (pure-value comparison, Tick side).
+    #[test]
+    fn scalars_ml_value_matches_kimchi() {
+        let mut prover_index = SmallCircuit {}.compile_to_indexes().unwrap().0;
+        let vi = {
+            let (_, vi) = SmallCircuit {}.compile_to_indexes().unwrap();
+            vi
+        };
+        let vi = &vi.index;
+        let x = Fp::from(5u64);
+        let z = x * x;
+        let (proof, _) = prover_index
+            .prove::<BaseSponge, ScalarSponge>(z, x, true)
+            .unwrap();
+        let public_input = vec![z];
+        let lgr = vi.srs().get_lagrange_basis(vi.domain);
+        let com: Vec<_> = lgr.iter().take(vi.public).collect();
+        let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
+        let pc = PolyComm::<Vesta>::multi_scalar_mul(&com, &elm);
+        let public_comm = vi
+            .srs()
+            .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
+            .unwrap()
+            .commitment;
+        let o = proof
+            .oracles::<BaseSponge, ScalarSponge, _>(vi, &public_comm, Some(&public_input))
+            .unwrap();
+        let oracles = &o.oracles;
+        let combined = proof.evals.combine(&o.powers_of_eval_points_for_chunks);
+
+        let constants = Constants {
+            endo_coefficient: vi.endo,
+            mds: &Vesta::sponge_params().mds,
+            zk_rows: ZK_ROWS as u64,
+        };
+        let challenges = BerkeleyChallenges {
+            alpha: oracles.alpha,
+            beta: oracles.beta,
+            gamma: oracles.gamma,
+            joint_combiner: Fp::zero(),
+        };
+        let expected = PolishToken::evaluate(
+            &vi.linearization.constant_term,
+            vi.domain,
+            oracles.zeta,
+            &combined,
+            &constants,
+            &challenges,
+        )
+        .unwrap();
+
+        let column = |col: Column, row: CurrOrNext| -> Fp {
+            use kimchi::circuits::expr::ColumnEvaluations;
+            let pe = combined.evaluate(col).unwrap();
+            match row {
+                CurrOrNext::Curr => pe.zeta,
+                CurrOrNext::Next => pe.zeta_omega,
+            }
+        };
+        let mds_vecs: Vec<Vec<Fp>> = Vesta::sponge_params()
+            .mds
+            .iter()
+            .map(|row| row.to_vec())
+            .collect();
+        let actual = crate::scalars_ml::eval_constant_term_value(
+            crate::scalars_ml::ScalarsKind::Tick,
+            &column,
+            oracles.alpha,
+            oracles.beta,
+            oracles.gamma,
+            vi.endo,
+            &mds_vecs,
+            vi.domain,
+            oracles.zeta,
+            ZK_ROWS as u64,
+        );
+        let mut th = std::collections::HashMap::new();
+        for t in &vi.linearization.constant_term {
+            *th.entry(format!("{t:?}").split(['(', ' ']).next().unwrap().to_string())
+                .or_insert(0usize) += 1;
+        }
+        let mut tv: Vec<_> = th.into_iter().collect();
+        tv.sort();
+        {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            format!("{:?}", vi.linearization.constant_term).hash(&mut h);
+            eprintln!("[small-circuit] tokens={} streamhash={:x} hist={tv:?}", vi.linearization.constant_term.len(), h.finish());
+        }
+        assert_eq!(actual, expected, "scalars.ml tree value matches kimchi");
+    }
+
+    /// Offline reproduction of a recorded finalize divergence: loads the
+    /// inputs dumped by the SCALARS_DEBUG block and compares kimchi's
+    /// PolishToken evaluation against the scalars.ml tree, dumping the
+    /// intermediate Store/cache values for bisection.
+    #[test]
+    fn scalars_ml_offline_repro() {
+        let path = "/tmp/claude-1000/scalars_fail.json";
+        let Ok(data) = std::fs::read_to_string(path) else {
+            eprintln!("no {path}, skipping");
+            return;
+        };
+        let obj: std::collections::HashMap<String, String> = serde_json::from_str(&data).unwrap();
+        let f = |k: &str| -> Fp {
+            use std::str::FromStr;
+            Fp::from_str(&obj[k]).unwrap()
+        };
+        let mut cellmap: std::collections::HashMap<(Column, bool), Fp> =
+            std::collections::HashMap::new();
+        for (k, v) in &obj {
+            if let Some(rest) = k.strip_prefix("cell ") {
+                use std::str::FromStr;
+                let (colstr, next) = rest.rsplit_once(' ').unwrap();
+                let next = next == "true";
+                let col = if let Some(i) = colstr
+                    .strip_prefix("Witness(")
+                    .and_then(|s| s.strip_suffix(")"))
+                {
+                    Column::Witness(i.parse().unwrap())
+                } else if let Some(i) = colstr
+                    .strip_prefix("Coefficient(")
+                    .and_then(|s| s.strip_suffix(")"))
+                {
+                    Column::Coefficient(i.parse().unwrap())
+                } else if let Some(g) = colstr
+                    .strip_prefix("Index(")
+                    .and_then(|s| s.strip_suffix(")"))
+                {
+                    use kimchi::circuits::gate::GateType::*;
+                    Column::Index(match g {
+                        "Generic" => Generic,
+                        "Poseidon" => Poseidon,
+                        "CompleteAdd" => CompleteAdd,
+                        "VarBaseMul" => VarBaseMul,
+                        "EndoMul" => EndoMul,
+                        "EndoMulScalar" => EndoMulScalar,
+                        _ => panic!("{g}"),
+                    })
+                } else {
+                    panic!("{colstr}")
+                };
+                cellmap.insert((col, next), Fp::from_str(v).unwrap());
+            }
+        }
+        let (alpha, beta, gamma, zeta) = (f("alpha"), f("beta"), f("gamma"), f("zeta"));
+
+        // tokens from a compiled small circuit (stream-hash-identical)
+        let vi = {
+            let (_, vi) = SmallCircuit {}.compile_to_indexes().unwrap();
+            vi
+        };
+        let vi = &vi.index;
+
+        struct MapEvals(std::collections::HashMap<(Column, bool), Fp>);
+        impl kimchi::circuits::expr::ColumnEvaluations<Fp> for MapEvals {
+            type Column = Column;
+            fn evaluate(
+                &self,
+                col: Column,
+            ) -> Result<
+                kimchi::proof::PointEvaluations<Fp>,
+                kimchi::circuits::expr::ExprError<Column>,
+            > {
+                Ok(kimchi::proof::PointEvaluations {
+                    zeta: *self.0.get(&(col, false)).unwrap_or(&Fp::from(0u64)),
+                    zeta_omega: *self.0.get(&(col, true)).unwrap_or(&Fp::from(0u64)),
+                })
+            }
+        }
+        let constants = Constants {
+            endo_coefficient: vi.endo,
+            mds: &Vesta::sponge_params().mds,
+            zk_rows: ZK_ROWS as u64,
+        };
+        let challenges = BerkeleyChallenges {
+            alpha,
+            beta,
+            gamma,
+            joint_combiner: Fp::zero(),
+        };
+        let polish_val = PolishToken::evaluate(
+            &vi.linearization.constant_term,
+            vi.domain,
+            zeta,
+            &MapEvals(cellmap.clone()),
+            &constants,
+            &challenges,
+        )
+        .unwrap();
+        let column = |col: Column, row: CurrOrNext| -> Fp {
+            *cellmap
+                .get(&(col, matches!(row, CurrOrNext::Next)))
+                .unwrap_or(&Fp::from(0u64))
+        };
+        let mds_vecs: Vec<Vec<Fp>> = Vesta::sponge_params()
+            .mds
+            .iter()
+            .map(|row| row.to_vec())
+            .collect();
+        let tree_val = crate::scalars_ml::eval_constant_term_value(
+            crate::scalars_ml::ScalarsKind::Tick,
+            &column,
+            alpha,
+            beta,
+            gamma,
+            vi.endo,
+            &mds_vecs,
+            vi.domain,
+            zeta,
+            ZK_ROWS as u64,
+        );
+        eprintln!("recorded polish={} ml={}", obj["polish"], obj["ml"]);
+        eprintln!("offline  polish={polish_val:?} tree={tree_val:?}");
+
+        // bisect per gate: keep only one Index selector non-zero at a time
+        use kimchi::circuits::gate::GateType::*;
+        for g in [
+            Generic,
+            Poseidon,
+            CompleteAdd,
+            VarBaseMul,
+            EndoMul,
+            EndoMulScalar,
+        ] {
+            let mut m = cellmap.clone();
+            for gg in [
+                Generic,
+                Poseidon,
+                CompleteAdd,
+                VarBaseMul,
+                EndoMul,
+                EndoMulScalar,
+            ] {
+                if gg != g {
+                    m.insert((Column::Index(gg), false), Fp::from(0u64));
+                    m.insert((Column::Index(gg), true), Fp::from(0u64));
+                }
+            }
+            let pv = PolishToken::evaluate(
+                &vi.linearization.constant_term,
+                vi.domain,
+                zeta,
+                &MapEvals(m.clone()),
+                &constants,
+                &challenges,
+            )
+            .unwrap();
+            let colf = |col: Column, row: CurrOrNext| -> Fp {
+                *m.get(&(col, matches!(row, CurrOrNext::Next)))
+                    .unwrap_or(&Fp::from(0u64))
+            };
+            let tv = crate::scalars_ml::eval_constant_term_value(
+                crate::scalars_ml::ScalarsKind::Tick,
+                &colf,
+                alpha,
+                beta,
+                gamma,
+                vi.endo,
+                &mds_vecs,
+                vi.domain,
+                zeta,
+                ZK_ROWS as u64,
+            );
+            eprintln!(
+                "gate {g:?}: {}",
+                if pv == tv { "MATCH" } else { "DIVERGES" }
+            );
+        }
+
+        // perturbation probe: which cells influence the delta?
+        let eval_both = |m: &std::collections::HashMap<(Column, bool), Fp>| -> (Fp, Fp) {
+            let pv = PolishToken::evaluate(
+                &vi.linearization.constant_term,
+                vi.domain,
+                zeta,
+                &MapEvals(m.clone()),
+                &constants,
+                &challenges,
+            )
+            .unwrap();
+            let colf = |col: Column, row: CurrOrNext| -> Fp {
+                *m.get(&(col, matches!(row, CurrOrNext::Next)))
+                    .unwrap_or(&Fp::from(0u64))
+            };
+            let tv = crate::scalars_ml::eval_constant_term_value(
+                crate::scalars_ml::ScalarsKind::Tick,
+                &colf,
+                alpha,
+                beta,
+                gamma,
+                vi.endo,
+                &mds_vecs,
+                vi.domain,
+                zeta,
+                ZK_ROWS as u64,
+            );
+            (pv, tv)
+        };
+        let (p0, t0) = eval_both(&cellmap);
+        let d0 = p0 - t0;
+        let mut keys: Vec<_> = cellmap.keys().cloned().collect();
+        keys.sort_by_key(|k| format!("{k:?}"));
+        for k in keys {
+            let mut m = cellmap.clone();
+            *m.get_mut(&k).unwrap() += Fp::from(1u64);
+            let (p, t) = eval_both(&m);
+            if p - t != d0 {
+                eprintln!("delta sensitive to {k:?}");
+            }
+        }
+        assert_eq!(polish_val, tree_val, "offline polish vs tree");
     }
 }

@@ -392,11 +392,10 @@ pub fn finalize_deferred<F: PrimeField>(
     witness: &FinalizeWitness<F>,
 ) -> SnarkyResult<FinalizedDeferred<F>> {
     use crate::{
-        expr_eval::{eval_polish, PolishEnv},
         ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar},
         plonk_checks::ZK_ROWS,
     };
-    use kimchi::circuits::{berkeley_columns::BerkeleyChallengeTerm, gate::CurrOrNext};
+    use kimchi::circuits::gate::CurrOrNext;
 
     let evals = &witness.evals;
 
@@ -500,10 +499,10 @@ pub fn finalize_deferred<F: PrimeField>(
         let mut zetaw_n = zetaw.clone();
         let chain_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | dead pow chains"));
         for _ in 0..params.srs_log2 {
-            zeta_n = zeta_n.mul(&zeta_n.clone(), None, chain_loc.clone(), sys)?;
+            zeta_n = crate::expr_eval::square_circuit(sys, chain_loc.clone(), &zeta_n)?;
         }
         for _ in 0..params.srs_log2 {
-            zetaw_n = zetaw_n.mul(&zetaw_n.clone(), None, chain_loc.clone(), sys)?;
+            zetaw_n = crate::expr_eval::square_circuit(sys, chain_loc.clone(), &zetaw_n)?;
         }
     }
 
@@ -532,12 +531,6 @@ pub fn finalize_deferred<F: PrimeField>(
 
     // Step 8a: ft_eval0 — the linearization constant term, evaluated on the
     // same witness columns, then the ft_eval0 formula.
-    let challenge = |t: BerkeleyChallengeTerm| match t {
-        BerkeleyChallengeTerm::Alpha => witness.alpha.clone(),
-        BerkeleyChallengeTerm::Beta => witness.beta.clone(),
-        BerkeleyChallengeTerm::Gamma => witness.gamma.clone(),
-        BerkeleyChallengeTerm::JointCombiner => FieldVar::constant(F::zero()),
-    };
     let column = |col: kimchi::circuits::berkeley_columns::Column, row: CurrOrNext| {
         let pe = column_eval(evals, &col);
         match row {
@@ -545,35 +538,43 @@ pub fn finalize_deferred<F: PrimeField>(
             CurrOrNext::Next => pe.1[0].clone(),
         }
     };
-    let penv = PolishEnv {
+    // The linearization constant term follows the EXACT generated-code tree
+    // of OCaml's `Scalars.{Tick,Tock}.constant_term` — kimchi's PolishToken
+    // stream computes the same value with a different gadget sequence.
+    let scalars_env = crate::scalars_ml::ScalarsMlEnv {
+        column: &column,
+        alpha_pows: &env.alpha_pows,
+        beta: witness.beta.clone(),
+        gamma: witness.gamma.clone(),
+        endo_coefficient: params.endo,
+        mds: params.mds,
+        zk_polynomial: env.zk_polynomial.clone(),
+        zeta_to_n_minus_1: env.zeta_to_n_minus_1.clone(),
         domain: match &domain {
             crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => {
-                crate::expr_eval::PolishDomain::Fixed(*d)
+                crate::scalars_ml::ScalarsMlDomain::Fixed(*d)
             }
             crate::ft_eval_circuit::FinalizeDomain::Selected(_) => {
-                crate::expr_eval::PolishDomain::Selected {
-                    omegas: &env.omegas,
-                    zeta_to_n_minus_1: &env.zeta_to_n_minus_1,
+                crate::scalars_ml::ScalarsMlDomain::Selected {
+                    omegas: env.omegas.clone(),
+                    omega_to_zk_minus_1: std::cell::RefCell::new(None),
                 }
             }
             crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
                 unreachable!("materialized above")
             }
         },
-        endo_coefficient: params.endo,
-        mds: params.mds,
+        zeta: witness.zeta.clone(),
         zk_rows: ZK_ROWS as u64,
-        pt: witness.zeta.clone(),
-        zk_polynomial: Some(&env.zk_polynomial),
-        zeta_to_n_minus_1: Some(&env.zeta_to_n_minus_1),
-        challenge: &challenge,
-        column: &column,
     };
-    let constant_term = eval_polish(
+    let constant_term = crate::scalars_ml::eval_constant_term(
         sys,
         Cow::Owned(format!("{loc} | linearization")),
-        params.tokens,
-        &penv,
+        match params.shift {
+            ShiftKind::Type1 => crate::scalars_ml::ScalarsKind::Tick,
+            ShiftKind::Type2 => crate::scalars_ml::ScalarsKind::Tock,
+        },
+        &scalars_env,
     )?;
     let ft_eval0 = ft_eval0_circuit(
         sys,
