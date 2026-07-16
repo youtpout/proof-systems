@@ -3709,6 +3709,22 @@ impl RecordedCompiledProgram {
             .take()
             .expect("compiled program Step indexes");
         prove_stage!("step prepared");
+        if debug_stage == Some(30) {
+            // Witness-synthesis-only probe of the step (no kimchi prove).
+            self.step_indexes[branch_index] = Some(indexes);
+            let t = snarky::wasm_instant::Instant::now();
+            let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                RECORDED_N2_STEP_STMT_LEN,
+            >(&prepared, Some(main));
+            return Err(RecordedProveError::Program(format!(
+                "DEBUG-STAGE 30 OK — witness synthesis {:.2?} -> 2^{log2} | {}",
+                t.elapsed(),
+                stage_timings.join(" | ")
+            )));
+        }
         let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
             prepared,
             Some(main),
