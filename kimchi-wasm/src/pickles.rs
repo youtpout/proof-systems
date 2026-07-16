@@ -727,6 +727,7 @@ pub fn rust_pickles_program_prove_n1_bytes(
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
     kimchi::live_trace::set_hook(live_trace_to_console);
+    kimchi::live_trace::checkpoint("wasm: n1 entry");
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {
         program

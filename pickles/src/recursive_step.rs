@@ -2537,6 +2537,7 @@ pub fn prove_prepared_recursive_step_width2_arity<
             .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
             .unwrap(),
     };
+    kimchi::live_trace::checkpoint("pickles: step prove begin");
     let (proof, _) = prover
         .prove_with_recursion_mask::<VestaBase, VestaScalar>(
             statement,

@@ -229,6 +229,7 @@ where
         EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
         EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
     {
+        kimchi::live_trace::checkpoint("snarky: prove begin");
         // create public input
         let public_input_without_output =
             Circuit::PublicInput::value_to_field_elements(&public_input).0;
