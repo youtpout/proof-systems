@@ -2754,3 +2754,26 @@ xor = 3 ; add_in = 5 ; y*before = 2. Dump isolé :
 Après parité histogramme+ordre : câblage (differing rows → 0), puis les VK
 seront identiques (les constantes choose_pt suivent automatiquement).
 
+SESSION 3, suite — **INIT = differingRows 0 (byte-identique, gates+coeffs+
+wires)** après : pinning des segments dummy EN FIN de circuit (r-slot,
+Equal(Constant,Var) constant-first — les dernières lignes de tout step jsoo)
++ z1/z2 forbidden (commit 98158c95f0). Structure du step jsoo intro enfin
+comprise (update rows 77-392) :
+  [162 onc = 81 pts (vk 28 + messages 23 + …)] [2 unités z1/z2]
+  [delta/sg onc] [bools masque] [EMS dl2] [cpcs onc 4] [**5 unités** =
+  Other_field.check des 5 slots Type2 du STATEMENT (perm,zds,zsl,b,cip,
+  impls.ml:50-107, ~18 rows/unité : bool odd + 4 equals + any + assert)]
+  [16 EMS] [148 gen] [Poseidons index].
+Fixes commités ensuite : 5 unités par proof réel (position post-cpcs),
+accs = mêmes vars que prev cpcs (OCaml n'a qu'UN champ), flags = constantes
+(Features.none — aucune row), next-vk = réutilisation du dlog_index du 1er
+proof réel (jsoo ne re-witnesse pas les 28 pts en self-récursion; le bloc
+56 rows n'existe qu'en base case), eval_polish réutilise zk_polynomial et
+zeta_to_n_minus_1 de l'env (OCaml les calcule UNE fois — on refaisait des
+chaînes pow ~15 muls par occurrence d'UnnormalizedLagrangeBasis, source
+majeure du +52 step / +159 wrap de la région finalize).
+Pièges notés : compute::<Boolean> émet le check booléen (compute_inner
+checked) ; forme bool OCaml = Constraint::Boolean ([-0010]) PAS
+assert_r1cs(v,v,v) ([001-0]) ; l'« ordre on-curve différent » vu au LCS
+n'était que la phase de packing (init=0 le prouve).
+
