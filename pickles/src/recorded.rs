@@ -2716,18 +2716,35 @@ impl RecordedCompiledProgram {
         // constants *and* the unique-domain list the steps' finalize
         // one-hot selects over, before anything expensive compiles.
         let branch_domain_log2s: Vec<u32> = phase!("step domain probe", {
-            use rayon::prelude::*;
-            branches
-                .par_iter()
-                .map(|branch| {
-                    recorded_program_step_branch_domain_log2(
-                        branch,
-                        &template,
-                        &structure_vk,
-                        &structure_wrap.1.index,
-                    )
-                })
-                .collect()
+            // Three width-2 synthesis probes in parallel exhaust the wasm32
+            // linear memory / allocator; run them sequentially there (they
+            // are seconds each), in parallel on native.
+            if cfg!(target_arch = "wasm32") {
+                branches
+                    .iter()
+                    .map(|branch| {
+                        recorded_program_step_branch_domain_log2(
+                            branch,
+                            &template,
+                            &structure_vk,
+                            &structure_wrap.1.index,
+                        )
+                    })
+                    .collect()
+            } else {
+                use rayon::prelude::*;
+                branches
+                    .par_iter()
+                    .map(|branch| {
+                        recorded_program_step_branch_domain_log2(
+                            branch,
+                            &template,
+                            &structure_vk,
+                            &structure_wrap.1.index,
+                        )
+                    })
+                    .collect()
+            }
         });
         let finalize_domain_log2s: Vec<u32> = {
             let mut list = branch_domain_log2s.clone();
