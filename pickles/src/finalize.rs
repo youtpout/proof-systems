@@ -400,7 +400,92 @@ pub fn finalize_deferred<F: PrimeField>(
 
     let evals = &witness.evals;
 
-    // scalars environment from the (field-form) challenges
+    // == OCaml finalize_other_proof order (wrap_verifier.ml:1495-1786) ==
+
+    // Step 2: zetaw = domain generator * zeta (the generator is a constant
+    // for a Fixed domain and a mask-constants linear combination for a
+    // Selected pseudo-domain — no rows before the multiply itself).
+    let zetaw = match &params.domain {
+        crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => witness.zeta.scale(d.group_gen),
+        crate::ft_eval_circuit::FinalizeDomain::Selected(sel) => {
+            sel.generator_var()
+                .mul(&witness.zeta, None, loc.clone(), sys)?
+        }
+    };
+
+    // Step 3: sg_evals — the OLD challenge polynomials evaluated at zeta,
+    // then all of them at zetaw (`(sg_evals zeta, sg_evals zetaw)`).
+    let mut sg_at_zeta = Vec::with_capacity(witness.prev_challenges.len());
+    let mut sg_at_zetaw = Vec::with_capacity(witness.prev_challenges.len());
+    for old_challenges in &witness.prev_challenges {
+        sg_at_zeta.push(crate::ipa::challenge_polynomial_circuit(
+            sys,
+            loc.clone(),
+            old_challenges,
+            &witness.zeta,
+        )?);
+    }
+    for old_challenges in &witness.prev_challenges {
+        sg_at_zetaw.push(crate::ipa::challenge_polynomial_circuit(
+            sys,
+            loc.clone(),
+            old_challenges,
+            &zetaw,
+        )?);
+    }
+    let mut masked_cip_entries = Vec::new();
+    let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
+    for (index, (at_zeta, at_zetaw)) in sg_at_zeta.into_iter().zip(sg_at_zetaw).enumerate() {
+        if let Some(mask) = &witness.prev_challenge_mask {
+            assert_eq!(mask.len(), witness.prev_challenges.len());
+            masked_cip_entries.push((mask[index].clone(), at_zeta, at_zetaw));
+        } else {
+            cip_entries.push((at_zeta, at_zetaw));
+        }
+    }
+
+    // Steps 4-5: reconstruct the fr-sponge, squeeze xi and r, convert.
+    let sponge_inputs = FrSpongeInputs {
+        digest: witness.digest.clone(),
+        prev_challenges: witness.prev_challenges.clone(),
+        prev_challenge_mask: witness.prev_challenge_mask.clone(),
+        ft_eval1: witness.ft_eval1.clone(),
+        public_evals: witness.public_evals.clone(),
+        evals: evals.clone(),
+        // step (Type1) constrains both xi halves; wrap (Type2) only the high
+        xi_constrain_low_bits: matches!(params.shift, ShiftKind::Type1),
+    };
+    let (xi_actual, r_actual) = squeeze_xi_r(sys, loc.clone(), &sponge_inputs)?;
+    let xi_correct = xi_actual.equal(sys, loc.clone(), &witness.xi)?;
+    let xi_field = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | xi to_field")),
+        &witness.xi,
+        params.endo_r,
+    )?;
+    let r_field = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | r to_field")),
+        &r_actual,
+        params.endo_r,
+    )?;
+
+    // Step 6: combined_evals. Single-chunk evaluations combine to
+    // themselves, but OCaml still emits the `zeta^{2^n}` / `zetaw^{2^n}`
+    // squaring chains (the "zeta_n is recomputed in env" TODO wart,
+    // wrap_verifier.ml:1628-1630) — byte parity requires the dead rows.
+    {
+        let mut zeta_n = witness.zeta.clone();
+        let mut zetaw_n = zetaw.clone();
+        for _ in 0..params.srs_log2 {
+            zeta_n = zeta_n.mul(&zeta_n.clone(), None, loc.clone(), sys)?;
+        }
+        for _ in 0..params.srs_log2 {
+            zetaw_n = zetaw_n.mul(&zetaw_n.clone(), None, loc.clone(), sys)?;
+        }
+    }
+
+    // Step 7: scalars environment from the (field-form) challenges
     let env = scalars_env_circuit(
         sys,
         loc.clone(),
@@ -423,7 +508,8 @@ pub fn finalize_deferred<F: PrimeField>(
         z: chunk0(&evals.z),
     };
 
-    // linearization constant term, evaluated on the same witness columns
+    // Step 8a: ft_eval0 — the linearization constant term, evaluated on the
+    // same witness columns, then the ft_eval0 formula.
     let challenge = |t: BerkeleyChallengeTerm| match t {
         BerkeleyChallengeTerm::Alpha => witness.alpha.clone(),
         BerkeleyChallengeTerm::Beta => witness.beta.clone(),
@@ -467,52 +553,7 @@ pub fn finalize_deferred<F: PrimeField>(
         &constant_term,
     )?;
 
-    // the deferred permutation scalar
-    let perm_derived =
-        crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
-
-    // compute_challenges ~scalar: prechallenges -> field form
-    let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
-    for pre in &witness.bulletproof_challenges {
-        challenges.push(scalar_to_field(
-            sys,
-            Cow::Owned(format!("{loc} | bp-challenge to_field")),
-            pre,
-            params.endo_r,
-        )?);
-    }
-
-    // Inner-product entries: evaluations of the accumulated challenge
-    // polynomials come first, then public, [ft0, ft1], mandatory columns.
-    // A logical base case has no previous challenges; a fixed-width program
-    // supplies the same vector shape with an all-false mask.
-    let zetaw = match &params.domain {
-        crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => witness.zeta.scale(d.group_gen),
-        crate::ft_eval_circuit::FinalizeDomain::Selected(_) => {
-            // OCaml: `Field.mul domain#generator plonk.zeta`.
-            env.omegas
-                .generator
-                .mul(&witness.zeta, None, loc.clone(), sys)?
-        }
-    };
-    let mut masked_cip_entries = Vec::new();
-    let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
-    for (index, old_challenges) in witness.prev_challenges.iter().enumerate() {
-        let at_zeta = crate::ipa::challenge_polynomial_circuit(
-            sys,
-            loc.clone(),
-            old_challenges,
-            &witness.zeta,
-        )?;
-        let at_zetaw =
-            crate::ipa::challenge_polynomial_circuit(sys, loc.clone(), old_challenges, &zetaw)?;
-        if let Some(mask) = &witness.prev_challenge_mask {
-            assert_eq!(mask.len(), witness.prev_challenges.len());
-            masked_cip_entries.push((mask[index].clone(), at_zeta, at_zetaw));
-        } else {
-            cip_entries.push((at_zeta, at_zetaw));
-        }
-    }
+    // Step 8b-8c: the combined inner product fold and its check
     cip_entries.extend([
         (
             witness.public_evals[0][0].clone(),
@@ -523,49 +564,54 @@ pub fn finalize_deferred<F: PrimeField>(
     for col in crate::ipa::mandatory_columns() {
         cip_entries.push(chunk0(column_eval(evals, &col)));
     }
-
-    // Fr-sponge inputs, then the four-conjunct finalization (inlined
-    // `finalize_other_proof` so the intermediate values are exposed)
-    let sponge_inputs = FrSpongeInputs {
-        digest: witness.digest.clone(),
-        prev_challenges: witness.prev_challenges.clone(),
-        prev_challenge_mask: witness.prev_challenge_mask.clone(),
-        ft_eval1: witness.ft_eval1.clone(),
-        public_evals: witness.public_evals.clone(),
-        evals: evals.clone(),
-        // step (Type1) constrains both xi halves; wrap (Type2) only the high
-        xi_constrain_low_bits: matches!(params.shift, ShiftKind::Type1),
+    let combined_inner_product = if masked_cip_entries.is_empty() {
+        combined_inner_product_circuit(sys, loc.clone(), &xi_field, &r_field, &cip_entries)?
+    } else {
+        combined_inner_product_circuit_masked(
+            sys,
+            loc.clone(),
+            &xi_field,
+            &r_field,
+            &masked_cip_entries,
+            &cip_entries,
+        )?
     };
-    let core = finalize_core_with_mask(
-        sys,
-        loc.clone(),
-        &sponge_inputs,
-        &witness.xi,
-        &masked_cip_entries,
-        &cip_entries,
-        params.endo_r,
-    )?;
+    let cip_claimed = params.shift.to_field(&witness.cip_repr);
+    let cip_correct = combined_inner_product.equal(sys, loc.clone(), &cip_claimed)?;
+
+    // Step 9: the NEW bulletproof challenges to field form, then b_correct
+    let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
+    for pre in &witness.bulletproof_challenges {
+        challenges.push(scalar_to_field(
+            sys,
+            Cow::Owned(format!("{loc} | bp-challenge to_field")),
+            pre,
+            params.endo_r,
+        )?);
+    }
     let b_derived = b_actual(
         sys,
         loc.clone(),
         &challenges,
         &witness.zeta,
         &zetaw,
-        &core.r_field,
+        &r_field,
     )?;
-    let cip_claimed = params.shift.to_field(&witness.cip_repr);
     let b_claimed = params.shift.to_field(&witness.b_repr);
-    let perm_claimed = params.shift.to_field(&witness.perm_repr);
-    let cip_correct = core
-        .combined_inner_product
-        .equal(sys, loc.clone(), &cip_claimed)?;
     let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
+
+    // Step 10: the PlonK relation (the deferred permutation scalar)
+    let perm_derived =
+        crate::ft_eval_circuit::perm_scalar_circuit(sys, loc.clone(), &env, &ft_evals)?;
+    let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
+
+    // Step 11: combine all checks
     let finalized = finalize_all(
         sys,
         loc,
-        &core.xi_correct,
-        &core.combined_inner_product,
+        &xi_correct,
+        &combined_inner_product,
         &cip_claimed,
         &b_derived,
         &b_claimed,
@@ -576,10 +622,10 @@ pub fn finalize_deferred<F: PrimeField>(
     Ok(FinalizedDeferred {
         finalized,
         challenges,
-        xi_field: core.xi_field,
-        r_field: core.r_field,
-        combined_inner_product: core.combined_inner_product,
-        xi_correct: core.xi_correct,
+        xi_field,
+        r_field,
+        combined_inner_product,
+        xi_correct,
         cip_correct,
         b_correct,
         perm_correct,
