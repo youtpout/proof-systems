@@ -123,11 +123,16 @@ where
         let finalize_loc = Cow::Borrowed("wrap_main: finalize unfinalized");
         let alpha_f = scalar_to_field(
             sys,
-            finalize_loc.clone(),
+            Cow::Borrowed("wrap_main: finalize | alpha to_field"),
             &u.alpha,
             u.finalize_params.endo_r,
         )?;
-        let zeta_f = scalar_to_field(sys, finalize_loc.clone(), &u.zeta, u.finalize_params.endo_r)?;
+        let zeta_f = scalar_to_field(
+            sys,
+            Cow::Borrowed("wrap_main: finalize | zeta to_field"),
+            &u.zeta,
+            u.finalize_params.endo_r,
+        )?;
         let witness = FinalizeWitness {
             alpha: alpha_f,
             beta: u.beta.clone(),

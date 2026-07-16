@@ -84,8 +84,18 @@ fn finalize_core_with_mask<F: PrimeField>(
     let xi_correct = xi_actual.equal(sys, loc.clone(), claimed_xi)?;
 
     // convert the (claimed) xi and r to field elements via the endomorphism
-    let xi_field = scalar_to_field(sys, loc.clone(), claimed_xi, endo)?;
-    let r_field = scalar_to_field(sys, loc.clone(), &r_actual, endo)?;
+    let xi_field = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | xi to_field")),
+        claimed_xi,
+        endo,
+    )?;
+    let r_field = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | r to_field")),
+        &r_actual,
+        endo,
+    )?;
 
     // step 8: the combined inner product from those challenges
     let combined_inner_product = if masked_prefix.is_empty() {
@@ -464,7 +474,12 @@ pub fn finalize_deferred<F: PrimeField>(
     // compute_challenges ~scalar: prechallenges -> field form
     let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
     for pre in &witness.bulletproof_challenges {
-        challenges.push(scalar_to_field(sys, loc.clone(), pre, params.endo_r)?);
+        challenges.push(scalar_to_field(
+            sys,
+            Cow::Owned(format!("{loc} | bp-challenge to_field")),
+            pre,
+            params.endo_r,
+        )?);
     }
 
     // Inner-product entries: evaluations of the accumulated challenge
@@ -518,6 +533,8 @@ pub fn finalize_deferred<F: PrimeField>(
         ft_eval1: witness.ft_eval1.clone(),
         public_evals: witness.public_evals.clone(),
         evals: evals.clone(),
+        // step (Type1) constrains both xi halves; wrap (Type2) only the high
+        xi_constrain_low_bits: matches!(params.shift, ShiftKind::Type1),
     };
     let core = finalize_core_with_mask(
         sys,

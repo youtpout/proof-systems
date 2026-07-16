@@ -4440,6 +4440,16 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .map(|_| sys.compute(loc!(), |_| false))
             .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
     };
+    // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152):
+    // the packed branch_data is range-checked with a 16-bit
+    // `Scalar_challenge.to_field_checked` (one EndoMulScalar row).
+    let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+        sys,
+        loc!(),
+        &stmt.branch_data,
+        *endo_p,
+        16,
+    )?;
 
     let vk_pts = d
         .wrap_vk_pts
@@ -4904,6 +4914,17 @@ impl<
                 v
             },
         };
+        // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152).
+        {
+            let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
+            let _ = crate::scalar_challenge::scalar_to_field_with_bits(
+                sys,
+                loc!(),
+                &stmt.branch_data,
+                *endo_p,
+                16,
+            )?;
+        }
 
         let mut vk_pts = vec![];
         for i in 0..28 {

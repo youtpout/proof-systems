@@ -101,6 +101,10 @@ pub struct FrSpongeInputs<F: PrimeField> {
     pub public_evals: [Vec<FieldVar<F>>; 2],
     /// The proof column evaluations.
     pub evals: AbsorbEvalsVar<F>,
+    /// How `xi` is squeezed: the OCaml STEP side uses `squeeze_challenge`
+    /// (both 128-bit halves range-checked, step_verifier.ml:990); the WRAP
+    /// side uses `squeeze_scalar` (high half only, wrap_verifier.ml:1606).
+    pub xi_constrain_low_bits: bool,
 }
 
 /// Absorbs `xs` into the sponge one element at a time (matching kimchi's
@@ -182,7 +186,14 @@ pub fn squeeze_xi_r<F: PrimeField>(
     }
 
     // 6. squeeze xi (polyscale) then r (evalscale)
-    let xi = squeeze_challenge(sys, loc.clone(), &mut sponge)?;
+    // OCaml wrap side: `xi_actual = squeeze_scalar` (high half checked only,
+    // wrap_verifier.ml:1606); step side: `squeeze_challenge` for both
+    // (step_verifier.ml:990-992). `r` is `squeeze_challenge` on both sides.
+    let xi = if inputs.xi_constrain_low_bits {
+        squeeze_challenge(sys, loc.clone(), &mut sponge)?
+    } else {
+        crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge)?
+    };
     let r = squeeze_challenge(sys, loc, &mut sponge)?;
     Ok((xi, r))
 }
@@ -319,6 +330,7 @@ mod tests {
                 ft_eval1,
                 public_evals,
                 evals,
+                xi_constrain_low_bits: true,
             };
             squeeze_xi_r(sys, loc!(), &inputs)
         }
