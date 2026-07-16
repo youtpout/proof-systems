@@ -2521,6 +2521,53 @@ fn recorded_program_step_branch_domain_log2(
     log2
 }
 
+/// Debug: isolates the probe's sub-steps for one branch. `mode`:
+/// 0 = prepared only; 1 = prepared + domain probe with the FIXED finalize
+/// (empty domain list); 2 = prepared + domain probe with the rough SELECTED
+/// list (the real probe). Returns a timing report.
+#[doc(hidden)]
+pub fn debug_probe_branch(
+    branches: Vec<RecordedProgramBranch>,
+    branch_index: usize,
+    mode: u32,
+) -> Result<String, RecordedProveError> {
+    let template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+        RecordedProgramTemplateApp,
+        (),
+    );
+    let mut template_compiled = template_compiled;
+    let template = template_compiled.prove(());
+    let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
+    let branch = branches
+        .get(branch_index)
+        .ok_or_else(|| RecordedProveError::Program("unknown branch".into()))?;
+    let list: &[u32] = if mode == 1 { &[] } else { &[FIX_DOMAINS_ROUGH_LOG2] };
+    let t0 = snarky::wasm_instant::Instant::now();
+    let (prepared, main) = build_recorded_program_step_prepared(
+        branch,
+        &template,
+        &bootstrap_vk,
+        &template.wrap_verifier.index,
+        None,
+        list,
+    );
+    let prepare_elapsed = t0.elapsed();
+    if mode == 0 {
+        return Ok(format!("prepared only: {prepare_elapsed:.2?}"));
+    }
+    let t1 = snarky::wasm_instant::Instant::now();
+    let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >(&prepared, Some(main));
+    Ok(format!(
+        "mode {mode}: prepared {prepare_elapsed:.2?}, probe {:.2?} -> 2^{log2}",
+        t1.elapsed()
+    ))
+}
+
 /// Probe sub-step timings, readable through the debug-stage report (wasm has
 /// no stderr).
 static PROBE_TIMINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());

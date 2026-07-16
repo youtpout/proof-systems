@@ -649,6 +649,38 @@ pub fn rust_pickles_debug_program_stage(
     .map_err(|err| JsError::new(&format!("debug stage failed: {err:?}")))
 }
 
+/// Debug: probe sub-step isolation for one branch (see pickles
+/// `debug_probe_branch`).
+#[wasm_bindgen]
+pub fn rust_pickles_debug_probe_branch(
+    branches_json: String,
+    branch_index: u32,
+    mode: u32,
+) -> Result<String, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(&branches_json)
+        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = parse_fp_decimals(branch.witness, "witness")?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit: branch.circuit,
+            witness,
+            proofs_verified: branch.proofs_verified,
+        });
+    }
+    crate::rayon::run_in_pool(|| {
+        pickles::recorded::debug_probe_branch(parsed, branch_index as usize, mode)
+    })
+    .map_err(|err| JsError::new(&format!("probe debug failed: {err:?}")))
+}
+
 /// `{"base64": .., "hash": ..}` — the program's single canonical Mina
 /// side-loaded verification key.
 #[wasm_bindgen]
