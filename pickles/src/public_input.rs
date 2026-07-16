@@ -117,6 +117,123 @@ where
     (-(*lagrange * two_to_shift)).into_affine()
 }
 
+/// One input of [`multiscale_known`]: a (possibly constant) statement value,
+/// its packed bit width, and the CONSTANT Lagrange commitment it scales.
+pub struct KnownTerm<F: PrimeField> {
+    pub value: FieldVar<F>,
+    pub num_bits: usize,
+    /// The slot's Lagrange commitment, as raw affine coordinates.
+    pub lagrange: (F, F),
+}
+
+/// OCaml `Step_verifier.multiscale_known` (step_verifier.ml:115) — the
+/// step-side public-input commitment over a KNOWN wrap domain:
+///
+/// 1. Constant values contribute `c · L_i` entirely OUT of circuit.
+/// 2. Every variable value is scaled first (`Ops.scale_fast2'`, all scales
+///    emitted back to back), collecting the `2^shift · L_i` correction
+///    constants out of circuit.
+/// 3. The scaled points are reduced left-to-right with `add_fast`.
+/// 4. One final `add_fast` folds in the single constant point
+///    `Σ constant_part − Σ corrections`.
+///
+/// Returns the UN-negated, UN-blinded sum: the caller negates and adds `H`
+/// exactly as `incrementally_verify_proof` does (step_verifier.ml:554-577).
+pub fn multiscale_known<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    terms: &[KnownTerm<F>],
+) -> SnarkyResult<Point<F>>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ff::{BigInteger, Field as _};
+
+    type Affine<C> = ark_ec::short_weierstrass::Affine<C>;
+
+    // out-of-circuit accumulator: Σ constant-valued terms − Σ corrections
+    let mut constant_acc: Option<ark_ec::short_weierstrass::Projective<C>> = None;
+    let mut add_constant = |p: ark_ec::short_weierstrass::Projective<C>| {
+        constant_acc = Some(match constant_acc.take() {
+            None => p,
+            Some(acc) => acc + p,
+        });
+    };
+
+    // pass 1: emit every scale, in statement order (OCaml `List.map` over
+    // `non_constant_part` completes before the reduce)
+    let mut scaled: Vec<Point<F>> = Vec::new();
+    for term in terms {
+        let g = Affine::<C>::new_unchecked(term.lagrange.0, term.lagrange.1);
+        match &term.value {
+            FieldVar::Constant(c) => {
+                if c.is_zero() {
+                    continue;
+                }
+                // `c · L_i`, out of circuit (`scaled_lagrange` for c ∉ {0,1})
+                if c.is_one() {
+                    add_constant(g.into_group());
+                } else {
+                    let scalar = C::ScalarField::from_bigint(
+                        <<C::ScalarField as PrimeField>::BigInt as ark_ff::BigInteger>::from_bits_le(
+                            &c.into_bigint().to_bits_le(),
+                        ),
+                    )
+                    .expect("field element fits the scalar field");
+                    add_constant(g * scalar);
+                }
+            }
+            value => {
+                let lagrange_pt = Point::new(
+                    FieldVar::constant(term.lagrange.0),
+                    FieldVar::constant(term.lagrange.1),
+                );
+                scaled.push(crate::plonk_curve_ops::scale_fast2_prime(
+                    sys,
+                    loc.clone(),
+                    &lagrange_pt,
+                    value,
+                    term.num_bits,
+                )?);
+                // correction −2^shift · L_i, out of circuit
+                let shift = crate::plonk_curve_ops::scale_fast2_shift_bits(term.num_bits);
+                let two_to_shift = C::ScalarField::from(2u64).pow([shift as u64]);
+                add_constant(-(g * two_to_shift));
+            }
+        }
+    }
+
+    // pass 2: reduce the scaled points left-to-right
+    let mut scaled = scaled.into_iter();
+    let mut acc = scaled
+        .next()
+        .expect("multiscale_known: at least one variable term");
+    for rr in scaled {
+        acc = add_fast(
+            sys,
+            Cow::Owned(format!("{loc} | multiscale_known reduce")),
+            &acc,
+            &rr,
+        )?;
+    }
+
+    // final constant fold
+    let constant_point = constant_acc
+        .expect("multiscale_known: at least one correction")
+        .into_affine();
+    add_fast(
+        sys,
+        Cow::Owned(format!("{loc} | multiscale_known constant add")),
+        &acc,
+        &Point::new(
+            FieldVar::constant(constant_point.x),
+            FieldVar::constant(constant_point.y),
+        ),
+    )
+}
+
 /// Splitting a field variable into `(x_div_2, x_odd)` — used on the wrap side
 /// where a step statement element lives in the *bigger* Tick field: the halved
 /// value fits the Tock circuit's Lagrange scaling, and the odd bit becomes a

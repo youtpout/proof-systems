@@ -4174,11 +4174,13 @@ pub fn dump_recorded_program_circuits(
     struct StepCircuitDump {
         public_input_size: usize,
         gates: Vec<kimchi::circuits::gate::CircuitGate<Fp>>,
+        labels: Vec<String>,
     }
     #[derive(serde::Serialize)]
     struct WrapCircuitDump {
         public_input_size: usize,
         gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+        labels: Vec<String>,
     }
     #[derive(serde::Serialize)]
     struct ProgramDump {
@@ -4194,6 +4196,7 @@ pub fn dump_recorded_program_circuits(
             StepCircuitDump {
                 public_input_size: prover.index.cs.public,
                 gates: prover.index.cs.gates.to_vec(),
+                labels: prover.gate_labels().to_vec(),
             }
         })
         .collect();
@@ -4203,6 +4206,7 @@ pub fn dump_recorded_program_circuits(
         wrap: WrapCircuitDump {
             public_input_size: wrap_prover.index.cs.public,
             gates: wrap_prover.index.cs.gates.to_vec(),
+            labels: wrap_prover.gate_labels().to_vec(),
         },
     };
     serde_json::to_string(&dump)

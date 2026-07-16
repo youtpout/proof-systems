@@ -92,6 +92,12 @@ pub enum XHatInput<'a, F: PrimeField> {
         terms: &'a [Term<F>],
         h_generator: &'a Point<F>,
     },
+    /// OCaml's step-side x_hat over a KNOWN wrap domain
+    /// (`Step_verifier.multiscale_known`, then negate + blind by `H`).
+    MultiscaleKnown {
+        terms: &'a [crate::public_input::KnownTerm<F>],
+        h_generator: &'a Point<F>,
+    },
     Statement {
         elements: &'a [StatementElement<F>],
         lagranges: &'a [(Point<F>, Point<F>)],
@@ -326,6 +332,18 @@ where
         XHatInput::Precomputed(points) => points,
         XHatInput::PublicInput { terms, h_generator } => {
             x_hat = public_input_commitment(sys, loc.clone(), terms, h_generator)?;
+            std::slice::from_ref(&x_hat)
+        }
+        XHatInput::MultiscaleKnown { terms, h_generator } => {
+            // multiscale_known |> negate, then blinding `add_fast x_hat H`
+            // (step_verifier.ml:554-577)
+            let sum = crate::public_input::multiscale_known::<F, C>(sys, loc.clone(), terms)?;
+            x_hat = crate::plonk_curve_ops::add_fast(
+                sys,
+                Cow::Owned(format!("{loc} | x_hat blinding")),
+                &sum.negate(),
+                h_generator,
+            )?;
             std::slice::from_ref(&x_hat)
         }
         XHatInput::Statement {

@@ -63,6 +63,9 @@ impl Position<usize> {
 struct PendingGate<F, V> {
     vars: (Option<V>, Option<V>, Option<V>),
     coeffs: Vec<F>,
+    /// Debug-only (SNARKY_KEEP_LABELS): the emission location of the queued
+    /// half-row, so the flushed row's label names both gadgets.
+    loc: String,
 }
 
 /** A gate/row/constraint consists of a type (kind), a row, the other cells its columns/cells are
@@ -597,12 +600,29 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     /** Adds a row/gate/constraint to a constraint system `sys`. */
     fn add_row(
         &mut self,
-        _labels: &[Cow<'static, str>],
-        _loc: &Cow<'static, str>,
+        labels: &[Cow<'static, str>],
+        loc: &Cow<'static, str>,
         vars: Vec<Option<V>>,
         kind: GateType,
         coeffs: Vec<Field>,
     ) {
+        // Debug-only (SNARKY_KEEP_LABELS): record the emission context per
+        // row so circuit dumps can name every gate for parity tooling.
+        static KEEP_LABELS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let keep_labels =
+            *KEEP_LABELS.get_or_init(|| std::env::var_os("SNARKY_KEEP_LABELS").is_some());
+        let row_label = if keep_labels {
+            let mut s = labels.join(" ; ");
+            if !loc.is_empty() {
+                if !s.is_empty() {
+                    s.push_str(" | ");
+                }
+                s.push_str(loc);
+            }
+            s
+        } else {
+            String::new()
+        };
         if self.flush_generic_before_custom && kind != GateType::Generic {
             self.flush_pending_generic_gate();
         }
@@ -624,7 +644,7 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     kind,
                     wired_to: Vec::new(),
                     coeffs,
-                    label: String::new(),
+                    label: row_label,
                 });
             }
         }
@@ -636,9 +656,10 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
         if let Some(PendingGate {
             vars: (l, r, o),
             coeffs,
+            loc,
         }) = self.pending_generic_gate.take()
         {
-            let loc = Cow::Borrowed("");
+            let loc = Cow::Owned(loc);
             self.add_row(&[], &loc, vec![l, r, o], GateType::Generic, coeffs);
         }
     }
@@ -876,18 +897,25 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 self.pending_generic_gate = Some(PendingGate {
                     vars: (l, r, o),
                     coeffs,
+                    loc: loc.to_string(),
                 })
             }
             Some(_) => {
                 if let Some(PendingGate {
                     vars: (l2, r2, o2),
                     coeffs: coeffs2,
+                    loc: loc2,
                 }) = core::mem::replace(&mut self.pending_generic_gate, None)
                 {
                     coeffs.extend(coeffs2);
+                    let merged_loc: Cow<'static, str> = if loc2.is_empty() {
+                        loc.clone()
+                    } else {
+                        Cow::Owned(format!("{loc} ++ {loc2}"))
+                    };
                     self.add_row(
                         &[],
-                        loc,
+                        &merged_loc,
                         vec![l, r, o, l2, r2, o2],
                         GateType::Generic,
                         coeffs,

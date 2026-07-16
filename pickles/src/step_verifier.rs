@@ -252,6 +252,58 @@ pub fn wrap_statement_terms<F: PrimeField>(
     terms
 }
 
+/// The step-side x_hat inputs for [`crate::public_input::multiscale_known`]
+/// (OCaml `incrementally_verify_proof` with a `Known` wrap domain): the wrap
+/// statement's packed elements paired with their constant Lagrange
+/// commitments. The boolean feature flags are compile-time constant `false`
+/// in every o1js-compiled circuit, so — exactly as OCaml's constant partition
+/// (`Field.Constant.(equal zero) c -> None`) — they contribute nothing.
+pub fn wrap_statement_known_terms<F: PrimeField>(
+    stmt: &WrapStatementVars<F>,
+    messages_for_next_step_proof_digest: &FieldVar<F>,
+    packed_lagranges: &[(Point<F>, Point<F>)],
+) -> Vec<crate::public_input::KnownTerm<F>> {
+    let widths = wrap_statement_packed_widths(stmt.bulletproof_challenges.len());
+    let mut values: Vec<FieldVar<F>> = vec![
+        stmt.combined_inner_product.clone(),
+        stmt.b.clone(),
+        stmt.zeta_to_srs_length.clone(),
+        stmt.zeta_to_domain_size.clone(),
+        stmt.perm.clone(),
+        stmt.beta.clone(),
+        stmt.gamma.clone(),
+        stmt.alpha.clone(),
+        stmt.zeta.clone(),
+        stmt.xi.clone(),
+        stmt.sponge_digest_before_evaluations.clone(),
+        stmt.messages_for_next_wrap_proof_digest.clone(),
+        messages_for_next_step_proof_digest.clone(),
+    ];
+    values.extend(stmt.bulletproof_challenges.iter().cloned());
+    values.push(stmt.branch_data.clone());
+    assert_eq!(values.len(), widths.len(), "wrap statement element count");
+    assert_eq!(packed_lagranges.len(), widths.len());
+
+    let as_constant = |v: &FieldVar<F>| -> F {
+        match v {
+            FieldVar::Constant(c) => *c,
+            _ => panic!("wrap_statement_known_terms: Lagrange commitments must be constants"),
+        }
+    };
+    values
+        .into_iter()
+        .zip(&widths)
+        .zip(packed_lagranges)
+        .map(
+            |((value, &num_bits), (lagrange, _correction))| crate::public_input::KnownTerm {
+                value,
+                num_bits,
+                lagrange: (as_constant(&lagrange.x), as_constant(&lagrange.y)),
+            },
+        )
+        .collect()
+}
+
 /// One previous proof, fully handled inside a step circuit
 /// (`step_main.ml::verify_one`):
 ///
@@ -385,8 +437,13 @@ where
         )?,
     };
 
-    // the wrap statement public input, then the full wrap-proof check
-    let terms = wrap_statement_terms(stmt, &msgs_step_digest, packed_lagranges, flag_lagranges);
+    // the wrap statement public input, then the full wrap-proof check.
+    // OCaml's step side commits over a KNOWN wrap domain via
+    // `multiscale_known` (all scales first, one reduce, constants folded out
+    // of circuit); the boolean feature flags are constant `false` and
+    // contribute nothing.
+    let _ = flag_lagranges;
+    let terms = wrap_statement_known_terms(stmt, &msgs_step_digest, packed_lagranges);
     let sg_old_mask = vec![Boolean::true_(); prev_challenge_polynomial_commitments.len()];
     let index_digest = if share_index_sponge {
         IndexDigest::SpongeAfterIndex(sponge_after_index)
@@ -401,7 +458,7 @@ where
         vk,
         prev_challenge_polynomial_commitments,
         &sg_old_mask,
-        XHatInput::PublicInput {
+        XHatInput::MultiscaleKnown {
             terms: &terms,
             h_generator,
         },
