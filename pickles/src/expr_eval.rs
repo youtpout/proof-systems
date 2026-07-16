@@ -49,6 +49,14 @@ pub struct PolishEnv<'a, F: PrimeField> {
     pub zk_rows: u64,
     /// The evaluation point (zeta), as a circuit variable.
     pub pt: FieldVar<F>,
+    /// The precomputed `zk_polynomial` of the scalars env. OCaml's
+    /// `vanishes_on_zero_knowledge_and_previous_rows` is this value, computed
+    /// ONCE in `scalars_env` — the token must reuse it, not recompute.
+    pub zk_polynomial: Option<&'a FieldVar<F>>,
+    /// The precomputed `ζ^n - 1` of the scalars env. OCaml's
+    /// `unnormalized_lagrange_basis` divides this shared value by
+    /// `(ζ - ω^i)` — no per-occurrence power chain.
+    pub zeta_to_n_minus_1: Option<&'a FieldVar<F>>,
     /// Challenge lookup (alpha/beta/gamma/joint_combiner).
     pub challenge: &'a dyn Fn(BerkeleyChallengeTerm) -> FieldVar<F>,
     /// Column evaluation lookup at the given row.
@@ -147,6 +155,9 @@ pub fn eval_polish<F: FftField + PrimeField>(
                 stack.push(FieldVar::constant(env.mds[*row][*col]))
             }
             Constant(ConstantTerm::Literal(x)) => stack.push(FieldVar::constant(*x)),
+            VanishesOnZeroKnowledgeAndPreviousRows if env.zk_polynomial.is_some() => {
+                stack.push(env.zk_polynomial.unwrap().clone())
+            }
             VanishesOnZeroKnowledgeAndPreviousRows => match &env.domain {
                 PolishDomain::Fixed(d) => stack.push(vanishes_on_last_n_rows(
                     sys,
@@ -182,6 +193,22 @@ pub fn eval_polish<F: FftField + PrimeField>(
                     *offset
                 };
                 match &env.domain {
+                    PolishDomain::Fixed(d) if env.zeta_to_n_minus_1.is_some() => {
+                        // OCaml env: `(ζ^n - 1) / (ζ - ω^off)` with the SHARED
+                        // precomputed numerator (plonk_checks.ml:300).
+                        let omega_i = if off < 0 {
+                            d.group_gen.pow([(-off) as u64]).inverse().unwrap()
+                        } else {
+                            d.group_gen.pow([off as u64])
+                        };
+                        let denominator = &env.pt - &FieldVar::constant(omega_i);
+                        stack.push(crate::plonk_curve_ops::div_var(
+                            sys,
+                            loc.clone(),
+                            env.zeta_to_n_minus_1.unwrap(),
+                            &denominator,
+                        )?)
+                    }
                     PolishDomain::Fixed(d) => stack.push(unnormalized_lagrange_basis(
                         sys,
                         loc.clone(),
@@ -362,6 +389,8 @@ mod tests {
                 mds: &mds,
                 zk_rows: ZK_ROWS as u64,
                 pt,
+                zk_polynomial: None,
+                zeta_to_n_minus_1: None,
                 challenge: &challenge,
                 column: &column,
             };

@@ -557,6 +557,8 @@ mod tests {
                 mds: &mds,
                 zk_rows: ZK_ROWS as u64,
                 pt: zeta.clone(),
+                zk_polynomial: None,
+                zeta_to_n_minus_1: None,
                 challenge: &challenge,
                 column: &column,
             };

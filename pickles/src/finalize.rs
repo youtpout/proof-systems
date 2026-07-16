@@ -564,6 +564,8 @@ pub fn finalize_deferred<F: PrimeField>(
         mds: params.mds,
         zk_rows: ZK_ROWS as u64,
         pt: witness.zeta.clone(),
+        zk_polynomial: Some(&env.zk_polynomial),
+        zeta_to_n_minus_1: Some(&env.zeta_to_n_minus_1),
         challenge: &challenge,
         column: &column,
     };

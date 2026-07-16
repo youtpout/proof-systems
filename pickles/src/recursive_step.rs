@@ -4369,17 +4369,16 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .collect()
     };
     let cpt = |p: (Fp, Fp)| Point::new(FieldVar::constant(p.0), FieldVar::constant(p.1));
-    let t2s = |sys: &mut RunState<Fp>,
+    // The five Type2 statement slots (cip, b, zeta_to_srs_length,
+    // zeta_to_domain_size, perm) carry OCaml's `Impls.Step.Other_field`
+    // check (impls.ml:50-107) — the boolean row on the odd bit
+    // (`typ_unchecked.check`), then the forbidden-shifted-value block —
+    // emitted per real proof AFTER the per-proof witness (see below), not
+    // at slot-consumption time.
+    let t2s = |_sys: &mut RunState<Fp>,
                half: FieldVar<Fp>,
                odd: FieldVar<Fp>|
      -> SnarkyResult<ShiftedScalar<Fp>> {
-        sys.assert_r1cs(
-            Some("step statement Type2 odd bit".into()),
-            loc!(),
-            odd.clone(),
-            odd.clone(),
-            odd.clone(),
-        )?;
         Ok(ShiftedScalar::Type2(half, Boolean::create_unsafe(odd)))
     };
 
@@ -4575,9 +4574,9 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         messages_for_next_wrap_proof_digest: sv[11].clone(),
         bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
         branch_data: branch_data_var,
-        feature_flags: (0..8)
-            .map(|_| sys.compute(loc!(), |_| false))
-            .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?,
+        // o1js programs use `Plonk_types.Features.none` — the statement's
+        // feature flags are circuit CONSTANTS (no witness, no boolean rows).
+        feature_flags: (0..8).map(|_| Boolean::false_()).collect(),
     };
     let finalize_domain = match (&d.finalize_domain_log2s[..], &branch_domain_log2) {
         ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
@@ -4639,6 +4638,52 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     )?;
     let should_finalize = Boolean::create_unsafe(should_finalize);
     let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+    // OCaml witnesses the previous challenge-polynomial commitments last in
+    // the per-proof witness (`Vector.typ Inner_curve.typ`, on-curve rows) and
+    // reuses the SAME points as the old accumulators of the digest
+    // reconstruction — there is no separate accumulator witness. Legacy
+    // fixed-arity paths carry distinct vectors and keep their own witness.
+    let prev_cpcs: Vec<Point<Fp>> = d
+        .prev_challenge_polynomial_commitments
+        .iter()
+        .map(|&p| mkpt(sys, p))
+        .collect::<SnarkyResult<Vec<_>>>()?;
+    let messages_accumulators: Vec<Point<Fp>> =
+        if d.messages_for_next_step_accumulators == d.prev_challenge_polynomial_commitments {
+            prev_cpcs.clone()
+        } else {
+            d.messages_for_next_step_accumulators
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?
+        };
+    // `Impls.Step.Other_field.check` on the five Type2 statement slots,
+    // spec order back-to-front (perm, zeta_to_domain_size,
+    // zeta_to_srs_length, b, combined_inner_product): the odd-bit boolean
+    // row, then the four forbidden (lo, hi) equalities + any + assert.
+    for slot in (0..5).rev() {
+        let half = statement[2 * slot].clone();
+        let odd_field = statement[2 * slot + 1].clone();
+        sys.add_constraint(
+            snarky::runner::Constraint::BasicSnarkyConstraint(
+                snarky::constraint_system::BasicSnarkyConstraint::Boolean(odd_field.clone()),
+            ),
+            Some("step statement Type2 odd bit".into()),
+            loc!(),
+        )?;
+        let odd = Boolean::create_unsafe(odd_field);
+        let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
+        for &(lo, hi) in &forbidden_fp {
+            let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
+            let b_eq = if hi { odd.clone() } else { odd.not() };
+            eqs.push(x_eq.and(&b_eq, sys, loc!()));
+        }
+        let eq_refs: Vec<&Boolean<Fp>> = eqs.iter().collect();
+        let any = Boolean::any(&eq_refs, sys, loc!())?;
+        any.not()
+            .to_field_var()
+            .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
+    }
     // The proofs-verified mask is the pair of witnessed prefix-mask booleans
     // (OCaml `branch_data.proofs_verified_mask`, used directly by
     // `step_main.ml:63`). Physical order matches the front-padded proof
@@ -4652,16 +4697,8 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         dlog_index: dlog_index.clone(),
         share_index_sponge: d.share_index_sponge,
         prev_app_state,
-        messages_for_next_step_accumulators: d
-            .messages_for_next_step_accumulators
-            .iter()
-            .map(|&p| mkpt(sys, p))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        prev_challenge_polynomial_commitments: d
-            .prev_challenge_polynomial_commitments
-            .iter()
-            .map(|&p| mkpt(sys, p))
-            .collect::<SnarkyResult<Vec<_>>>()?,
+        messages_for_next_step_accumulators: messages_accumulators,
+        prev_challenge_polynomial_commitments: prev_cpcs,
         prev_challenges: d
             .prev_challenges
             .iter()
@@ -4765,6 +4802,9 @@ impl<
         // recursion vector is still physically padded and masked in the
         // prover below.
         let mut deferred_dummy_pins: Vec<(Fp, FieldVar<Fp>)> = Vec::new();
+        let mut reused_next_dlog_index: Option<
+            PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
+        > = None;
         for i in 0..2 {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
@@ -4777,7 +4817,7 @@ impl<
                 continue;
             }
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
-            let (proof, _index, _previous_app_state) =
+            let (proof, index, _previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
                     &proof_data[i],
@@ -4785,33 +4825,49 @@ impl<
                     &mds,
                     dummy_slots[i],
                 )?;
+            // Shared-wrap self-recursion: the next-step message commits to
+            // the SAME wrap key the proof was verified with — OCaml reuses
+            // the witnessed `d.wrap_key` points instead of witnessing a
+            // second copy.
+            if reused_next_dlog_index.is_none()
+                && proof_data[i].wrap_vk_pts == *messages_for_next_step_vk_pts
+            {
+                reused_next_dlog_index = Some(index);
+            }
             proofs.push(proof);
         }
-        let mk_next_point = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-            // OCaml witnesses the wrap key through `Inner_curve.typ`, whose
-            // `check` asserts y² = x³ + 5 (2 rows per point — the 56 Generic
-            // rows before the index sponge in every jsoo step circuit).
-            let point = Point::new(
-                sys.compute(loc!(), move |_| p.0)?,
-                sys.compute(loc!(), move |_| p.1)?,
-            );
-            point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
-            Ok(point)
-        };
-        let next_vk_pts = messages_for_next_step_vk_pts
-            .iter()
-            .map(|&p| mk_next_point(sys, p))
-            .collect::<SnarkyResult<Vec<_>>>()?;
-        let mut next_it = next_vk_pts.into_iter();
-        let next_dlog_index = PlonkVerificationKeyEvals {
-            sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
-            coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
-            generic_comm: next_it.next().unwrap(),
-            psm_comm: next_it.next().unwrap(),
-            complete_add_comm: next_it.next().unwrap(),
-            mul_comm: next_it.next().unwrap(),
-            emul_comm: next_it.next().unwrap(),
-            endomul_scalar_comm: next_it.next().unwrap(),
+        let next_dlog_index = match reused_next_dlog_index {
+            Some(index) => index,
+            None => {
+                let mk_next_point =
+                    |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                        // OCaml witnesses the wrap key through
+                        // `Inner_curve.typ`, whose `check` asserts y² = x³ + 5
+                        // (2 rows per point — the 56 Generic rows before the
+                        // index sponge in a base-case jsoo step circuit).
+                        let point = Point::new(
+                            sys.compute(loc!(), move |_| p.0)?,
+                            sys.compute(loc!(), move |_| p.1)?,
+                        );
+                        point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+                        Ok(point)
+                    };
+                let next_vk_pts = messages_for_next_step_vk_pts
+                    .iter()
+                    .map(|&p| mk_next_point(sys, p))
+                    .collect::<SnarkyResult<Vec<_>>>()?;
+                let mut next_it = next_vk_pts.into_iter();
+                PlonkVerificationKeyEvals {
+                    sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
+                    coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
+                    generic_comm: next_it.next().unwrap(),
+                    psm_comm: next_it.next().unwrap(),
+                    complete_add_comm: next_it.next().unwrap(),
+                    mul_comm: next_it.next().unwrap(),
+                    emul_comm: next_it.next().unwrap(),
+                    endomul_scalar_comm: next_it.next().unwrap(),
+                }
+            }
         };
         let app_state = match app {
             Some(app_main) => app_main(sys)?,
