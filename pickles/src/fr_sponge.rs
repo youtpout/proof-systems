@@ -180,9 +180,10 @@ pub fn squeeze_xi_r<F: PrimeField>(
     absorb_all(sys, loc.clone(), &mut sponge, &inputs.public_evals[1]);
 
     // 5. absorb all the column evaluations, zeta then zeta*omega per column
+    let evals_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | fr-sponge evals absorb"));
     for (zeta, zeta_omega) in inputs.evals.ordered_points() {
-        absorb_all(sys, loc.clone(), &mut sponge, zeta);
-        absorb_all(sys, loc.clone(), &mut sponge, zeta_omega);
+        absorb_all(sys, evals_loc.clone(), &mut sponge, zeta);
+        absorb_all(sys, evals_loc.clone(), &mut sponge, zeta_omega);
     }
 
     // 6. squeeze xi (polyscale) then r (evalscale)

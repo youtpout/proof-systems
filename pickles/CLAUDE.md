@@ -2718,6 +2718,21 @@ identique en histogramme (168/1/3/1/1/319, 2^10). Restent UNIQUEMENT des
 - Les comptes packés (2 gadgets/ligne Generic) ne convergent qu'avec
   l'ordre exact — viser les sites un par un à l'anchor-walk étiqueté.
 
+PISTE EN COURS (session 2, fin) : les blocs +2 lignes (+4 gadgets)/bloc
+répétés ~9×/proof dans update rows ~500-1100 sont les PAIRES de
+l'Opt_sponge du hash OLD-digest (hash_messages_for_next_step_proof_opt,
+8 paires + reste pour 17 éléments opt). Diff gadget-à-gadget d'un bloc
+(jsoo 816-842 vs rust 776-804, 52 vs 56 gadgets) :
+  jsoo-only : 2× [1,1,c,0,0], 2× [-,c,c,0,c]
+  rust-only : 4× [c,0,c,0,1], 2× [c,1,c,0,1], 2× [-,1,c,0,c]
+Suspects : formes de gadgets de Boolean::any/xor/equal ou add_in dans
+opt_sponge::consume_pairs vs les formules OCaml (opt_sponge.ml:44-174).
+MÉTHODE DÉCISIVE : mini-circuit isolé n'appelant QUE consume_pairs sur
+2 paires, dumper son flux de gadgets (SNARKY_KEEP_LABELS) et comparer
+aux formules OCaml gadget par gadget. Nos if_ (1 r1cs) et all (sum+equal)
+sont déjà iso ; vérifier any (2 éléments: or vs not(equal(sum,0))), xor,
+et les seals d'add_in.
+
 Après parité histogramme+ordre : câblage (differing rows → 0), puis les VK
 seront identiques (les constantes choose_pt suivent automatiquement).
 
