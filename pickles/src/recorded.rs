@@ -2466,6 +2466,7 @@ fn build_recorded_program_step_prepared_fixed_for_debug(
         Pallas,
         poly_commitment::ipa::SRS<Pallas>,
     >,
+    skip_verifier_align: bool,
 ) -> (
     crate::recursive_step::PreparedRecursiveStepWidth2<
         RECORDED_N1_STEP_STMT_LEN,
@@ -2488,10 +2489,14 @@ fn build_recorded_program_step_prepared_fixed_for_debug(
         app_state.clone(),
     );
     let prepared = crate::recursive_step::normalize_program_recursive_step(prepared);
-    let prepared = crate::recursive_step::align_program_recursive_step_verifier::<
-        RECORDED_N1_STEP_ROUNDS,
-        RECORDED_N1_STEP_STMT_LEN,
-    >(prepared, wrap_index);
+    let prepared = if skip_verifier_align {
+        prepared
+    } else {
+        crate::recursive_step::align_program_recursive_step_verifier::<
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+        >(prepared, wrap_index)
+    };
     let prepared = match branch.proofs_verified {
         0 => crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
@@ -2606,13 +2611,15 @@ pub fn debug_probe_branch(
         .get(branch_index)
         .ok_or_else(|| RecordedProveError::Program("unknown branch".into()))?;
     let t0 = snarky::wasm_instant::Instant::now();
-    let (prepared, main) = if mode == 1 {
-        // FIXED finalize: bypass the domain-list align entirely.
+    let (prepared, main) = if mode == 1 || mode == 3 {
+        // FIXED finalize: bypass the domain-list align entirely; mode 3
+        // additionally skips the verifier align (share_index_sponge).
         build_recorded_program_step_prepared_fixed_for_debug(
             branch,
             &template,
             &bootstrap_vk,
             &template.wrap_verifier.index,
+            mode == 3,
         )
     } else {
         build_recorded_program_step_prepared(
