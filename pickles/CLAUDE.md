@@ -3006,3 +3006,38 @@ proof` (28). Lecture des formes: jsoo émet un **Equal(Var,Var) scalé**
 scale_fast2 / add_fast(h, g.negate()) l'endroit où OCaml fait un
 `Field.Assert.equal` de deux lincoms scalées au lieu de matérialiser une
 variable scalée. Puis `c1c0c` +36 (finalize/ft_eval0/env).
+
+## ✅ add_fast seal (commit suivant 04e437da4b) — wrap formes 317→211
+
+OCaml `add_fast` (plonk_curve_ops.ml:12) commence par
+`let p1 = seal p1 in let p2 = seal p2 in`. Notre add_fast passait les
+lincoms brutes au gate EC. Effet mesuré: `c0c00` 55→**0** (forme parasite
+éliminée), `cc000` 83→138 vs jsoo 136 (quasi aligné, +2).
+⚠ differingRows N'A PAS bougé (8992) — normal: c'est un fix de FORME; le
+câblage reste décalé tant que des écarts amont subsistent. Toujours
+regarder les DEUX métriques (cf. section «Deux métriques, deux axes»).
+
+## RÈGLE GÉNÉRALE qui se dégage (4 fixes, même nature)
+
+Les conventions d'écriture littérales d'OCaml sont STRUCTURELLES pour la
+VK, alors qu'elles ne changent aucune valeur:
+ 1. `Boolean::all` → `equal (const n) sum` (constante à GAUCHE)
+ 2. `challenge_polynomial` → `f i * !r` (nouveau facteur à GAUCHE)
+ 3. `add_fast` → `seal` des entrées AVANT le gate
+ 4. opt-sponge wrap → skip réel, jamais d'absorb de zéros
+⇒ Quand une forme diverge, LIRE LE LITTÉRAL OCaml (ordre des opérandes,
+seal, lazy) — pas la sémantique. L'histogramme de signatures rend ces
+conventions visibles; c'est l'outil n°1.
+
+ÉTAT (tout pushé, recorded 21/21, init=0):
+ init  differingRows 0 ✅
+ update  +39 net / 8345 rows / 123 formes
+ merge   +79 net / 15885 rows / (formes non mesurées)
+ wrap    +26 net / 8992 rows / **211 formes** (était 689)
+FILONS WRAP restants (diffus, plus de gros couple): `c1c0c` +36 vs
+`11c0c` −14 (diff = 1er coeff c vs 1 → opérande scalée vs nue; 24 rows
+dans «finalize unfinalized» non sous-labellisé, 7 ft_eval0, 5 env),
+`ccc00` +32, `00c10` −26, `001c0` +23, `11c00` +18.
+PROCHAIN PAS SUGGÉRÉ: sous-labelliser le reste de wrap_main «finalize
+unfinalized» (24 rows anonymes) comme on l'a fait pour fr-sponge/sg_evals,
+puis traiter `c1c0c`/`11c0c`.
