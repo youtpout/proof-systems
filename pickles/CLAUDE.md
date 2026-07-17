@@ -4088,3 +4088,19 @@ tmp-zkapp-gates-diff adapté + la parité récursive) et add (tâche #9 —
 le plan lincom per-constraint du carnet). Les hooks poseidon/allocation
 peuvent AUSSI avoir rapproché le add (les steps update/merge absorbent
 des hash) — RE-MESURER le gate add avant d'attaquer #9.
+
+## ✅ Enveloppe VK programme : max_proofs_verified corrigé (e55d208f9b)
+
+L'intuition utilisateur (« leur résultat est juste un encodage base64 »)
+était la bonne piste : la VK est du bin_prot base64 DÉCODABLE, et le
+décodage champ-par-champ du add (o1js tmp-add-vk-decode.ts) a montré
+jsoo max=2 / rust max=1 : `SideLoadedVerificationKey::new` écrasait max
+avec la valeur dérivée du DOMAINE du wrap (2^14→N1) au lieu du max des
+branches (OCaml Pickles.compile déclare max=2 même en wrap 2^14).
+Fix : `from_wrap_verifier_with_max` + l'enveloppe programme passe le max
+réel. recorded 21/21. Après bump du pin + rebuild mina-runtime :
+maxProofsVerified 2/2, actualWrapDomainSize 1/1 ✓.
+RESTE pour add/side-loaded : commitments 0/28 = les OCTETS des circuits
+(update 36 / merge 41 / wrap 18 runDiffs) — c'est EXACTEMENT le plan
+lincom per-constraint déjà écrit (doublon J1981). Pins : mina-rust
+Cargo.lock bumpé e55d208f (commit local — push https à faire à la main).
