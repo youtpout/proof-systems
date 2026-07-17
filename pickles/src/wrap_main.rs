@@ -223,14 +223,28 @@ where
         };
         let fin = finalize_deferred(sys, finalize_loc.clone(), &params, &witness)?;
 
-        // Boolean.Assert.any [finalized; not should_finalize]
-        let ok = Boolean::any(
-            &[&fin.finalized, &u.should_finalize.not()],
-            sys,
+        // `Boolean.Assert.any [finalized; not should_finalize]`
+        // (wrap_main.ml:418). Snarky's `Assert.any` is
+        // `assert_non_zero (num_true bs)` (utils.ml:361) — NO `or` gate:
+        // the boolean sum stays a lincom, its inverse is witnessed and one
+        // r1cs `sum · inv = 1` is emitted.
+        let ok_sum = fin.finalized.to_field_var() + u.should_finalize.not().to_field_var();
+        let ok_sum_for_witness = ok_sum.clone();
+        let ok_sum_inv: FieldVar<F> = sys.compute(
             finalize_loc.clone(),
+            move |env: &dyn WitnessGeneration<F>| {
+                env.read_var(&ok_sum_for_witness)
+                    .inverse()
+                    .unwrap_or_else(F::zero)
+            },
         )?;
-        ok.to_field_var()
-            .assert_equals(sys, finalize_loc, &FieldVar::constant(F::one()))?;
+        sys.assert_r1cs(
+            Some("finalize ok any".into()),
+            finalize_loc,
+            ok_sum,
+            ok_sum_inv,
+            FieldVar::constant(F::one()),
+        )?;
 
         new_bulletproof_challenges.push(fin.challenges);
     }

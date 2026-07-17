@@ -199,9 +199,16 @@ pub fn finalize_all<F: PrimeField>(
     perm_derived: &FieldVar<F>,
     perm_claimed: &FieldVar<F>,
 ) -> SnarkyResult<Boolean<F>> {
-    let cip_correct = cip_derived.equal(sys, loc.clone(), cip_claimed)?;
-    let b_correct = b_derived.equal(sys, loc.clone(), b_claimed)?;
-    let perm_correct = perm_derived.equal(sys, loc.clone(), perm_claimed)?;
+    // OCaml puts the CLAIMED value first in every one of these equalities —
+    // `equal (Shifted_value.Type2.to_field ... cip) actual` (wrap_verifier.
+    // ml:1732-1737), `equal (... b) b_actual` (:1755-1757) and
+    // `Shifted_value.equal Field.equal (f plonk) (f actual)` (plonk_checks.
+    // ml:473) — so `z = claimed − actual`; the swapped order flips every
+    // sign in the reduced difference. (`xi_correct` is the exception:
+    // `Field.equal xi_actual xi`, :1613.)
+    let cip_correct = cip_claimed.equal(sys, loc.clone(), cip_derived)?;
+    let b_correct = b_claimed.equal(sys, loc.clone(), b_derived)?;
+    let perm_correct = perm_claimed.equal(sys, loc.clone(), perm_derived)?;
     Boolean::all(
         &[xi_correct.clone(), cip_correct, b_correct, perm_correct],
         sys,
