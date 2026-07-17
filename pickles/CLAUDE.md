@@ -3853,3 +3853,26 @@ vars des slots Field du statement à réutiliser depuis unf_deferred
 [jsoo wire 1765.3], ordre de témoignage unf_deferred = ordre spec OCaml
 [5fq;digest;β,γ;α,ζ,ξ;bp16;bool] avec zsrs/zdom witnessés, slots Packed
 re-témoignés à dédupliquer).
+
+## ADDENDUM (fin de session) — la sonde du −8/finalize a AVANCÉ :
+
+ • Les 16 mults jsoo (wrap J1982-1988+) = les chaînes pow2pow zeta_n /
+   zetaw_n de Step 6 (wrap_verifier.ml:1626-1633, n = Max_degree.
+   wrap_log2 = Tock.Rounds = 16), émises INCONDITIONNELLEMENT même en
+   single-chunk (le TODO ":1628 zeta_n is recomputed in env below").
+   MAIS : nos « dead pow chains » EXISTENT DÉJÀ (finalize.rs:507-521,
+   position et longueur correctes). Le −8 n'est DONC PAS les chaînes.
+ • La liaison de packing observée (o du gadget k en slot A ligne R →
+   gadget k+1 en slot B ligne R+1) est la signature d'une émission
+   SÉQUENTIELLE sous la règle [NOUVEAU; PENDING] — utile pour lire les
+   chaînes dans les dumps.
+ • RESTE INEXPLIQUÉ, sonde n°1 de la reprise : les DEUX gadgets
+   `[−big, 1, −1, 0, 0]` (o = y − C·x) à wrap J1981 A et B, câblés vers
+   **la ligne 174 cols 4-5** (tête du premier finalize — les seals de
+   map_plonk_to_field ? α/ζ to_field ?). Identifier C (dumper la valeur
+   exacte sans troncature) et les vars de la ligne 174. Ils précèdent
+   immédiatement les chaînes → probablement le mult zetaw = gén·ζ
+   (générateur masqué : C = coefficient d'un terme du mask ?) et/ou un
+   seal — comparer à NOTRE émission de zetaw (labels `| zetaw`).
+ • Après ça : re-LCS ciblé du run @847 (109 vs 101) maintenant que
+   b_actual est zetaw-first — le delta résiduel sera plus lisible.
