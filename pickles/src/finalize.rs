@@ -628,9 +628,15 @@ pub fn finalize_deferred<F: PrimeField>(
             &cip_entries,
         )?
     };
+    // OCaml compares CLAIMED-first: `equal (Shifted_value.Type2.to_field ...
+    // combined_inner_product) actual_combined_inner_product`
+    // (wrap_verifier.ml:1732-1737).
     let cip_claimed = params.shift.to_field(&witness.cip_repr);
-    let cip_correct =
-        combined_inner_product.equal(sys, Cow::Owned(format!("{loc} | cip check")), &cip_claimed)?;
+    let cip_correct = cip_claimed.equal(
+        sys,
+        Cow::Owned(format!("{loc} | cip check")),
+        &combined_inner_product,
+    )?;
 
     // Step 9: the NEW bulletproof challenges to field form, then b_correct
     let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
@@ -650,8 +656,9 @@ pub fn finalize_deferred<F: PrimeField>(
         &zetaw,
         &r_field,
     )?;
+    // `equal (Shifted_value.Type2.to_field ... b) b_actual` (:1755-1757).
     let b_claimed = params.shift.to_field(&witness.b_repr);
-    let b_correct = b_derived.equal(sys, Cow::Owned(format!("{loc} | b check")), &b_claimed)?;
+    let b_correct = b_claimed.equal(sys, Cow::Owned(format!("{loc} | b check")), &b_derived)?;
 
     // Step 10: the PlonK relation (the deferred permutation scalar)
     let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(
@@ -660,21 +667,26 @@ pub fn finalize_deferred<F: PrimeField>(
         &env,
         &ft_evals,
     )?;
+    // `Shifted_value.equal Field.equal (f plonk) (f actual)`
+    // (plonk_checks.ml:473) — claimed first here too.
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let perm_correct =
-        perm_derived.equal(sys, Cow::Owned(format!("{loc} | perm check")), &perm_claimed)?;
+        perm_claimed.equal(sys, Cow::Owned(format!("{loc} | perm check")), &perm_derived)?;
 
-    // Step 11: combine all checks
-    let finalized = finalize_all(
+    // Step 11: combine all checks. OCaml folds the four booleans DIRECTLY
+    // into `Boolean.all [xi_correct; b_correct; combined_inner_product_
+    // correct; plonk_checks_passed]` (wrap_verifier.ml:1777-1782) — each
+    // equality is emitted exactly once, above. Re-deriving them through
+    // `finalize_all` here duplicated all three equality gadget groups.
+    let finalized = Boolean::all(
+        &[
+            xi_correct.clone(),
+            b_correct.clone(),
+            cip_correct.clone(),
+            perm_correct.clone(),
+        ],
         sys,
         loc,
-        &xi_correct,
-        &combined_inner_product,
-        &cip_claimed,
-        &b_derived,
-        &b_claimed,
-        &perm_derived,
-        &perm_claimed,
     )?;
 
     Ok(FinalizedDeferred {
