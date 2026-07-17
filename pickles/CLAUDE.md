@@ -3159,3 +3159,27 @@ ACTION SUIVANTE: labelliser les sites restants d'incrementally_verify.rs
 (l.377-389 squeeze/lowest_128_bits, t_comm, ft_comm, combine, bulletproof)
 puis re-mesurer. NE PAS deviner — chaque cycle = ~4 min de rebuild natif,
 donc labelliser LARGE d'un coup.
+
+### @6645 — FENÊTRE BORNÉE (astuce: lire les labels des ANCRES)
+
+Pas besoin de rebuild pour localiser: les ancres non-Generic PORTENT un
+label. Les lire encadre la fenêtre immédiatement:
+  @6640-6642 VarBaseMul  "scale_fast | … | verify wrap proof"
+  @6643 CompleteAdd      "… | scale_fast2 h_minus_g add"
+  @6644 CompleteAdd      "… | **bulletproof rhs add**"   ← borne gauche
+  … 30 lignes (rust) / 6 (jsoo) …
+  @6645+ Poseidon        "… | **new index sponge**"      ← borne droite
+⇒ Les 28 lignes sont la QUEUE de `verify()` (step_verifier.rs), entre la
+fin du bulletproof et le nouveau digest de step_main. Contenu attendu:
+`check_bulletproof_equation_from_q` (equal_g), le bypass base-case des 16
+bulletproof challenges (`sys.if_`), les 4 asserts plonk.
+VÉRIFIÉ: OCaml (step_verifier.ml:1305-1316) fait la MÊME chose — 16 ×
+(`Field.if_ is_base_case ~then_:c1 ~else_:c2` + `Field.Assert.equal c1
+c2`); et `Assert.equal` entre 2 vars de même scale n'émet AUCUN gate
+(union-find, plonk_constraint_system.ml Equal case) — idem chez nous.
+⇒ Le surplus n'est PAS le bypass. Reste à instrumenter: le `equal_g`
+(check_bulletproof_equation_from_q) et `ft_comm` (incrementally_verify.rs
+l.426, encore à loc nu), + l.539 (absorb delta), 349/373/374
+(public_input_commitment), 304-309 (index sponge), 335 (sg_old absorb).
+ASTUCE À RÉUTILISER: labels des ancres = localisation gratuite, sans
+rebuild. Toujours commencer par là.

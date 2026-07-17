@@ -382,12 +382,12 @@ where
 
     // == IVC Step 7: beta, gamma (raw 128-bit, `Opt.challenge`) ==
     let beta = {
-        let squeezed = sponge.squeeze(sys, loc.clone())?;
-        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, true)?
+        let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze beta")))?;
+        crate::challenge::lowest_128_bits(sys, Cow::Owned(format!("{loc} | squeeze beta")), &squeezed, true)?
     };
     let gamma = {
-        let squeezed = sponge.squeeze(sys, loc.clone())?;
-        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, true)?
+        let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze gamma")))?;
+        crate::challenge::lowest_128_bits(sys, Cow::Owned(format!("{loc} | squeeze gamma")), &squeezed, true)?
     };
 
     // == IVC Steps 9-10: absorb z_comm, sample alpha (`Opt.scalar_challenge`) ==
@@ -397,15 +397,19 @@ where
         &to_pvs(&messages.z_comm),
     );
     let alpha = {
-        let squeezed = sponge.squeeze(sys, loc.clone())?;
-        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, false)?
+        let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze alpha")))?;
+        crate::challenge::lowest_128_bits(sys, Cow::Owned(format!("{loc} | squeeze alpha")), &squeezed, false)?
     };
 
     // == IVC Steps 11-12: absorb t_comm, sample zeta (`Opt.scalar_challenge`) ==
-    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(&messages.t_comm));
+    sponge.absorb_commitment(
+        sys,
+        Cow::Owned(format!("{loc} | absorb t_comm")),
+        &to_pvs(&messages.t_comm),
+    );
     let zeta = {
-        let squeezed = sponge.squeeze(sys, loc.clone())?;
-        crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, false)?
+        let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze zeta")))?;
+        crate::challenge::lowest_128_bits(sys, Cow::Owned(format!("{loc} | squeeze zeta")), &squeezed, false)?
     };
 
     // == IVC Step 13: opt->plain conversion, fork, then squeeze the digest ==
@@ -414,7 +418,7 @@ where
     // and fed to the Fr-sponge.
     let mut sponge = sponge.into_plain();
     let mut sponge_before_evaluations = sponge.clone();
-    let sponge_digest = sponge.squeeze(sys, loc.clone());
+    let sponge_digest = sponge.squeeze(sys, Cow::Owned(format!("{loc} | sponge_digest")));
 
     // == IVC Step 14: ft_comm (linearization commitment) ==
     let ft = ft_comm(
@@ -470,12 +474,27 @@ where
     // BEFORE absorbing cip/squeezing u — reordered here to match exactly.
     advice
         .combined_inner_product
-        .absorb(sys, loc.clone(), &mut sponge_before_evaluations);
-    let t = sponge_before_evaluations.squeeze(sys, loc.clone());
-    let (ux, uy) = snarky::gadgets::group_map::to_group(sys, loc.clone(), group_map_params, &t)?;
+        .absorb(
+            sys,
+            Cow::Owned(format!("{loc} | absorb evals")),
+            &mut sponge_before_evaluations,
+        );
+    let t = sponge_before_evaluations.squeeze(sys, Cow::Owned(format!("{loc} | squeeze u")));
+    let (ux, uy) = snarky::gadgets::group_map::to_group(
+        sys,
+        Cow::Owned(format!("{loc} | group_map u")),
+        group_map_params,
+        &t,
+    )?;
     let u = Point::new(ux, uy);
 
-    let combined_polynomial = combine_commitments(sys, loc.clone(), &commitments, xi, endo_base)?;
+    let combined_polynomial = combine_commitments(
+        sys,
+        Cow::Owned(format!("{loc} | combine_commitments")),
+        &commitments,
+        xi,
+        endo_base,
+    )?;
 
     // bullet_reduce(sponge, lr): per round absorb(L,R)+squeeze prechallenge
     // (batch), then separately fold pre^{-1}·L + pre·R (batch) — matches
@@ -488,13 +507,13 @@ where
         .collect();
     let prechallenges = crate::bulletproof::bullet_reduce_challenges(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | bp challenges")),
         &mut sponge_before_evaluations,
         &lr_pv,
     )?;
     let lr_prod = bullet_reduce_terms::<F, C>(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | bp reduce")),
         &openings.lr,
         &prechallenges,
         endo_base,
@@ -506,7 +525,7 @@ where
     // Type1 scale_fast block precedes the transcript's Poseidon/EndoMulScalar.
     let q = prepare_bulletproof_q(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | bp q")),
         &combined_polynomial,
         &lr_prod,
         &u,
@@ -521,7 +540,11 @@ where
         &mut sponge_before_evaluations,
         std::slice::from_ref(&to_pv(&openings.delta)),
     );
-    let c = crate::challenge::squeeze_scalar(sys, loc.clone(), &mut sponge_before_evaluations)?;
+    let c = crate::challenge::squeeze_scalar(
+        sys,
+        Cow::Owned(format!("{loc} | squeeze c")),
+        &mut sponge_before_evaluations,
+    )?;
 
     // == The final inner-product-argument equation ==
     let success = check_bulletproof_equation_from_q(
