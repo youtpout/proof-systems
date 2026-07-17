@@ -2842,3 +2842,28 @@ de gadgets différente (~+238 muls / −47 squares / −89 reduces).
 `mina_runtime.node`, PAS `index.node` ! Copier target/napi/index.node vers
 `mina_runtime.node` (node_modules/@o1js/... ET native/...) sinon le bench
 tourne sur un addon périmé (les VK affichées ne bougent pas).
+
+PLAN CHIRURGIE WRAP OPT-SPONGE (précisé) :
+- Côté STEP: RIEN à changer (sg_old_mask est constant-true en pratique →
+  les mask-muls se replient; OCaml pad_commitments = constantes,
+  absorbs pleins — équivalent ✓).
+- (1) STEP PROVER (recursive_step.rs:2722): passer les recursions
+  TRIMMÉES (init 0, update 1, merge 2 — enlever les slots dummy) et
+  mask=None; le transcript step n'absorbe plus de zéros → largeur réelle
+  Mina. Le proof.prev_challenges porte le trim (b-polys IPA suivent).
+- (2) ORACLES du step proof pour le witness wrap (ligne ~2805):
+  oracles_with_recursion_mask → oracles plain (le proof porte le trim).
+- (3) WRAP CIRCUIT (incrementally_verify.rs:313-322): remplacer les
+  mask-muls sg_old par des absorbs OPT (keep, x), (keep, y) sur
+  Transcript::Opt (méthode absorb_opt à ajouter); dès lors next_index
+  devient variable et TOUTES les paires suivantes émettent la machinerie
+  complète (~11 rows) = le profil jsoo @4391+.
+- (4) Vérifier la COMBINAISON des commitments sg_old dans le bulletproof
+  wrap (wrap_verifier.ml:649 + combine_split_commitments avec les paires
+  (keep, sg)) — notre équivalent doit masquer/sauter le sg dummy quand le
+  step proof n'a qu'un b-poly.
+- (5) Les données dummy (pasta_ipa_wrap_and_step, donors, templates de
+  compile) doivent être régénérées avec les transcripts trimmés (elles
+  sont recalculées au vol normalement).
+- Arbitre: recorded 21/21 puis measure (wrap @4391+ doit passer de blocs
+  6 rows à ~11 rows; net wrap −95 → ~0). Vérifier init RESTE 0.
