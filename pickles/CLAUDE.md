@@ -4105,31 +4105,60 @@ RESTE pour add/side-loaded : commitments 0/28 = les OCTETS des circuits
 lincom per-constraint déjà écrit (doublon J1981). Pins : mina-rust
 Cargo.lock bumpé e55d208f (commit local — push https à faire à la main).
 
-## ITÉRATION b_actual EN COURS — état précis pour reprendre
+## ✅ b_actual RÉSOLU (7add2e8100) — zeta_to_srs_length manquait
 
-LITTÉRAL OCaml (wrap_verifier.ml:35-57, G.challenge_polynomial) :
-  pow_two_pows.(i) <- M.(y * y)   ← MUL générique (PAS square) ⇒ le
-  snarky OCaml réduit CHAQUE opérande (2 gadgets [endo,1,−1] pour
-  mul(ζ_lazy, ζ_lazy) — le doublon J1981 A+B adjacents ✓).
-  prod : r := f i * !r (terme à GAUCHE) ; terme = one + c_i·pow(k−1−i).
-NOTRE ipa.rs:50-73 challenge_polynomial_circuit : pow chain
-  prev.mul(prev) puis boucle (c.mul(pow) ; (1+scaled).mul(res)).
-NOTRE canonicalisation R1CS (constraint_system.rs:1203) réduit AUSSI
-  v1 et v2 séparément (2 reds ✓ pas de mémo — hypothèse mémo RÉFUTÉE).
-MAIS l'ENTRELACEMENT diffère (dump frais, run @847 j109/r101) :
-  jsoo J1981 : [red, red] adjacents PUIS squares (J1982-1988…).
-  rust R1925-1934 : [red,sq][sq,red][sq×6][red][red][1+c·x]… —
-  les reds éparpillés entre les squares.
-⇒ PROCHAINE SONDE (wires, 1 commande) : attribuer chaque red rust
-  (ζ ou chals — les 16 bp-chals sont AUSSI des endo-lincoms lazy) via
-  les cycles de wires comme pour J1981 (droite vers les états finaux
-  EndoMulScalar rows ~167-174 = ζ/α ; vers les trains bp = chals).
-  Ensuite aligner l'ordre d'émission de challenge_polynomial_circuit
-  terme à terme sur OCaml (la chaîne pow d'abord AVEC les 2 reds du
-  premier mul adjacents, puis les termes du prod), et vérifier de même
-  cip (combined_evaluation) dans le même run.
-CIBLE MESURABLE : wrap @847/@1694 j109→r109 ; update @892, merge @893
-  (j113-114/r105) se ferment pareil. PUIS re-décoder la VK add
-  (commitments 0/28 → doivent commencer à converger une fois les
-  steps/wrap byte-identiques ; l'ancre finale = VK_HASH jsoo
-  10959392966233509715748678308838967246207769407061667940269890557862386195723).
+La divergence @847/@1694 (j109/r101, +8 lignes) N'ÉTAIT PAS
+challenge_polynomial (celui-ci matche : pow chain prev.mul(prev) réduit ζ
+2× comme OCaml `M.(y*y)`, prod aligné). MÉTHODE qui a tranché :
+labels d'émission dans le dump wrap. `dump_recorded_program_circuits`
+sérialise déjà `labels` (gate_labels), MAIS seulement si
+`SNARKY_KEEP_LABELS=1` (constraint_system.rs:611). Test rust local
+`dump_labeled_wrap_for_b_actual_probe` (#[ignore]) qui recharge les
+branches add o1js (`/tmp/claude-1000/program-branches.json`, dumpé par le
+harness `rust-pickles-program-gates-diff` MODE=rust) ⇒ dump labellisé
+SANS napi (cargo test, ~12 s). Décompte endo-reds par label :
+  rust b_actual = h_zetaw 15 + r_mul 1 + h_zeta(ζ² 2 + prod 16) 18 = 34
+  jsoo b_actual = IDEM 34 (les deux régions 1888-1962 sont IDENTIQUES).
+  → le +2 est dans la QUEUE : jsoo row 1981 = un ζ² double-endo (ref 174)
+    dans la région perm ; rust y a 0 endo-red. (k=15 des 2 côtés :
+    120 EndoMulScalar bp-challenge = 15×8, réfute la piste k=16/zetaw².)
+CAUSE : OCaml `derive_plonk` (plonk_checks.ml:429-440) force EAGER
+`zeta_to_srs_length = Lazy.force (pow2pow ζ srs_length_log2)` (:436, :294)
+en construisant l'enregistrement plonk, même si SEUL `perm` est comparé
+(:473 `[ perm ]`). `pow2pow` (:68) élève au carré avec `x * x` (un MUL
+qui double-réduit le lincom ζ au 1er pas — le ζ² de jsoo 1981), PAS avec
+`Field.square` (≠ la chaîne morte `zeta_n` wrap_verifier:1629 qui, elle,
+utilise Field.square = 1 red = notre square_circuit dans les dead pow
+chains). En single-chunk `ft_eval0` ne le force jamais ⇒ derive_plonk est
+son SEUL site. Notre `ScalarsEnvVar` ne portait que `srs_length_log2` sans
+jamais matérialiser la chaîne (commentaire ft_eval_circuit.rs:167-172
+« never emitted » — FAUX : cherchait un bloc de 16 carrés, or la chaîne
+fait srs_length_log2=8 carrés).
+FIX (finalize.rs, après perm_scalar_circuit) : boucle
+`zsl = zsl.mul(&zsl)` × env.srs_length_log2, label « zeta_to_srs_length ».
+RÉSULTAT : première divergence run-length wrap 847 → 2354 ; b_actual+queue
+endo-reds 36 == 36 ; séquence d'ancres identique bout-à-bout ; 21/21.
+
+## ITÉRATION EN COURS — MSM public_input (net-zero, @2354)
+
+Après le fix b_actual, il RESTE 13 ancres divergentes, cumulatif dgen=0
+(REDISTRIBUTION pure, pré-existante — c'était le −24 CompleteAdd masqué
+dans les 18 ancres d'origine) :
+  @2354 dg=−24 « public_input correction add » (rust +24 Generic)
+  @2462…@4227 dg=+2 ×12 « public_input conditional add » (jsoo +2 chacun).
+12×(+2) = +24 compense le −24. C'est public_input.rs
+`public_input_commitment` (lagrange_with_correction) : 1re boucle somme
+les corrections (add_fast des points constants), 2e boucle plie chaque
+terme (Cond = add_fast(lagrange, acc) + Point::select ; Packed = scale +
+add). jsoo place 2 Generic de plus dans CHAQUE conditional add et 24 de
+moins dans la correction add ⇒ probable différence de placement de
+réduction (acc scellé trop tôt côté rust ? add_fast réduit acc dans le
+conditional plutôt qu'avant). SONDE : mêmes labels (déjà en place :
+« public_input correction add » / « conditional add » / « packed add »),
+comparer les runs Generic par label jsoo vs rust dans le dump labellisé.
+CIBLE : fermer 2354 → 0 divergence run-length ⇒ re-décoder la VK add
+(commitments 0/28 → doivent converger ; ancre finale VK_HASH jsoo
+10959392966233509715748678308838967246207769407061667940269890557862386195723).
+OUTIL clé : `SNARKY_KEEP_LABELS=1 cargo test -p pickles --release --test
+recorded dump_labeled_wrap_for_b_actual_probe -- --ignored` puis les
+scripts /tmp/claude-1000/wrap-*.mjs (anchor-walk, dist2, per-section).
