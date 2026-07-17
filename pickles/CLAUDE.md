@@ -3500,3 +3500,39 @@ oublie des checks — CHERCHER LES CHECKS MANQUANTS d'abord (−8 global),
 le `+2` local en est probablement le pendant (des checks émis au mauvais
 endroit, pas en trop). Candidat : `x_hat commitment` (55 chez nous) et
 les bits de `Spec.pack`/`Packed_bits` du statement.
+
+## 🎯 LES 8 CHECKS MANQUANTS — LOCALISÉS EXACTEMENT (outil `boolslice.mjs`)
+
+MÉTHODE (nouvel outil `scratchpad/boolslice.mjs`) : découper les 2
+circuits en TRANCHES entre ancres communes et compter les gadgets
+`-0010` (`b·(b−1)=0`) par tranche. Contourne le fait qu'on n'a pas de
+labels côté jsoo. Sur tout le wrap, SEULES 2 tranches diffèrent :
+
+  ancres    0..100   lignes j0-401     r0-394     jsoo  2  rust  4   **+2**
+  ancres 2000..2100  lignes j4186-4439 r4193-4436 jsoo 10  rust  0   **−10**
+  (total jsoo 82 / rust 74 ⇒ net −8 ✓ cohérent)
+
+**LA ZONE −10 EST UN MOTIF PARFAITEMENT RECONNAISSABLE.** jsoo, lignes
+**4368-4377**, DIX lignes consécutives portant chacune :
+  A = `[-1, 0, 0, 1, 0]`  = `b·(b−1) = 0`      (check booléen)
+  B = `[ 2, 1, -1, 0, 0]` = `2·acc + bit − res = 0`  (accumulation)
+… puis **[Poseidon] en 4378-4379**. C'est un **pack bits→field MSB-first
+sur 10 BITS**, chaque bit contraint booléen, juste avant une absorption
+Poseidon. Nous n'émettons RIEN là (on est encore dans `assert_on_curve`,
+label `api.rs:446`, 228 lignes dans la fenêtre).
+
+PISTE FORTE : c'est la signature de **`Spec.pack` / `Packed_bits`**
+(spec.ml:145 `p.pack Bool …`, spec.ml:227 `Bool -> Packed_bits (x, 1)`,
+`Digest -> Packed_bits (x, size_in_bits)`) — le wrap SÉRIALISE le
+statement du step en bits avant de l'absorber dans la sponge, et nous
+passons probablement les valeurs DIRECTEMENT sans repasser par les bits.
+10 bits = très probablement **`Branch_data`** = `proofs_verified_mask`
+(2 bits) + `domain_log2` (8 bits) — cf. `Branch_data.Checked.pack` =
+`domain_log2·4 + mask`, et `branch_data.ml:135` `typ ~assert_16_bits`.
+⇒ PROCHAIN PAS : lire `Spec.pack`/`Spec.wrap_typ` et le chemin
+`messages_for_next_wrap_proof` / absorption du statement dans wrap_main,
+identifier QUEL champ fait 10 bits, et voir pourquoi notre port
+court-circuite l'unpack. PRÉDICTION à poser : la tranche ancres
+2000..2100 doit passer de 0 à 10 checks et le compte global à 82/82.
+⚠ Ce sont bien des GATES (pas des témoins) ⇒ contrairement au no-op n°3,
+ce fix DOIT déplacer des lignes. C'est donc mesurable.
