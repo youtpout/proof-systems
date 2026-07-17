@@ -257,8 +257,9 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
         }
     };
-    let _ = srs_length_log2;
-    let zeta_to_srs_length = None;
+    // Forced during env construction in practice (the lazy is materialized
+    // with the env in the observed jsoo layout).
+    let zeta_to_srs_length = Some(pow_circuit(sys, loc, zeta, 1u64 << srs_length_log2)?);
 
     Ok(ScalarsEnvVar {
         alpha_pows,

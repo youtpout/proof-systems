@@ -642,23 +642,12 @@ pub fn finalize_deferred<F: PrimeField>(
     let b_claimed = params.shift.to_field(&witness.b_repr);
     let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
 
-    // Step 10: the PlonK relation (the deferred permutation scalar).
-    // OCaml `derive_plonk` computes the perm fold, then builds the derived
-    // record — whose `zeta_to_srs_length = Lazy.force env.zeta_to_srs_length`
-    // FORCES the lazy `ζ^{2^srs_log2}` mul chain HERE (plonk_checks.ml:436),
-    // its first (and only) use in a single-chunk finalize. The value itself
-    // is discarded (`checked` compares `perm` only).
+    // Step 10: the PlonK relation (the deferred permutation scalar)
     let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(
         sys,
         Cow::Owned(format!("{loc} | perm scalar")),
         &env,
         &ft_evals,
-    )?;
-    let _zeta_to_srs_length = crate::expr_eval::pow_circuit(
-        sys,
-        Cow::Owned(format!("{loc} | perm scalar")),
-        &witness.zeta,
-        1u64 << params.srs_log2,
     )?;
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
