@@ -188,18 +188,28 @@ pub fn forbidden_shifted_values_fp_pairs() -> Vec<(mina_curves::pasta::Fp, bool)
         &ark_ff::BigInteger::to_bytes_le(&<mina_curves::pasta::Fq as PrimeField>::MODULUS),
     );
     let two_to_n = BigInt::one() << 255;
-    let mut out = Vec::new();
+    // OCaml `forbidden_shifted_values` ends with `List.dedup_and_sort
+    // ~compare:B.compare` over the full 255-bit values BEFORE the `(lo, hi)`
+    // filter (impls.ml:30) — so the pairs are ordered by ascending value, not
+    // generation order. Collect all representatives, dedup+sort, then map.
+    let mut xs: Vec<BigInt> = Vec::new();
     for base in [-&two_to_n, -&two_to_n - BigInt::one()] {
         // all values equivalent to `base` mod q that fit in 255 bits
         let mut x: BigInt = ((&base % &modulus_q) + &modulus_q) % &modulus_q;
         while x < two_to_n {
-            let hi = x.bit(254);
-            let lo: BigInt = &x >> 1;
-            if lo < modulus_p {
-                let (_, bytes) = lo.to_bytes_le();
-                out.push((mina_curves::pasta::Fp::from_le_bytes_mod_order(&bytes), hi));
-            }
+            xs.push(x.clone());
             x += &modulus_q;
+        }
+    }
+    xs.sort();
+    xs.dedup();
+    let mut out = Vec::new();
+    for x in xs {
+        let hi = x.bit(254);
+        let lo: BigInt = &x >> 1;
+        if lo < modulus_p {
+            let (_, bytes) = lo.to_bytes_le();
+            out.push((mina_curves::pasta::Fp::from_le_bytes_mod_order(&bytes), hi));
         }
     }
     out

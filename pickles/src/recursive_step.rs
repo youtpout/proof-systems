@@ -4571,16 +4571,22 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
         Ok(ShiftedScalar::Type2(half, odd))
     };
-    // `Types.Step.Bulletproof.typ` check order: lr, z_1, z_2, delta,
-    // challenge_polynomial_commitment (record order).
-    let z1 = wt2(sys, d.z1)?;
+    // OCaml `Typ` runs field checks RIGHT-TO-LEFT (same order behind the
+    // api.rs `choose_pts` `.rev()` / `Step.map`). The bulletproof record is
+    // `{lr; z_1; z_2; delta; challenge_polynomial_commitment}`, so the on-curve
+    // checks of `sg` then `delta` are emitted BEFORE the z_2/z_1 `Other_field`
+    // witnesses (measured: jsoo puts 2 on-curve points at rows 237-240 where
+    // rust — witnessing z1/z2 first — did not).
+    let sg_pt = mkpt(sys, d.sg)?;
+    let delta_pt = mkpt(sys, d.delta)?;
     let z2 = wt2(sys, d.z2)?;
+    let z1 = wt2(sys, d.z1)?;
     let openings = OpeningProof {
         lr,
-        delta: mkpt(sys, d.delta)?,
+        delta: delta_pt,
         z1,
         z2,
-        challenge_polynomial_commitment: mkpt(sys, d.sg)?,
+        challenge_polynomial_commitment: sg_pt,
         h_generator: h.clone(),
     };
     let branch_slot = 13 + PREV_ROUNDS;
