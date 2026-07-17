@@ -2893,3 +2893,38 @@ cohérence prover/statement. Détail du blocage pour la reprise :
   pour keep=false (pas skip) — c'est notre padding actuel, cohérent avec
   le wrap circuit actuel (mask-muls → (true,0)). Donc l'état REVERTÉ est
   self-consistent (juste pas iso-jsoo sur ce bloc).
+
+## Session 3 — outil décisif: HISTOGRAMME DE SIGNATURES (5 symboles)
+
+Le meilleur diagnostic découvert cette session: tokeniser chaque ligne
+Generic en 2 gadgets de 5 coeffs [l,r,o,m,c] normalisés {0,1,-,c}, faire
+l'histogramme GLOBAL des signatures, diffé rust−jsoo. Un couple
+symétrique (ex +72 d'une forme / −64 d'une autre qui ne diffèrent que
+d'un signe) = UN bug de forme systématique répété, indépendant du
+câblage (donc invisible dans differingRows tant que le wiring bouge).
+Script inline (voir historique): sigHist sur steps[2].gates.
+
+FIX LANDÉ via cette méthode: `Boolean::all` (snarky/src/boolean.rs) —
+OCaml utils.ml:245 = `equal (const n) (sum)` CONSTANTE d'abord → z=n−sum
+(`[c,-,-,0,c]`); nous faisions `sum.equal(const)` → z=sum−n
+(`[c,1,-,0,c]`). 64 gadgets os:all3 (opt-sponge) + step_main oks +
+finalize_all corrigés d'un coup. `any` était déjà correct (`equal(sum,0)`,
+sum d'abord — asymétrie OCaml volontaire: all=const-first, any=sum-first).
+
+ÉTAT après ce fix (commit poussé, recorded 21/21, init=0 tenu):
+update signature-mismatch total 123 (était ~230). Restants (r−j):
+- `001-0` +23 (muls) — dominé par la chaîne zeta_to_srs (16 muls) mal
+  placée (@764 vs @892) + résidus.
+- `-0-01` +17, `-1-00` +15, `1--00` +15, `11-00` +10 — diffus dans
+  opt-sponge (xor1/xor2/cond_permute_if/add_in) + linearization.
+- `-0-00` +10 vs `--000` −9 : AUTRE couple sign-flip candidat (5 no-label
+  + 4 scale_fast2 h_minus_g add + 1 x_hat blinding) — à traiter comme
+  `all` (chercher un equal/sub à opérandes inversés).
+- `00-10` −4 / `10-0c` −2 : 2 points on-curve que jsoo vérifie et pas
+  nous (fenêtre intro @6) — PAS messages_accumulators (OCaml n'a qu'un
+  champ prev_challenge_polynomial_commitments, la réutilisation est
+  correcte); rechercher lesquels (candidats: openings.sg vs delta, ou un
+  point du wrap_proof witnessé 2× côté jsoo).
+MÉTHODE: pour chaque couple, `<sig> by label` (grep coeffs+labels) puis
+comparer la formule OCaml du gadget nommé; corriger l'ordre/forme;
+recorded 21/21; commit; re-mesurer l'histogramme.
