@@ -3210,3 +3210,26 @@ NB: runDiffs est MONTÉ (update 42→111) pendant que le net s'effondrait:
 le placement s'est redistribué en beaucoup de petits ±1 au lieu de
 quelques gros écarts. C'est normal et plutôt bon signe (on approche), mais
 la suite sera de la dentelle, plus des gros leviers.
+
+## 🔎 LIRE LA DISTRIBUTION DES runDiffs (pas seulement le compte)
+
+Distribution mesurée après le fix must_verify:
+  update: 111 runDiffs = **54×(+1) + 54×(−1)** + @764(+8) + @6(−4) + @892(+2)
+  merge:  121 runDiffs = **59×(+1) + 57×(−1)** + @765(+9) + @7403(+8) + @6(−4) + @7(−4)
+  wrap:   196 runDiffs = **89×(+1) + 88×(−1)** + @2354(+53) + @2046(−10) + @0(−8) + @1694(+5)
+
+Les ±1 sont APPARIÉS ⇒ artefact de PACKING (un gate Generic porte 2
+gadgets; un gadget qui bascule dans l'autre demi-ligne décale une
+frontière d'ancre de 1: +1 ici, −1 là, net nul). Ils NE sont PAS des
+lignes en trop et se résorberont quand le flux de gadgets sera exact.
+⇒ Un runDiffs élevé n'est pas alarmant en soi: soustraire les paires ±1
+pour voir les VRAIS écarts. update n'a plus que **3 vrais écarts**.
+
+CIBLES RÉELLES RESTANTES (ordre de taille):
+ 1. **wrap @2354 (+53)** — ancre CompleteAdd, j226/r279. LE plus gros.
+ 2. merge @765 (+9) / @7403 (+8) ; update @764 (+8) — même région
+    (finalize, cf. la chaîne zeta_to_srs 16 muls + résidus).
+ 3. wrap @2046 (−10), @0 (−8) ; update/merge @6 (−4), merge @7 (−4).
+ 4. update @892 (+2), wrap @1694 (+5).
+MÉTHODE: labels des ANCRES d'abord (gratuit, sans rebuild) pour borner la
+fenêtre, PUIS labels par-op si besoin.
