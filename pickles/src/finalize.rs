@@ -410,7 +410,7 @@ pub fn finalize_deferred<F: PrimeField>(
             crate::ft_eval_circuit::FinalizeDomain::Selected(
                 crate::ft_eval_circuit::SelectedDomain::create(
                     sys,
-                    loc.clone(),
+                    Cow::Owned(format!("{loc} | domain_for_compiled")),
                     log2s,
                     domain_log2,
                 )?,
@@ -426,7 +426,7 @@ pub fn finalize_deferred<F: PrimeField>(
         crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => witness.zeta.scale(d.group_gen),
         crate::ft_eval_circuit::FinalizeDomain::Selected(sel) => {
             sel.generator_var()
-                .mul(&witness.zeta, None, loc.clone(), sys)?
+                .mul(&witness.zeta, None, Cow::Owned(format!("{loc} | zetaw")), sys)?
         }
         crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
             unreachable!("materialized above")
@@ -621,7 +621,8 @@ pub fn finalize_deferred<F: PrimeField>(
         )?
     };
     let cip_claimed = params.shift.to_field(&witness.cip_repr);
-    let cip_correct = combined_inner_product.equal(sys, loc.clone(), &cip_claimed)?;
+    let cip_correct =
+        combined_inner_product.equal(sys, Cow::Owned(format!("{loc} | cip check")), &cip_claimed)?;
 
     // Step 9: the NEW bulletproof challenges to field form, then b_correct
     let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
@@ -652,7 +653,8 @@ pub fn finalize_deferred<F: PrimeField>(
         &ft_evals,
     )?;
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
-    let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
+    let perm_correct =
+        perm_derived.equal(sys, Cow::Owned(format!("{loc} | perm check")), &perm_claimed)?;
 
     // Step 11: combine all checks
     let finalized = finalize_all(

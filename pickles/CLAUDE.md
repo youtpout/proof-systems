@@ -3041,3 +3041,34 @@ dans «finalize unfinalized» non sous-labellisé, 7 ft_eval0, 5 env),
 PROCHAIN PAS SUGGÉRÉ: sous-labelliser le reste de wrap_main «finalize
 unfinalized» (24 rows anonymes) comme on l'a fait pour fr-sponge/sg_evals,
 puis traiter `c1c0c`/`11c0c`.
+
+## 🔑 STRATÉGIE RÉVISÉE — viser runDiffs AVANT les formes
+
+Constat mesuré (wrap): differingRows=8992 mais seulement 211 écarts de
+FORME ⇒ ~8800 lignes ne diffèrent QUE par le CÂBLAGE. Or le câblage
+cascade: une seule ligne insérée/supprimée en amont décale tout l'aval et
+fait diverger tous les wires suivants. ⇒ Corriger les formes NE FERA PAS
+tomber differingRows tant que le PLACEMENT diffère.
+
+ORDRE DE BATAILLE correct:
+ 1. **runDiffs → 0** (anchor-walk: longueurs des runs Generic entre ancres
+    non-Generic). Actuel: update 42 (net +39), merge 224 (+79),
+    wrap 197 (+26). C'est LA métrique à écraser d'abord.
+ 2. Puis les formes résiduelles (sig histogram).
+ 3. differingRows tombera alors en grande partie tout seul; le reste sera
+    du vrai désaccord de wiring (permutation/copy-constraints).
+init=0 valide toute la chaîne: quand placement+formes sont bons, le
+câblage suit et la VK matche.
+
+## SOUS-LABELS finalize (fait) — pour attribuer les poches
+
+Ajoutés (aucun impact circuit, pur debug): `| sg_evals`, `| fr-sponge`,
+`| b_actual`, `| b check`, `| cip check`, `| perm check`, `| zetaw`,
+`| domain_for_compiled` (+ ceux déjà là: env, linearization, ft_eval0,
+perm scalar, cip fold[ masked], dead pow chains, xi/r/bp-challenge
+to_field). RESTE ~16 lignes en `wrap_main: finalize unfinalized` nu →
+sous-labelliser les derniers sites si besoin.
+Attribution actuelle de `c1c0c` (+36, forme `[c,1,c,0,c]` vs jsoo
+`[1,1,c,0,c]` — 1er coeff scalé vs nu, donc encore un seal/opérande
+matérialisé manquant): 16 nu, 7 ft_eval0, 5 env, 5 verify step proof,
+4 cip check, 4 b check. Diffus ⇒ traiter APRÈS runDiffs.
