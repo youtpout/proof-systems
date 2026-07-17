@@ -4262,6 +4262,40 @@ pas alignés.
 ORDRE D'ATTAQUE conseillé : (1) auditer/fixer PI 12 (concret, isolé) ;
 (3) parité de packing (trouver le 1er flip < row 194 et sa cause d'ordre
 d'émission) ; (2) se résout tout seul. Puis re-mesurer decode_and_diff.
+
+## PROGRÈS (fixes de ce tour)
+
+FIX PI 12 (4f5e2168d8) : le digest messages_for_next_step est à la fois
+l'entrée publique 12 du wrap ET un élément de step_statement pour x_hat.
+OCaml threade le MÊME cvar (pas de witness privé égal). Notre hack
+`slot_index == 0` n'est la position (aplatie) du digest QUE dans le cas de
+base ; pour update/merge c'est `step_statement_digest_slot =
+proofs*(17+TOCK_ROUNDS)`. Donc le digest recevait un witness frais NON
+contraint (trou de soundness) + PI 12 restait un singleton de permutation.
+Fixé : clé sur la vraie position aplatie. rust câble x_hat 8891.5→PI 12.0
+comme jsoo. 21/21.
+
+FIX sg_evals (31712e2d56) : `(sg_evals zeta, sg_evals zetaw)` est un TUPLE
+OCaml évalué DROITE-À-GAUCHE ⇒ le vecteur zetaw est émis d'abord. On
+émettait zeta d'abord → flip de parité de packing. Swap des 2 boucles :
+diff wrap 2279→2102 (coeff 1506→1324, wire 2202→2026), 1er half-swap
+194→1326. 21/21.
+
+## PROCHAIN FLIP DE PARITÉ : ft_eval0 @1273
+
+Après sg_evals, la 1re ≠ STRUCTURELLE (hors valeurs circulaires VK
+api.rs:806 rows 90-104 = point fixe, se résout à la fin) est row 1273
+label ft_eval0 : jsoo émet un endo-red (b1f1) en 1273.A, rust le décale à
+1274.B (shift 1 ligne = flip de parité). C'est le 1er `beta.mul(zeta)` du
+shift-product de ft_eval0_prefix_circuit (ft_eval_circuit.rs:393-407).
+VÉRIFIÉ MATCHANT vs OCaml plonk_checks.ml:372-397 : ft init/fold, shift
+product (init a0·zkp·z0, factor gamma+(beta·zeta·s)+w0, acc·factor gauche),
+numérateur/dénominateur (term1=(zeta1m1·a1)·(zeta-omzk), term2, (t+t)·(1-z0),
+den=(zeta-omzk)·(zeta-1)). DONC le flip vient d'un gate en trop/en moins
+AVANT le shift-product (dans ft init/fold ou le `-= p_eval0`), à tracer
+op-par-op (compter les gates génériques émis rust vs jsoo entre le début
+de ft_eval0 ~row 1240 et 1273). decode_and_diff toujours 12/28 (bougera
+quand toute la parité est alignée ⇒ point fixe VK converge).
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
