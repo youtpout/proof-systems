@@ -451,25 +451,28 @@ pub fn finalize_deferred<F: PrimeField>(
         }
     };
 
-    // Step 3: sg_evals — the OLD challenge polynomials evaluated at zeta,
-    // then all of them at zetaw (`(sg_evals zeta, sg_evals zetaw)`).
+    // Step 3: sg_evals — the OLD challenge polynomials evaluated at zeta and
+    // zetaw. OCaml `(sg_evals plonk.zeta, sg_evals zetaw)` (wrap_verifier.ml:
+    // 1546) is a TUPLE whose components evaluate RIGHT-TO-LEFT, so the ZETAW
+    // vector is emitted first, then the ZETA vector — emit in that order so the
+    // double-generic packing matches jsoo (else the halves swap from here on).
     let mut sg_at_zeta = Vec::with_capacity(witness.prev_challenges.len());
     let mut sg_at_zetaw = Vec::with_capacity(witness.prev_challenges.len());
     let sg_evals_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | sg_evals"));
-    for old_challenges in &witness.prev_challenges {
-        sg_at_zeta.push(crate::ipa::challenge_polynomial_circuit(
-            sys,
-            sg_evals_loc.clone(),
-            old_challenges,
-            &witness.zeta,
-        )?);
-    }
     for old_challenges in &witness.prev_challenges {
         sg_at_zetaw.push(crate::ipa::challenge_polynomial_circuit(
             sys,
             sg_evals_loc.clone(),
             old_challenges,
             &zetaw,
+        )?);
+    }
+    for old_challenges in &witness.prev_challenges {
+        sg_at_zeta.push(crate::ipa::challenge_polynomial_circuit(
+            sys,
+            sg_evals_loc.clone(),
+            old_challenges,
+            &witness.zeta,
         )?);
     }
     let mut masked_cip_entries = Vec::new();
