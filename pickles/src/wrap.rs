@@ -104,12 +104,15 @@ pub fn wrap_witness(
     // commitments (kimchi absorbs the recursion challenges' commitments right
     // after the index digest), then the public commitment and the messages
     s.absorb(&[vk_digest]);
+    // A Mina step proof carries only its ACTUAL-width accumulators
+    // (`Vector.trim`), so the prover's transcript SKIPS the padded slots —
+    // it does not absorb zeros for them. The wrap circuit replays the same
+    // skips with `Opt_sponge` absorbs (`mask_g1_opt`, wrap_verifier.ml:842),
+    // so this mirror must skip too or the derived oracles diverge from the
+    // claimed statement.
     for (keep, sg) in sg_old_mask.iter().zip(sg_olds) {
         if *keep {
             abpt(&mut s, sg);
-        } else {
-            s.absorb(&[Fq::zero()]);
-            s.absorb(&[Fq::zero()]);
         }
     }
     for c in &public_comm.chunks {

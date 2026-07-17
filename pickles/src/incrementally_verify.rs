@@ -312,13 +312,24 @@ where
     };
     // == IVC Step 2: absorb the digest, then sg_old (PC) ==
     sponge.absorb(sys, loc.clone(), std::slice::from_ref(&vk_digest));
-    for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
-        let keep = keep.to_field_var();
-        let x =
-            sg.x.mul(&keep, Some("mask sg_old.x".into()), loc.clone(), sys)?;
-        let y =
-            sg.y.mul(&keep, Some("mask sg_old.y".into()), loc.clone(), sys)?;
-        sponge.absorb_commitment(sys, loc.clone(), &[(x, y)]);
+    if let Transcript::Opt(opt) = &mut sponge {
+        // Wrap side (wrap_verifier.ml:842 `mask_g1_opt`): the verified step
+        // proof carries only its ACTUAL-width accumulators, so the padded
+        // slots are OPT-absorbed with a false flag and genuinely SKIPPED.
+        // The first variable flag also makes `next_index` variable for the
+        // rest of the transcript — that is what produces jsoo's full pair
+        // machinery on every later absorb.
+        for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
+            opt.absorb((keep.clone(), sg.x.clone()));
+            opt.absorb((keep.clone(), sg.y.clone()));
+        }
+    } else {
+        // Step side (step_verifier.ml:546-549): `Wrap_hack.pad_commitments`
+        // then PLAIN absorbs — a wrap proof always accumulates the full
+        // padded vector, so nothing is masked or skipped here.
+        for sg in sg_old {
+            sponge.absorb_commitment(sys, loc.clone(), &[(sg.x.clone(), sg.y.clone())]);
+        }
     }
 
     // == IVC Steps 3-5: compute and absorb x_hat, then the witness commitments ==
@@ -412,8 +423,18 @@ where
     // else as `Opt.Just`.
     let just = |p: &Point<F>| CommitmentOpt::Just(p.clone());
     let mut commitments: Vec<CommitmentOpt<F>> = Vec::new();
-    for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
-        commitments.push(CommitmentOpt::Maybe(keep.clone(), sg.clone()));
+    if use_opt_sponge {
+        // Wrap side: variable-width accumulators enter as `Opt.Maybe`
+        // (wrap_verifier.ml:1369-1370).
+        for (sg, keep) in sg_old.iter().zip(sg_old_mask) {
+            commitments.push(CommitmentOpt::Maybe(keep.clone(), sg.clone()));
+        }
+    } else {
+        // Step side: the wrap proof accumulated the full padded vector
+        // (step_verifier.ml:649) — plain `Just` entries.
+        for sg in sg_old {
+            commitments.push(CommitmentOpt::Just(sg.clone()));
+        }
     }
     commitments.extend(x_hat.iter().map(just));
     commitments.push(CommitmentOpt::Just(ft));

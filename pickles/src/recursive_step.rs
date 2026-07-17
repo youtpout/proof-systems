@@ -2573,7 +2573,16 @@ pub fn prove_prepared_recursive_step_width2_arity<
     assert!(ACTIVE_PROOFS <= 2);
     let statement = prepared.statement;
     let messages_for_next_step_vk_pts = prepared.messages_for_next_step_vk_pts.clone();
-    let recursions: Vec<_> = prepared.recursions.iter().cloned().collect();
+    // Mina step proofs carry only their ACTUAL-width recursion challenges
+    // (`Vector.trim`): the Fq transcript absorbs no dummy accumulator, and
+    // the wrap circuit replays the skipped slots with OPT absorbs.
+    let recursions: Vec<_> = prepared
+        .recursions
+        .iter()
+        .zip(prepared.dummy_slots.iter())
+        .filter(|(_, dummy)| !**dummy)
+        .map(|(r, _)| r.clone())
+        .collect();
     let recursion_mask = prepared.dummy_slots.map(|dummy| !dummy);
     let private = RecursiveStepWidth2Private {
         proofs: prepared.proofs,
@@ -2720,11 +2729,7 @@ pub fn prove_prepared_recursive_step_width2_arity<
     }
     let (proof, _) = prover
         .prove_with_recursion_mask::<VestaBase, VestaScalar>(
-            statement,
-            private,
-            true,
-            recursions,
-            Some(&recursion_mask),
+            statement, private, true, recursions, None,
         )
         .unwrap();
     if recursion_mask.iter().all(|keep| *keep) {
@@ -2779,6 +2784,16 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     assert_eq!(WRAP_STMT_LEN, 13 + STEP_PROOF_ROUNDS + 11);
     assert_eq!(step_proof.proof.lr.len(), STEP_PROOF_ROUNDS);
     let logical_proofs_verified = proofs_verified.to_usize();
+    // A trimmed step proof carries only its real accumulators; the wrap
+    // witness needs the program's PHYSICAL width, front-padded with the
+    // canonical dummy (the slots the circuit will OPT-skip).
+    let mut sg_olds = sg_olds;
+    {
+        let dummy = crate::dummy::pasta_dummy_step_sg();
+        while sg_olds.len() < unfinalized.len() {
+            sg_olds.insert(0, dummy);
+        }
+    }
     assert_eq!(
         unfinalized.len(),
         sg_olds.len(),
@@ -2801,16 +2816,17 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         .mask_custom(pc.clone(), &pc.map(|_| Fp::one()))
         .unwrap()
         .commitment;
+    // The step proof carries only its actual-width recursion challenges
+    // (Mina `Vector.trim`): its transcript replay needs no mask.
     let o = step_proof
         .oracles_with_recursion_mask::<VestaBase, VestaScalar, _>(
             svi,
             &public_comm,
             Some(&step_public),
-            Some(&sg_old_mask),
+            None,
         )
         .unwrap();
     let oracles = &o.oracles;
-
     let combined = step_proof
         .evals
         .combine(&o.powers_of_eval_points_for_chunks);
@@ -2857,10 +2873,9 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         fr.absorb(&o.digest);
         let pcd = {
             let mut prev = VestaScalar::from(params);
-            for (keep, challenge) in sg_old_mask.iter().zip(&step_proof.prev_challenges) {
-                if *keep {
-                    prev.absorb_multiple(&challenge.chals);
-                }
+            // trimmed proof: every carried challenge vector is real
+            for challenge in &step_proof.prev_challenges {
+                prev.absorb_multiple(&challenge.chals);
             }
             prev.digest()
         };
@@ -3142,7 +3157,6 @@ pub fn prepare_recursive_wrap_n1<
         .iter()
         .flat_map(|challenge| challenge.comm.chunks.iter().copied())
         .collect();
-    assert_eq!(sg_olds.len(), 2, "N1 step proof must be physically padded");
     let real = wrap_unfinalized_from_base(base);
     let real_prev_step_acc = real.prev_step_acc;
     let fixed_old_challenges = vec![
@@ -3194,7 +3208,6 @@ pub fn prepare_recursive_wrap_n0<
         .iter()
         .flat_map(|challenge| challenge.comm.chunks.iter().copied())
         .collect();
-    assert_eq!(sg_olds.len(), 2, "N0 step proof must be physically padded");
     let prototype = wrap_unfinalized_from_base(template);
     let fixed_old_challenges = vec![
         crate::dummy::pasta_ipa_wrap_and_step()
@@ -3305,7 +3318,6 @@ pub fn prepare_program_recursive_wrap<
         .iter()
         .flat_map(|challenge| challenge.comm.chunks.iter().copied())
         .collect();
-    assert_eq!(sg_olds.len(), crate::common::MAX_PROOFS_VERIFIED);
     let proofs_verified = match logical_width {
         1 => ProofsVerified::N1,
         2 => ProofsVerified::N2,
@@ -3671,12 +3683,23 @@ pub fn prepare_program_recursive_step_from_previous<
         physical_challenges.len(),
         crate::common::MAX_PROOFS_VERIFIED
     );
-    let finalize_prev_challenges = previous_step
-        .proof
-        .prev_challenges
-        .iter()
-        .map(|challenge| challenge.chals.clone())
-        .collect();
+    // A trimmed step proof carries only its real challenge vectors; the
+    // finalize replay works over the program's PHYSICAL width (the mask
+    // decides which ones are absorbed), so front-pad with the canonical
+    // dummy — the slots the opt-sponge will skip.
+    let finalize_prev_challenges: Vec<Vec<Fp>> = {
+        let mut chals: Vec<Vec<Fp>> = previous_step
+            .proof
+            .prev_challenges
+            .iter()
+            .map(|challenge| challenge.chals.clone())
+            .collect();
+        let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
+        while chals.len() < crate::common::MAX_PROOFS_VERIFIED {
+            chals.insert(0, dummy_step.challenges_computed.clone());
+        }
+        chals
+    };
     let prev_challenge_polynomial_commitments = previous_wrap
         .proof
         .prev_challenges
