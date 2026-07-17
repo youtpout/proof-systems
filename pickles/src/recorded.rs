@@ -3375,9 +3375,23 @@ impl RecordedCompiledProgram {
             .max()
             .expect("compiled program has step domains") as u8;
         let wrap_verifier = &self.wrap_indexes.as_ref().expect("compiled Wrap indexes").1;
-        let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+        // The program's declared width is the max over its branches (OCaml
+        // `Pickles.compile`), not the width the wrap domain implies.
+        let max_proofs_verified = match self
+            .branches
+            .iter()
+            .map(|branch| branch.proofs_verified)
+            .max()
+            .expect("compiled program has branches")
+        {
+            0 => crate::composition_types::ProofsVerified::N0,
+            1 => crate::composition_types::ProofsVerified::N1,
+            _ => crate::composition_types::ProofsVerified::N2,
+        };
+        let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier_with_max(
             step_domain_log2,
             wrap_verifier,
+            max_proofs_verified,
         )
         .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
         let stable = key.to_stable_v2();

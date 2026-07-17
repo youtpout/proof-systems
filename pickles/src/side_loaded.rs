@@ -78,12 +78,29 @@ impl SideLoadedVerificationKey {
     ) -> Result<Self, SideLoadedKeyError> {
         let wrap_domain_log2 = verifier.index.domain.log_size_of_group as u8;
         let proofs_verified = actual_wrap_domain_size(u32::from(wrap_domain_log2));
-        Self::new(
+        Self::from_wrap_verifier_with_max(step_domain_log2, verifier, proofs_verified)
+    }
+
+    /// Like [`Self::from_wrap_verifier`], but with an explicit
+    /// `max_proofs_verified`: a shared-wrap PROGRAM's declared width is the
+    /// max over its branches (OCaml `Pickles.compile`), NOT the width the
+    /// actual wrap domain implies — a width-2 program can wrap at 2^14.
+    pub fn from_wrap_verifier_with_max<const ROUNDS: usize, const STMT_LEN: usize>(
+        step_domain_log2: u8,
+        verifier: &snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
+        max_proofs_verified: ProofsVerified,
+    ) -> Result<Self, SideLoadedKeyError> {
+        let wrap_domain_log2 = verifier.index.domain.log_size_of_group as u8;
+        let proofs_verified = actual_wrap_domain_size(u32::from(wrap_domain_log2));
+        let key = Self {
             step_domain_log2,
             wrap_domain_log2,
+            max_proofs_verified,
             proofs_verified,
-            wrap_verification_key_points(verifier),
-        )
+            commitments: wrap_verification_key_points(verifier),
+        };
+        key.validate()?;
+        Ok(key)
     }
 
     pub fn validate(&self) -> Result<(), SideLoadedKeyError> {
