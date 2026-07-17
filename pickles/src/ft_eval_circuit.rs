@@ -164,10 +164,13 @@ pub struct ScalarsEnvVar<F: PrimeField> {
     pub zk_polynomial: FieldVar<F>,
     pub omega_to_minus_zk_rows: FieldVar<F>,
     pub zeta_to_n_minus_1: FieldVar<F>,
-    /// LAZY in OCaml (`zeta_to_srs_length = lazy (pow2pow ...)`) — never
-    /// forced by a single-chunk `ft_eval0`; `derive_plonk` forces it in the
-    /// perm-scalar phase. `None` until then.
-    pub zeta_to_srs_length: Option<FieldVar<F>>,
+    /// `zeta_to_srs_length` is LAZY in OCaml (plonk_checks.ml:294) and its
+    /// only in-circuit force site is the multi-chunk `p_eval0` fold of
+    /// `ft_eval0` (:363-368) — with a single public-eval chunk the squaring
+    /// chain is NEVER emitted (measured: no 16-square block anywhere in the
+    /// jsoo finalize regions). Only the log2 is carried; the fold
+    /// materializes the power on its first extra chunk.
+    pub srs_length_log2: u32,
     pub beta: FieldVar<F>,
     pub gamma: FieldVar<F>,
     pub zeta: FieldVar<F>,
@@ -257,16 +260,12 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
         }
     };
-    // Forced during env construction in practice (the lazy is materialized
-    // with the env in the observed jsoo layout).
-    let zeta_to_srs_length = Some(pow_circuit(sys, loc, zeta, 1u64 << srs_length_log2)?);
-
     Ok(ScalarsEnvVar {
         alpha_pows,
         zk_polynomial,
         omega_to_minus_zk_rows: omegas.omega_to_zk.clone(),
         zeta_to_n_minus_1,
-        zeta_to_srs_length,
+        srs_length_log2,
         beta,
         gamma,
         zeta: zeta.clone(),
@@ -348,14 +347,22 @@ pub fn ft_eval0_prefix_circuit<F: PrimeField>(
     let zeta1m1 = &env.zeta_to_n_minus_1;
     let (beta, gamma, zeta) = (&env.beta, &env.gamma, &env.zeta);
 
-    // combine public-eval chunks by powers of zeta^{srs_length}
+    // combine public-eval chunks by powers of zeta^{srs_length} — OCaml's
+    // `Array.fold_right` (plonk_checks.ml:361-368) forces the lazy
+    // `zeta_to_srs_length` on its FIRST extra chunk, so the squaring chain
+    // is emitted here (once), and not at all for single-chunk evals.
     let mut chunks = p_eval0.iter().rev();
     let mut p = chunks.next().expect("empty public evals").clone();
+    let mut zeta1: Option<FieldVar<F>> = None;
     for chunk in chunks {
-        let zeta1 = env
-            .zeta_to_srs_length
-            .as_ref()
-            .expect("multi-chunk needs a forced zeta_to_srs_length");
+        let zeta1 = match &zeta1 {
+            Some(z) => z.clone(),
+            None => {
+                let z = pow_circuit(sys, loc.clone(), zeta, 1u64 << env.srs_length_log2)?;
+                zeta1 = Some(z.clone());
+                z
+            }
+        };
         let scaled = zeta1.mul(&p, None, loc.clone(), sys)?;
         p = chunk + &scaled;
     }

@@ -3726,3 +3726,68 @@ MÉTRIQUES après (recorded 21/21, init 0, update/merge inchangés) :
     ml:254-278). Nous les consolidons en un bloc en amont (+24). ⇒
     Déplacer l'émission par-terme dans public_input.rs (le fold), pas en
     pré-passe.
+
+## ⚠ RÉFUTATION n°4 : lagranges OneHot LAZY (tentative re-revertée)
+
+CONTEXTE : après le fix tête, restait au x_hat une RELOCALISATION net 0 :
+nos seals de sélection one-hot concentrés en un bloc +24 (50 lignes
+`statement_terms`, rrow≈4963-5013) vs jsoo 2 lignes par terme 255-bit
+juste avant son CompleteAdd (11 ancres j2/r0, rows j5133..8783).
+
+TENTATIVE : retirer le seal précoce dans `statement_terms::next`
+(OneHot) et laisser les CONSOMMATEURS seller (add_fast selle ses deux
+points, scale_fast_core selle sa base :142-143 — comme OCaml
+plonk_curve_ops.ml:12/:133). PRÉDICTION : bloc +24 fond, les 11 j2/r0 se
+dissolvent, runDiffs 17→~6.
+
+MESURE : runDiffs 17→**288**, netGeneric +22→**+88** (+66 lignes!). La
+VIEILLE mesure du commentaire (+26→+84) disait déjà pareil — j'aurais dû
+la croire. REVERTÉ (git checkout public_input.rs).
+⚠ La mesure était EN PLUS contaminée : le build avait ramassé l'édition
+zeta_to_srs concurrente (@788 disparu, @1574 à −1) — les chiffres exacts
+sont inattribuables, mais le +66 net global de la partie x_hat est réel.
+
+MÉCANISME SUSPECTÉ (à vérifier au littéral AVANT toute nouvelle
+tentative) : la base d'un terme Packed est consommée DEUX FOIS dans
+scale_fast2 (OCaml :236-252) : sellée DANS scale_fast_unpack (:133,
+copie locale), puis l'ORIGINALE re-négée `add_fast h (G.negate g)` à
+:252 (branches strictes). Avec une base LINCOM, chaque consommation
+re-matérialise. OCaml paie aussi ces deux coûts — donc notre +66 vient
+d'un TROISIÈME endroit à nous (Point::select ? chaîne des corrections ?
+notre scale_fast2 :393 ?). ⇒ PROCHAINE SONDE : labels du dump raté sur
+les +2 en série (@2355+, la chaîne `public_input correction add`
+j226/r10 éclatée) pour voir QUELLE consommation explose. La
+relocalisation reste OUVERTE (net 0 — sans effet VK tant que le wiring
+n'est pas la phase courante… mais les LIGNES diffèrent, donc si:
+l'octet-parité l'exigera).
+
+## ✅ FIX : `zeta_to_srs_length` LAZY — un fix, TROIS circuits améliorés
+
+CAUSE (littéral) : OCaml `zeta_to_srs_length = lazy (pow2pow zeta
+srs_length_log2)` (plonk_checks.ml:294). Son SEUL site de force
+in-circuit est le fold multi-chunk de p_eval0 dans ft_eval0 (:361-368) —
+`Array.fold_right ~init:None` ne force qu'à la branche `Some acc`, donc
+JAMAIS en single-chunk. Nos évals sont single-chunk partout ⇒ jsoo
+n'émet JAMAIS les 16 carrés. Nous les émettions EAGER à la construction
+de l'env (ft_eval_circuit.rs:262, avec un commentaire qui prétendait le
+contraire de l'autre commentaire du même fichier :167-169 — lequel avait
+raison). Vérifié par LCS : le +8 de la linearization était 16 `001-0`
+consécutifs labelés env→ft_eval0, et AUCUN bloc symétrique jsoo-only.
+
+FIX : `ScalarsEnvVar.zeta_to_srs_length: Option<FieldVar>` remplacé par
+`srs_length_log2: u32` ; `ft_eval0_prefix_circuit` matérialise
+`pow_circuit(zeta, 2^log2)` au PREMIER chunk supplémentaire du fold
+(memoïsé), à la position OCaml exacte.
+
+MESURE (prédiction posée avant, tenue) :
+  wrap : @788/@1696 (+8 chacun) DISSOUS ; runDiffs 17→18 (une paire de
+  phase ±1 @1523/@1542 apparue, @1574 passé à −1), netGeneric +22→+5.
+  update : @764 +8 → −1 ; netGeneric +6→−3.
+  merge : @765 +9 → disparu ; netGeneric +13→−5 ; runDiffs 121→120.
+  init : 0. recorded 21/21.
+
+RESTANTS wrap (18) : @847/@1694 (+3 par proof, région perm scalar/perm
+check — fenêtre bruitée, à relire après le prochain fix), la
+relocalisation x_hat net-0 (bloc +24 vs 11×j2/r0, voir réfutation n°4),
+et des ±1 de phase. STEP : @6 (−4, 3 circuits, recursive_step.rs:4420),
+@892 (+2), et des ±1.
