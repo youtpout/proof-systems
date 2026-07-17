@@ -548,8 +548,18 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let which_branch: FieldVar<Fq> =
             sys.compute(loc!(), move |_| Fq::from(which_branch_value as u64))?;
         let branch_count = w.branches.len().max(1);
+        // `One_hot_vector.of_index` is
+        //   `Vector.init length ~f:(fun j -> Field.equal (Field.of_int j) i)`
+        // and `Vector.init` (`vector.ml:124`) is `f i :: init (i + 1) n ~f`.
+        // OCaml evaluates constructor arguments RIGHT-TO-LEFT, so the tail
+        // recurses first and `f` actually runs for j = length-1 down to 0.
+        // The bits are therefore CREATED — and their `equal` gadgets emitted —
+        // in DESCENDING branch order, giving branch `length-1` the LOWEST
+        // variable index. That ordering is structural: `reduce_lincom` sorts a
+        // lincom's terms by ASCENDING VARIABLE INDEX, so the creation order
+        // decides which branch weight lands in the `l` slot and which in `r`.
         let mut branches = Vec::with_capacity(branch_count);
-        for index in 0..branch_count {
+        for index in (0..branch_count).rev() {
             branches.push(other_field_equal(
                 sys,
                 &which_branch,
@@ -557,6 +567,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 true,
             )?);
         }
+        // ...but the vector itself stays in ascending branch order.
+        branches.reverse();
         let branch0 = branches[0].clone();
         // `One_hot_vector.of_index` finishes with `Boolean.Assert.any`.  Even
         // for a single branch Snarky implements that assertion as

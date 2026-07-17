@@ -194,14 +194,18 @@ where
     ) -> SnarkyResult<()> {
         let one_minus_r = FieldVar::Constant(F::one()) - &r;
         let zero = FieldVar::zero();
-        state.assert_r1cs(
-            Some("equals_1".into()),
-            loc.clone(),
-            z_inv,
-            z.clone(),
-            one_minus_r,
-        )?;
-        state.assert_r1cs(Some("equals_2".into()), loc, r, z, zero)
+        // OCaml (`utils.ml:43`) is
+        //   `Checked.assert_all [ r1cs z_inv z (1 - r) ; r1cs r z 0 ]`
+        // and `assert_all` (`checked.ml:75`) is a `List.fold_right` building
+        // `f c0 (f c1 (return ()))` — so the constraints are EMITTED IN
+        // REVERSE list order: `r1cs r z 0` first, then `r1cs z_inv z (1 - r)`.
+        // Structural, not cosmetic: `z` is an unreduced lincom, so whichever
+        // r1cs comes first carries its reduction gadgets. Measured on the wrap
+        // `api.rs:630` mask loop: this makes our gadget stream match jsoo's
+        // position-for-position. `api.rs` and `bulletproof.rs` each hand-rolled
+        // this reversal locally before it was fixed here.
+        state.assert_r1cs(Some("equals_2".into()), loc.clone(), r, z.clone(), zero)?;
+        state.assert_r1cs(Some("equals_1".into()), loc, z_inv, z, one_minus_r)
     }
 
     /** `z` computes `(r, z_inv)` that satisfy the constraints in
