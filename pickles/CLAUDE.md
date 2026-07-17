@@ -3536,3 +3536,44 @@ court-circuite l'unpack. PRÉDICTION à poser : la tranche ancres
 2000..2100 doit passer de 0 à 10 checks et le compte global à 82/82.
 ⚠ Ce sont bien des GATES (pas des témoins) ⇒ contrairement au no-op n°3,
 ce fix DOIT déplacer des lignes. C'est donc mesurable.
+
+## ✅ LES 10 BITS SONT IDENTIFIÉS — `Branch_data` (littéral confirmé)
+
+CHAÎNE COMPLÈTE, tout vérifié dans le littéral (aucune supposition) :
+ • `branch_data.ml:58` : **`let length_in_bits = 10`** ⇒ les 10 checks
+   booléens de jsoo (wrap 4368-4377) sont l'unpack de **Branch_data**.
+ • `spec.ml:236` : `| Branch_data -> [| `Packed_bits
+   (Branch_data_checked.pack x, Branch_data.length_in_bits) |]`
+   (rappel: `Bool -> Packed_bits (x,1)`, `Digest -> Packed_bits (x,255)`,
+   `Challenge`/`Bulletproof_challenge -> Packed_bits (x, 128)`).
+ • CONSOMMATEUR = `wrap_main.ml:486-493` :
+     `~public_input:(Array.map (pack_statement Max_proofs_verified.n
+        prev_statement) ~f:(function
+          | `Field (Shifted_value x) -> `Field (split_field x)
+          | `Packed_bits (x, n) -> `Packed_bits (x, n)))`
+   passé à `Wrap_verifier.incrementally_verify_proof`.
+ ⇒ C'est le chemin **x_hat / public_input**, donc NOTRE `public_input.rs`
+   (celui du fix `Cond_add`), PAS un hash — le Poseidon de 4378 est la
+   sponge qui suit.
+ • Côté rust le slot existe déjà : `WrapStepStatementSlot::Packed
+   { value, num_bits }` (api.rs:279), compté 1 élément, et
+   `public_input.rs` en fait un `Add_with_correction ((x, n), …)`
+   comme OCaml (wrap_verifier.ml:911-922).
+
+**LA QUESTION PRÉCISE OÙ REPRENDRE** : le chemin `Add_with_correction
+((x, n), …)` d'OCaml UNPACKE-T-IL `x` en `n` bits avec un check booléen
+par bit ? Le motif observé chez jsoo est bien un unpack+repack :
+  A = `b·(b−1)=0` (check) et B = `2·acc + bit − res` (recomposition)
+… soit exactement `Field.unpack x ~length:10` puis repack — c'est-à-dire
+une PREUVE QUE `x < 2^10`. Nous ne l'émettons PAS (0 check dans la
+tranche).
+⇒ LIRE : `Wrap_verifier.scale_fast` / `scale_fast2'` et le multiscale de
+`incrementally_verify_proof` pour voir où les `n` bits d'un
+`Packed_bits (x, n)` sont matérialisés, puis comparer à notre
+`public_input.rs` + `plonk_curve_ops.rs`.
+⇒ ATTENTION à la symétrie : la tranche de tête a `+2` (api.rs:699/759).
+Il est probable que les DEUX anomalies soient le même bug : des bits
+qu'on matérialise au mauvais endroit (2 en tête) et pas là où il faut
+(10 dans le x_hat). Traiter les deux ensemble, pas séparément.
+⇒ PRÉDICTION à poser : tranche ancres 2000..2100 de 0 → 10 checks,
+tranche 0..100 de 4 → 2, total 82/82. C'est du GATE ⇒ mesurable.
