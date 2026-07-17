@@ -3183,3 +3183,30 @@ l.426, encore à loc nu), + l.539 (absorb delta), 349/373/374
 (public_input_commitment), 304-309 (index sponge), 335 (sg_old absorb).
 ASTUCE À RÉUTILISER: labels des ancres = localisation gratuite, sans
 rebuild. Toujours commencer par là.
+
+## ✅ FIX must_verify constant — le plus gros gain update/merge
+
+CAUSE: OCaml prend `must_verify` de la RÈGLE (`proof_must_verify`,
+inductive_rule.ml) = constante `Boolean.true_` pour un slot réellement
+vérifié. Nous le prenions du STATEMENT (`should_finalize`, une variable).
+EFFET EN CASCADE du littéral OCaml: `not must_verify` devient la constante
+false ⇒ les 16 `Field.if_ is_base_case` (bypass des bulletproof
+challenges) ET le `||| not must_verify` du résultat par proof se REPLIENT
+sans aucun gate. jsoo: 6 lignes dans cette queue; nous: 30.
+SÛRETÉ: `verify_one` assertit toujours `should_finalize == must_verify`
+(step_main.ml:28) ⇒ le slot du statement est épinglé à 1, rien n'est
+perdu. Les slots dummy ne passent jamais par verify_one.
+
+MESURES: update net **+37→+6**, rows 8613→**7296**; merge net **+73→+13**,
+rows 17952→**15309**; @6645 DISPARU; init reste 0; wrap inchangé.
+
+⇒ RÈGLE ÉTENDUE: les conventions littérales d'OCaml incluent **D'OÙ VIENT
+UNE INFO**. Ce qu'OCaml connaît statiquement (règle, feature flags,
+largeurs) doit être une CONSTANTE chez nous — sinon les gadgets ne se
+replient pas et le circuit diverge. CHERCHER D'AUTRES CAS: tout
+`sys.compute(|_| <valeur connue à la compilation>)` est suspect.
+
+NB: runDiffs est MONTÉ (update 42→111) pendant que le net s'effondrait:
+le placement s'est redistribué en beaucoup de petits ±1 au lieu de
+quelques gros écarts. C'est normal et plutôt bon signe (on approche), mais
+la suite sera de la dentelle, plus des gros leviers.
