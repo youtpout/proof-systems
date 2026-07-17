@@ -20,6 +20,58 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
+## SESSION 2026-07-17 — percée diagnostic VK + fix ordre pseudo-domaine
+
+### Méthode : empreinte multiset invariante au packing
+Outil décisif (bien meilleur que le row-walking) : extraire chaque demi-gate
+Generic non-vide comme son vecteur de 5 coeffs `[l,r,o,m,c]`, en faire un
+MULTISET par côté (jsoo/rust), et diff. C'est INVARIANT à l'ordre de packing
+double-generic → ça isole les vraies différences STRUCTURELLES (compte) et de
+VALEUR (coeff swappés), en filtrant le bruit de packing. Scripts dans
+`/tmp/claude-1000/` : `wrap-struct-now.mjs`, `step-struct.mjs`, `step-resid.mjs`
+(mapping steps rust = **[init, merge, update]**, pas [init,update,merge] !).
+Constante clé décodée : `0000000021eb468cdda89409fc98462200…0040` = **−1 mod Fq**.
+
+### Résultats structurels (dumps courants, pas les stale)
+- **WRAP : structurellement IDENTIQUE à jsoo** (genHalves Δ0, tous types de
+  gate custom identiques, multiset net 0). Les 118 demi-diffs résiduels du wrap
+  sont TOUS des VALEURS embarquées de la step-VK (api.rs:806/810 choose_coordinate
+  = 111, `x_hat commitment`, `perm`/`ft_comm`) → convergent via le point-fixe
+  circulaire quand la STEP converge. Le wrap n'est PAS le problème.
+- **STEP init : parfait** (net 0). **STEP update/merge** : ne divergeaient que de
+  ~14/~28 demi-gates, TOUS dans le finalize pseudo-domaine (`finalize | zetaw`,
+  `| env`, `| perm check`, `domain_for_compiled`).
+- ⚠️ Les stale `program-gates-rust.json` (18:47) donnaient un faux −34 ; toujours
+  redumper `wrap-labeled-rust.json` (test `dump_labeled_wrap_for_b_actual_probe`,
+  avec `SNARKY_KEEP_LABELS=1` pour les labels) avant de mesurer.
+
+### FIX landé (commit 4632a663ff) — one-hot pseudo-domaine right-to-left
+`SelectedDomain::create` (ft_eval_circuit.rs) allouait les bits `equal` de gauche
+à droite ; OCaml `domain_for_compiled` utilise `Vector.map` dont le `f` s'exécute
+de DROITE À GAUCHE (même ordre que le `.rev()` de `choose_pts` api.rs:818). Donc
+le bit du PLUS GRAND log2 obtient le plus petit index variable. `reduce_lincom`
+ordonne par index croissant → décide comment le générateur masqué `Σ which[i]·ω_i`
+apparie ses générateurs de domaine au `× zeta` (zetaw). Rust appariait à l'envers :
+`gen(10)`↔`gen(15)` swappés (constantes `8281bb64…`/`3e0f1c3d…`, `c4bec54b…`=gen14
+fixe). Fix : allouer les bits de droite à gauche en gardant `which[i]`↔`log2s[i]`.
+Effet : update 14/10→10/6, merge 28/20→20/12, init 0. recorded 21/21.
+NB : générateurs identiques des 2 côtés (`Domain::new(1<<log2).group_gen`,
+cf kimchi-stubs/src/arkworks/pasta_fq.rs:305 = generator_of) — c'était l'ORDRE.
+
+### Résidu STEP restant (prochaines sondes, localisés)
+Après le fix, il reste dans update (×2 dans merge) :
+- `finalize | perm check` (finalize.rs:704 `perm_claimed.equal(perm_derived)`) :
+  jsoo `[1, X, W, 0, V]` vs rust `[2, W, W, 0, Z]` — DIFFÉRENCE DE FORMULE (pas
+  juste ordre) dans le scalaire de permutation. W=`00000000ed302d99…0040`.
+  Rust rows 2669-2670, jsoo 2672-2673.
+- `[1,0,−1,0,5]` (o=l+5, constante 5) jsoo 101/rust 99 — offset domaine/zk.
+- `[0,0,−1,1,0]` mul (252→248), `[1,1,−1,0,0]` add (718→720) — petits écarts de
+  compte mul/add dans env/scalars_env.
+- ⚠️ RAPPEL : le multiset est invariant à l'ordre → il ne voit PAS les pures
+  réordonnances (qui cassent quand même la VK positionnellement). Le vrai juge
+  reste `decode_and_diff` (VK réelle, **12/28** — inchangé par ce fix seul : le
+  wrap-VK n'inverse un commitment que quand TOUTE la step-VK converge).
+
 ## Handoff WRAP — parité gates (état courant)
 
 ### Branche expérimentale `wrap-iso-rewrite`
