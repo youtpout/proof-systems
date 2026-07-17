@@ -81,7 +81,37 @@ n'est pas complet — PAS une régression des fixes de session. lib 112/112,
 recorded 21/21 verts. **Toujours lancer `--test recursion` en plus de recorded
 avant de conclure « pas de régression ».**
 
-### Résidu STEP restant (update 8/3, merge 16/8 — prochaines sondes)
+### PERCÉE OUTIL #2 — le POSITIONAL diff (bien meilleur que le multiset ici)
+Le multiset est invariant à l'ordre → il RATE la divergence dominante : le
+**WIRING (permutation)**. Utiliser le diff POSITIONNEL (gate[i] vs gate[i],
+comme le harness o1js `rust-pickles-program-gates-diff.ts`) :
+- `posdiff.mjs` (typ+coeffs+wires), `posdiff-coeff.mjs` (typ+coeffs seul).
+Résultats DÉCISIFS (dump courant) :
+- **STEP init : 0 lignes différentes = BYTE-IDENTIQUE** (coeffs ET wires). ✓✓
+- **STEP update/merge** : structure quasi identique (**seulement −3 lignes
+  Generic**, +3 Zero), mais 1re divergence de **TYPE** à la **ligne 279** :
+  jsoo `Generic` / rust `EndoMulScalar` (compte EndoMulScalar identique → pur
+  REORDER). L'`EndoMulScalar` (label `scalar_to_field | recursive_step.rs:4611`
+  = décomposition 16-bit du `domain_log2` de branch_data) est émis 3 lignes trop
+  TÔT en rust ; jsoo émet 3 gates Generic on-curve (label 4421) AVANT.
+- Le gros du diff (7745 lignes coeff, 8690 wires) est la CASCADE de packing +
+  décalage de lignes en aval de ces quelques reorders. Les wires pointant ~3076
+  lignes plus loin = variables DIFFÉRENTES (pas un simple décalage), downstream.
+- ⚠️ `flush_generic_before_custom` est du CODE MORT (toujours false ; jamais mis
+  à true ; le va-et-vient plonk_curve_ops.rs:413-428 est un no-op). OCaml
+  `add_row` (plonk_constraint_system.ml:1259) ne flush PAS non plus avant un
+  custom gate. Donc le reorder @279 n'est PAS un flush — c'est l'ORDRE d'émission
+  des opérations du per-proof witness (branch_data scalar_to_field vs on-curve /
+  accumulator 4709) qui diffère. Réf OCaml : per_proof_witness.ml:137-157
+  (ordre du typ : Wrap_proof, Proof_state[dont Branch_data.typ:152], All_evals,
+  bp-challenges, prev_challenge_polynomial_commitments).
+
+**MÉTHODE À SUIVRE** : itérer « corrige la 1re divergence positionnelle → redump
+→ trouve la suivante » (comme l'ancien `differing rows`), PAS le multiset. Le
+multiset servait à voir les classes de compte ; le positional voit l'ordre+wires.
+
+### Résidu STEP restant (update 8/3 multiset, merge 16/8 — mais le VRAI blocage
+est le WIRING/ordre, 1re divergence positionnelle ligne 279 — prochaines sondes)
 Petits écarts de COMPTE dans du boilerplate récurrent (plus durs que les swaps
 propres, il faut trouver LES instances qui diffèrent) :
 - `[1,0,W,0,5]` (W=`00000000ed302d99…0040`, const 5) jsoo 101/rust 99 →
