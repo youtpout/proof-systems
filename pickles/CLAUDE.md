@@ -4029,3 +4029,40 @@ o1js NON COMMITÉ : zkapp.ts (branche rust + 2 tolérances),
 rust-pickles-recorded.ts (bypass width-0), zkprogram.ts (verify),
 mina-runtime-zkprogram.ts (smoke), pin src/mina-rust (Cargo.lock),
 tests tmp-*. zkapp-rust NON COMMITÉ : les 3 fichiers side-loaded.
+
+## ★ zkAPP STEP : la cause des 286 Poseidon manquants est TROUVÉE
+
+Diff step zkApp (harness NEUF o1js src/tests/tmp-zkapp-gates-diff.ts,
+deux passes MODE=jsoo/rust ; dumps /tmp/claude-1000/zkapp-gates-*.json):
+  jsoo 1024 gates {Generic:103, Poseidon:605, Zero:310, …}
+  rust  512 gates {Generic:92,  Poseidon:319, Zero:95, …}
+319 = exactement le socle step-verifier (init). TOUT le hachage
+account-update manque. Sonde de constance : selfHash est bien une VAR
+(pas de pliage constant) mais AUCUNE contrainte → LE RECORDER NE HOOKE
+QUE `gates.poseidon` (rust-pickles-recorded.ts:331/:374-385/:458) alors
+que `Poseidon.hash` TS passe par **`Snarky.poseidon.update`**
+(provable/crypto/poseidon.ts:96 ; sponge :45-53 ; hashToGroup :131) —
+jamais intercepté ⇒ vars sans contraintes (BUG DE SOLIDITÉ en plus du
+gap de parité).
+
+FIX À IMPLÉMENTER (rust-pickles-recorded.ts, à l'installation des
+hooks) : wrapper `Snarky.poseidon` —
+ • `update(state, input)` : absorption par blocs de rate 2 ; par bloc :
+   témoigner les états de ronde (11 lignes × 3, via la permutation TS —
+   constantes poseidonParamsKimchiFp de bindings/crypto/constants.ts)
+   avec Provable.witness, puis émettre la contrainte `kind:'poseidon'`
+   EXACTEMENT comme le hook gates (:374-385 — lignes de 3 lincoms,
+   dernière ligne = sortie), retourner l'état final.
+ • sponge create/absorb/squeeze : par-dessus update, sémantique OCaml.
+ • hashToGroup : erreur claire si atteint (non requis pour l'instant).
+VALIDATION : re-run tmp-zkapp-gates-diff (Poseidon 319→~605), puis
+l'écart résiduel Generic/Zero par ancres/runs ; puis
+tmp-zkapp-vk-iso (cible : hash jsoo 24921192…) et le test side-loaded
+(zkapp-rust, cible 2268640…). Les deux autres flags posés cette passe :
+inCheckedComputation ajouté au snarkContext du record (zkapp.ts), et
+les deux tolérances analyze déjà commitées (e8289c733).
+
+ÉTAT COMMITS : o1js e8289c733 ✓ ; zkapp-rust 46a2ffd ✓ ;
+mina-rust a0a38b48 LOCAL (push https refusé sans askpass — à pousser à
+la main). Probe zkapp.ts checkPublicInput ACTIVE (BENCH_DEBUG) — à
+retirer avant commit suivant.
