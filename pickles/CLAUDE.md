@@ -3297,3 +3297,117 @@ divergence était dans le TYPE, invisible au niveau gate.
 variants) est plus rentable que traquer les gadgets.
 INDICE UTILE: un `let (x, _) = f(...)` qui jette une valeur coûteuse est
 un signal fort (on paie une construction qu'OCaml ne fait pas).
+
+## 🔑 RÈGLE NEUVE — OCaml évalue les `cons` DROITE-À-GAUCHE
+
+C'est une convention D'ÉMISSION, invisible en lisant `f` seule. Dans
+`plonkish_prelude/vector.ml` :
+
+  init : `f i :: init (i + 1) n ~f`   (l.124) → cons ⇒ **f court DÉCROISSANT**
+  map  : `f x :: map xs ~f`           (l.141) → cons ⇒ **f court DÉCROISSANT**
+  map2 : `f x y :: map2 xs ys ~f`     (l.69)  → cons ⇒ **DÉCROISSANT**
+  iter : `f x ; iter xs ~f`           (l.21)  → `;` séquencé ⇒ **CROISSANT**
+  fold : accumulateur explicite               ⇒ **CROISSANT**
+
+OCaml n'ordonne pas l'évaluation des arguments de constructeur ; ocamlc/
+ocamlopt (donc jsoo) évaluent DE DROITE À GAUCHE ⇒ la queue récursive est
+évaluée AVANT `f i`. Donc tout `Vector.map`/`init` dont `f` ÉMET DES
+CONTRAINTES les émet À L'ENVERS. `Vector.iter` non.
+
+⚠ MAIS (mesuré) : l'inversion n'est OBSERVABLE que si les blocs produits
+par `f` DIFFÈRENT entre eux ou PARTAGENT des variables. Inverser N blocs
+AUTONOMES et de forme IDENTIQUE rend un circuit identique — voir le
+no-op n°2 ci-dessous. Toujours se demander « les blocs sont-ils
+distinguables ? » AVANT d'implémenter.
+
+## ✅ FIX (commit f915511c01) — deux conventions d'ordre d'émission
+
+1. **`Checked.assert_all` émet la liste À L'ENVERS** (checked.ml:75) :
+   `List.fold_right cs ~init ~f:(fun c acc -> bind acc (fun () -> add c))`
+   construit `f c0 (f c1 init)` ⇒ exécution = init, c1, c0.
+   Donc `equal_constraints` (utils.ml:43) émet `r1cs r z 0` AVANT
+   `r1cs z_inv z (1-r)`. STRUCTUREL : `z` est une lincom non réduite, le
+   PREMIER r1cs porte ses gadgets de réduction.
+   INDICE qui a mis sur la piste : `api.rs::other_field_equal` ET
+   `bulletproof.rs` réimplémentaient DÉJÀ `equal` à la main avec
+   l'inversion (+ commentaire) — deux contournements locaux d'un bug
+   jamais remonté dans le `FieldVar::equal` générique de `cvar.rs`.
+2. **`One_hot_vector.of_index`** = `Vector.init length ~f:(fun j ->
+   Field.equal (Field.of_int j) i)` ⇒ bits créés j = length-1 → 0.
+   Comme `reduce_lincom` trie par INDEX DE VARIABLE CROISSANT, l'ordre de
+   CRÉATION décide quel poids de branche atterrit en slot `l` vs `r`.
+MESURE : à `api.rs:630` le flux de gadgets colle à jsoo position par
+position et les lignes 81-82 sont BYTE-IDENTIQUES (coeffs `[1,2,...]`,
+wires égaux). wrap differingRows 8654→**8640**. init reste 0, recorded 21/21.
+
+## 🛠 OUTIL DÉCISIF — dumper les COEFFICIENTS RÉELS + WIRES
+
+`scratchpad/rawcoeff.mjs`. L'histogramme à 4 symboles (`0/1/-/c`) écrase
+tout constante en `c` et CACHE l'info. Voir les valeurs littérales
+`B[1, 2, -c, 0, 0]` (jsoo) vs `B[2, 1, -c, 0, 0]` (rust) AVEC des wires
+IDENTIQUES a immédiatement identifié les coeffs comme les largeurs de
+branches et réduit le problème à un ordre de création. Le symbole disait
+seulement `1cc00` vs `c1c00` = « l/r inversés », sans dire pourquoi.
+⇒ Quand une forme diverge, dumper les VALEURS avant de théoriser.
+Autres outils ajoutés : `head_dump.mjs`, `gstream.mjs` (diff LCS du FLUX
+DE GADGETS — Generic empile 2 gadgets/ligne, la compa ligne-à-ligne ment),
+`anchor_row.mjs` (index d'ancre → ligne + labels du run).
+
+## ❌ DEUX NO-OPS RÉFUTÉS PAR LA MESURE — NE PAS REFAIRE
+
+1. **Renverser `to_constant_and_terms`** (cvar.rs). OCaml (cvar.ml:54)
+   fait `(scale, v) :: terms` ⇒ sa liste de termes sort INVERSÉE vs notre
+   `terms.push(...)`. Lecture juste, effet **NUL** : le consommateur
+   `reduce_lincom` fait `accumulate_terms(terms)` → une MAP indexée par
+   variable, puis `Map.fold_right` ⇒ ordre d'entrée DÉTRUIT, ressorti en
+   index croissant. L'ordre de la liste ne peut pas compter.
+2. **Renverser les 16 `bp-challenge to_field`** (finalize.rs, iso
+   `compute_challenges` = `Vector.map`). Effet **NUL au bit près** (label
+   pourtant présent : 256/128/240 lignes, build vérifié frais). CAUSE :
+   `scalar_to_field` témoigne tout en interne ⇒ les 16 blocs sont
+   AUTONOMES et de forme IDENTIQUE ; permuter des blocs autonomes
+   identiques rend un circuit identique, wires compris. Invisible PAR
+   CONSTRUCTION, donc définitivement — pas « pas encore ».
+
+## 🧭 LEÇON DE MÉTHODE (répétition de l'épisode `seal`)
+
+J'ai RE-commis l'erreur documentée en §« statement_terms seal » : conclure
+d'un fragment de littéral OCaml isolé sans vérifier le CONSOMMATEUR. Les
+deux no-ops ci-dessus en découlent directement.
+⇒ PROTOCOLE : avant d'implémenter une correction d'ordre de PRODUCTION,
+répondre à « qui consomme cet ordre, et le préserve-t-il ? ». Ici :
+`accumulate_terms` l'écrase (no-op 1) ; des blocs autonomes le rendent
+inobservable (no-op 2).
+⇒ Et poser une PRÉDICTION FALSIFIABLE avant de mesurer. Pour le fix
+one-hot : « les coeffs à api.rs:630 doivent passer de (2,1) à (1,2) ».
+Elle a tenu ⇒ la chaîne production→consommation était comprise. Sans
+prédiction, une mesure qui bouge peu est ininterprétable.
+
+## 📊 ÉTAT AU 2026-07-17 (fin de session 4) — reprise ici
+
+  init    runDiffs 0    net  +0   differingRows **0** ✅ byte-identique
+  update  runDiffs 111  net  +6   7296
+  merge   runDiffs 121  net +13   15309
+  wrap    runDiffs 197  net  +2   **8640**
+Tout pushé sur `pickle-rs` (HEAD f915511c01), recorded 21/21.
+Le PLACEMENT est quasi fini (net +0/+6/+13/+2) ; l'essentiel des
+differingRows est du CÂBLAGE, qui cascade tant que le placement diverge.
+
+PROCHAINES CIBLES (résidus runDiffs, par ordre d'intérêt) :
+ • **wrap @0 (−8)** : j167/r159, tout début du circuit ⇒ AUCUNE dérive
+   amont possible, la cible la plus propre. Les lignes 0-72 sont déjà
+   identiques ; la divergence commence à la ligne 73 (`api.rs:488/495` =
+   `other_field_equal`) où un bloc est RÉORDONNÉ, puis les lignes 81-85
+   sont désormais bonnes. ⇒ reprendre par `gstream.mjs wrap 68 100`.
+ • update @6 / merge @6/@7 (−4 chacun) : run `recursive_step.rs:4420`.
+   Le MÊME −4 sur 3 circuits ⇒ une seule cause partagée.
+ • update @764 (+8) / merge @765 (+9) : noyés dans le run `finalize |
+   linearization` (680 lignes) ⇒ sous-labelliser avant d'attaquer.
+ • wrap @847 (+4), @727/@1574 (+2).
+PISTE TRANSVERSE : rejouer la règle « cons droite-à-gauche » sur les
+`Vector.map` in-circuit dont les blocs sont DISTINGUABLES (pas autonomes /
+formes différentes) — candidats : `step_verifier.ml:902`,
+`wrap_verifier.ml:1542` (`Vector.map old_bulletproof_challenges`),
+`step_verifier.ml:1203` (`Vector.map2 proofs_verified_mask ...` — masqué
+donc les blocs DIFFÈRENT ⇒ le meilleur candidat), `wrap_verifier.ml:63`
+et `:338/:362/:430` (`Vector.map domains`).
