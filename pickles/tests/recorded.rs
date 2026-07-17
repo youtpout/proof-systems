@@ -232,6 +232,75 @@ fn dump_labeled_wrap_for_b_actual_probe() {
 }
 
 #[test]
+#[ignore = "diagnostic VK decode+diff, run explicitly"]
+fn decode_and_diff_add_vk_against_jsoo() {
+    use pickles::mina_bin_prot::SideLoadedVerificationKeyV2;
+    use pickles::recorded::{RecordedCircuit, RecordedCompiledProgram, RecordedProgramBranch};
+
+    // jsoo side-loaded VK, raw bin_prot bytes (base64-decoded o1js
+    // VerificationKey.data): [2,1] header, 7 sigma + 15 coefficient + 6
+    // selector commitments, each an uncompressed Pallas point.
+    let vk_bytes = match std::fs::read("/tmp/claude-1000/add-vk-jsoo.bin") {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!("skipping: /tmp/claude-1000/add-vk-jsoo.bin not found");
+            return;
+        }
+    };
+    let jsoo = SideLoadedVerificationKeyV2::from_bin_prot(&vk_bytes).unwrap();
+
+    #[derive(serde::Deserialize)]
+    struct BranchJson {
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+        circuit: RecordedCircuit,
+    }
+    let raw = match std::fs::read_to_string("/tmp/claude-1000/program-branches.json") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("skipping: program-branches.json not found");
+            return;
+        }
+    };
+    let parsed: Vec<BranchJson> = serde_json::from_str(&raw).unwrap();
+    let branches = parsed
+        .into_iter()
+        .map(|b| RecordedProgramBranch {
+            witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+            circuit: b.circuit,
+            proofs_verified: b.proofs_verified,
+        })
+        .collect();
+    let program = RecordedCompiledProgram::compile(branches).unwrap();
+    let rust = program.wrap_verification_key_points();
+
+    assert_eq!(jsoo.commitments.len(), 28);
+    assert_eq!(rust.len(), 28);
+    let label = |i: usize| -> String {
+        if i < 7 {
+            format!("sigma[{i}]")
+        } else if i < 22 {
+            format!("coefficient[{}]", i - 7)
+        } else {
+            ["generic", "psm", "complete_add", "mul", "emul", "endomul_scalar"][i - 22].to_string()
+        }
+    };
+    let mut equal = 0;
+    for i in 0..28 {
+        let same = jsoo.commitments[i] == rust[i];
+        if same {
+            equal += 1;
+        }
+        eprintln!(
+            "  [{i:2}] {:<16} {}",
+            label(i),
+            if same { "MATCH" } else { "DIFFERS" }
+        );
+    }
+    eprintln!("=== equal commitments: {equal}/28 ===");
+}
+
+#[test]
 fn recorded_compiled_base_cache_round_trips_and_rejects_corruption() {
     use pickles::recorded::RecordedCompiledBase;
 

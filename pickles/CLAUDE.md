@@ -4156,6 +4156,28 @@ RÉSULTAT MAJEUR : la SÉQUENCE D'ANCRES et TOUTES les run-lengths
 Generic/Zero du wrap sont maintenant BYTE-IDENTIQUES à jsoo bout-à-bout
 (anchor-walk : 0 ancre divergente, 18→13→0). 21/21.
 
+## 📊 MESURE CANONIQUE — décoder la VK (12/28 après les fixes wrap)
+
+La VK side-loaded est du bin_prot base64 DÉCODABLE (o1js `VerificationKey.data`)
+= [2,1] + 7 sigma + 15 coefficient + 6 sélecteurs (28 points Pallas
+non compressés, 1796 octets). NE PAS gate-differ 16384 lignes : décoder
+les 28 commitments donne DIRECTEMENT quelles colonnes polynomiales
+diffèrent. Test rust `decode_and_diff_add_vk_against_jsoo` (#[ignore],
+lit /tmp/claude-1000/add-vk-jsoo.bin = base64-decode de add-vk-jsoo.json
+`data`, + program-branches.json, compile, compare
+`wrap_verification_key_points()`).
+ÉTAT après b_actual + public_input (était 0/28) : **12/28 MATCH** :
+  ✅ 6 sélecteurs (generic, psm, complete_add, mul, emul, endomul_scalar)
+  ✅ coefficient[10..14], sigma[6]
+  ❌ coefficient[0..9]  = les coeffs du gate GENERIC (double-generic
+     [l1,r1,o1,m1,c1 | l2,r2,o2,m2,c2] = colonnes coeff 0-9)
+  ❌ sigma[0..5] = permutation des colonnes témoin 0-5.
+INTERPRÉTATION : tous les SÉLECTEURS matchent ⇒ structure des gates OK.
+Reste UNIQUEMENT le gate generic (coeffs 0-9) et sa permutation (0-5) ⇒
+c'est la PARITÉ DE PACKING (moitiés A/B échangées ⇒ coeffs col 0-4↔5-9
+ET wires échangés) + les 1262 vraies ≠ de valeur (linearization/cip).
+Le packing est le suspect n°1 (il touche coeffs ET wires en même temps).
+
 ## ITÉRATION EN COURS — parité de PACKING double-generic + wiring (nouvelle classe)
 
 La structure run-length est byte-identique, MAIS il reste 2279 lignes
