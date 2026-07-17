@@ -4199,13 +4199,19 @@ coeff commitments — donc fermer update/merge fait converger coeff[0..9].
 FIX #1 (b37ea559be) : `odd.check()` manquait dans wt2 — OCaml
 `Other_field.check` (impls.ml:100) fait `typ_unchecked.check t` (Boolean
 check du bit odd) AVANT la boucle. Trou de soundness + 1 gate en moins.
-step update 8485→7049, merge 14918→14590. MAIS reste +3 (run 205/202) :
-la 1re ≠ est maintenant à recursive_step.rs:4563 = `half.equal(const lo)`
-DANS la boucle forbidden (jsoo `1######1##` vs rust `1#######1#` — proche,
-≠ de packing/gadget) puis `and` (4565) `Boolean::any` (4568). C'est la
-séquence equal/and/any de wt2 (2 appels z1/z2). PROCHAINE SONDE : comparer
-`Boolean::any` rust (assert_non_zero(sum) ?) et `x_eq.and(b_eq)` à l'OCaml
-`Boolean.(&&)` / `Boolean.any` gadget-à-gadget ; le +3 restant y est.
+step update 8485→7049, merge 14918→14590.
+RESTE +3 (run jsoo 205 / rust 202) — PAS dans le equal/and/any de wt2
+comme cru, mais AVANT : au dump (rows 235-250), rust bascule à wt2
+(recursive_step.rs:4560) dès row 237 alors que jsoo continue le motif
+`assert_on_curve` `[1,.,.,.,5|.,.,1,.,.]` (le 5 = constante de courbe
+y²=x³+5) sur J237-240 = 2 points de courbe de PLUS. forbidden pairs = 4
+(calculé). Les lr sont UNCHECKED (mkpt_unchecked, 4543-4546 — OK), donc
+ces assert_on_curve sont sur w_comm/z_comm/t_comm ou delta/sg. Ordre
+Bulletproof.typ = lr, z1, z2, delta, sg ⇒ delta/sg APRÈS wt2 (comme
+rust). Donc les 2 points en trop côté jsoo sont des commitments
+(w_comm/z_comm/t_comm) que jsoo `assert_on_curve` là où rust ne le fait
+pas / le fait ailleurs. PROCHAINE SONDE : compter et ordonner les mkpt
+des commitments (per_proof_witness.ml typ) rust vs OCaml.
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
