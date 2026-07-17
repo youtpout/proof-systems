@@ -84,7 +84,8 @@ pub fn statement_terms<F: PrimeField>(
     // correction for every boolean slot costs rows jsoo does not have.
     let next = |sys: &mut RunState<F>,
                 slot: &mut usize,
-                want_correction: bool|
+                want_correction: bool,
+                seal_lagrange: bool|
      -> SnarkyResult<(Point<F>, Option<Point<F>>)> {
         let index = *slot;
         *slot += 1;
@@ -96,7 +97,8 @@ pub fn statement_terms<F: PrimeField>(
             StatementLagranges::OneHot { sets, branches } => {
                 let mut select =
                     |pick: &dyn Fn(&((F, F), (F, F))) -> (F, F),
-                     sys: &mut RunState<F>|
+                     sys: &mut RunState<F>,
+                     do_seal: bool|
                      -> SnarkyResult<Point<F>> {
                         let mut x = FieldVar::zero();
                         let mut y = FieldVar::zero();
@@ -107,17 +109,25 @@ pub fn statement_terms<F: PrimeField>(
                         }
                         // OCaml `lagrange` (wrap_verifier.ml:334) ends with a
                         // plain `Vector.reduce_exn ~f:Field.(+)` and does NOT
-                        // seal. We seal anyway: our consumers re-reduce the
-                        // lincom at EVERY use, so leaving it lazy costs ~58
-                        // MORE rows (measured: net +26 -> +84). Matching
-                        // OCaml here requires matching its consumption
-                        // pattern too — until then the seal is the closer
-                        // approximation.
-                        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
+                        // seal. A `Cond_add` term uses its lagrange exactly
+                        // once — as `add_fast(lagrange, acc)` — and `add_fast`
+                        // seals its inputs itself, so the reduction lands
+                        // INSIDE the conditional add (jsoo: 2 Generic before
+                        // each conditional-add CompleteAdd). Sealing here
+                        // instead hoisted those 24 rows into statement_terms
+                        // (net-zero but byte-distinct: wrap anchor 2354).
+                        // `Add_with_correction` lagranges feed `scale_fast2_
+                        // prime`, which re-reduces the lincom on every bit, so
+                        // those MUST stay sealed.
+                        if do_seal {
+                            Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
+                        } else {
+                            Ok(Point::new(x, y))
+                        }
                     };
-                let l = select(&|e| e.0, sys)?;
+                let l = select(&|e| e.0, sys, seal_lagrange)?;
                 let c = if want_correction {
-                    Some(select(&|e| e.1, sys)?)
+                    Some(select(&|e| e.1, sys, true)?)
                 } else {
                     None
                 };
@@ -128,7 +138,7 @@ pub fn statement_terms<F: PrimeField>(
     for e in elements {
         match e {
             StatementElement::Packed { value, num_bits } => {
-                let (lagrange, correction) = next(sys, &mut slot, true)?;
+                let (lagrange, correction) = next(sys, &mut slot, true, true)?;
                 terms.push(Term::Packed {
                     value: value.clone(),
                     num_bits: *num_bits,
@@ -146,7 +156,8 @@ pub fn statement_terms<F: PrimeField>(
             }
             StatementElement::Bool(b) => {
                 b.check(sys, loc.clone())?;
-                let (lagrange, _) = next(sys, &mut slot, false)?;
+                // Cond lagrange stays a lincom: add_fast seals it in place.
+                let (lagrange, _) = next(sys, &mut slot, false, false)?;
                 terms.push(Term::Cond {
                     bit: b.clone(),
                     lagrange,
