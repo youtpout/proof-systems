@@ -4178,7 +4178,28 @@ c'est la PARITÉ DE PACKING (moitiés A/B échangées ⇒ coeffs col 0-4↔5-9
 ET wires échangés) + les 1262 vraies ≠ de valeur (linearization/cip).
 Le packing est le suspect n°1 (il touche coeffs ET wires en même temps).
 
-## ITÉRATION EN COURS — parité de PACKING double-generic + wiring (nouvelle classe)
+## FRONT STEP — update/merge divergent (init byte-identique)
+
+Le même harness labellisé dumpe AUSSI les steps (`R.steps[]`). Diff vs
+jsoo (script /tmp/claude-1000/step-diff.mjs) :
+  step init (pv0) : fullDiff=0 → BYTE-IDENTIQUE ✅
+  step update (pv1) : fullDiff=8485, 1re run-len @ancre 6 (row 282)
+  step merge (pv2) : fullDiff=14918, MÊME @ancre 6 (même cause).
+Ancre 6 = EndoMulScalar « recursive_step.rs:4604 » (le
+scalar_to_field_with_bits 16 bits sur domain_log2). genRun AVANT :
+jsoo 204 / rust 200 (+4). Préfixe commun 160 lignes, 1re ≠ à row 237,
+région « recursive_step.rs:4553-4564 » = la closure `wt2`
+(Other_field.check des shifted-scalar z1/z2) : boucle sur
+forbidden_shifted_values_fp_pairs { half.equal(const) (4556) ;
+x_eq.and(b_eq) (4558) } ; Boolean::any (4561) ; any.not().assert_equals(1)
+(4564). Appelée pour z1 ET z2 ⇒ +2 Generic jsoo par appel (=+4). MÊME
+classe que les fixes wrap (placement de gadget equal/and/any). C'est le
+front STEP : le step VK absorbé dans le wrap propage ses ≠ dans les
+coeff commitments — donc fermer update/merge fait converger coeff[0..9].
+SONDE : lire l'OCaml Other_field.check (per_proof_witness.ml) + comparer
+la séquence equal/and/any de `wt2` gadget-à-gadget.
+
+## ITÉRATION EN COURS — parité de PACKING double-generic + wiring (wrap)
 
 La structure run-length est byte-identique, MAIS il reste 2279 lignes
 coeff/wire différentes (avant fixes : ~11721, tout le cascade run-length
