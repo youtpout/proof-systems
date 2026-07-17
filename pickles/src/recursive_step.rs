@@ -4333,12 +4333,50 @@ pub fn recursive_wrap_ipa_equation_holds<const STEP_ROUNDS: usize, const WRAP_ST
     lhs.into_affine() == rhs.into_affine()
 }
 
+/// `Impls.Step.Other_field.check` on the five Type2 statement slots of one
+/// unfinalized proof, spec order back-to-front (perm, zeta_to_domain_size,
+/// zeta_to_srs_length, b, combined_inner_product): the odd-bit boolean row,
+/// then the four forbidden (lo, hi) equalities + any + assert. OCaml runs
+/// these when the step statement is `exists`'d — ONCE, after every
+/// per-proof witness, both proofs' blocks back to back.
+fn statement_type2_forbidden_checks(
+    sys: &mut RunState<Fp>,
+    statement: &[FieldVar<Fp>],
+) -> SnarkyResult<()> {
+    let forbidden_fp = crate::shifted_value::forbidden_shifted_values_fp_pairs();
+    for slot in (0..5).rev() {
+        let half = statement[2 * slot].clone();
+        let odd_field = statement[2 * slot + 1].clone();
+        sys.add_constraint(
+            snarky::runner::Constraint::BasicSnarkyConstraint(
+                snarky::constraint_system::BasicSnarkyConstraint::Boolean(odd_field.clone()),
+            ),
+            Some("step statement Type2 odd bit".into()),
+            loc!(),
+        )?;
+        let odd = Boolean::create_unsafe(odd_field);
+        let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
+        for &(lo, hi) in &forbidden_fp {
+            let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
+            let b_eq = if hi { odd.clone() } else { odd.not() };
+            eqs.push(x_eq.and(&b_eq, sys, loc!()));
+        }
+        let eq_refs: Vec<&Boolean<Fp>> = eqs.iter().collect();
+        let any = Boolean::any(&eq_refs, sys, loc!())?;
+        any.not()
+            .to_field_var()
+            .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
+    }
+    Ok(())
+}
+
 fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: usize>(
     sys: &mut RunState<Fp>,
     d: &'a RecursiveStepData,
     statement: &[FieldVar<Fp>],
     mds: &'a [Vec<Fp>],
     dummy_slot: bool,
+    shared_dlog_index: Option<&crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>>,
 ) -> SnarkyResult<(
     PerProofInput<'a, Fp>,
     crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
@@ -4421,21 +4459,28 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     };
 
 
-    let vk_pts = d
-        .wrap_vk_pts
-        .iter()
-        .map(|&p| mkpt(sys, p))
-        .collect::<SnarkyResult<Vec<_>>>()?;
-    let mut it = vk_pts.into_iter();
-    let dlog_index = PlonkVerificationKeyEvals {
-        sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
-        coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
-        generic_comm: it.next().unwrap(),
-        psm_comm: it.next().unwrap(),
-        complete_add_comm: it.next().unwrap(),
-        mul_comm: it.next().unwrap(),
-        emul_comm: it.next().unwrap(),
-        endomul_scalar_comm: it.next().unwrap(),
+    // Shared-tag proofs verify against the SAME wrap key: OCaml witnesses
+    // `d.wrap_key` once and every proof of the tag reuses those points.
+    let dlog_index = match shared_dlog_index {
+        Some(index) => index.clone(),
+        None => {
+            let vk_pts = d
+                .wrap_vk_pts
+                .iter()
+                .map(|&p| mkpt(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            let mut it = vk_pts.into_iter();
+            PlonkVerificationKeyEvals {
+                sigma_comm: (0..PERMUTS).map(|_| it.next().unwrap()).collect(),
+                coefficients_comm: (0..COLUMNS).map(|_| it.next().unwrap()).collect(),
+                generic_comm: it.next().unwrap(),
+                psm_comm: it.next().unwrap(),
+                complete_add_comm: it.next().unwrap(),
+                mul_comm: it.next().unwrap(),
+                emul_comm: it.next().unwrap(),
+                endomul_scalar_comm: it.next().unwrap(),
+            }
+        }
     };
     let prev_app_state = wvec(sys, &d.prev_app_state)?;
     let vk = VerificationKeyComm {
@@ -4657,33 +4702,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
                 .map(|&p| mkpt(sys, p))
                 .collect::<SnarkyResult<Vec<_>>>()?
         };
-    // `Impls.Step.Other_field.check` on the five Type2 statement slots,
-    // spec order back-to-front (perm, zeta_to_domain_size,
-    // zeta_to_srs_length, b, combined_inner_product): the odd-bit boolean
-    // row, then the four forbidden (lo, hi) equalities + any + assert.
-    for slot in (0..5).rev() {
-        let half = statement[2 * slot].clone();
-        let odd_field = statement[2 * slot + 1].clone();
-        sys.add_constraint(
-            snarky::runner::Constraint::BasicSnarkyConstraint(
-                snarky::constraint_system::BasicSnarkyConstraint::Boolean(odd_field.clone()),
-            ),
-            Some("step statement Type2 odd bit".into()),
-            loc!(),
-        )?;
-        let odd = Boolean::create_unsafe(odd_field);
-        let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
-        for &(lo, hi) in &forbidden_fp {
-            let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
-            let b_eq = if hi { odd.clone() } else { odd.not() };
-            eqs.push(x_eq.and(&b_eq, sys, loc!()));
-        }
-        let eq_refs: Vec<&Boolean<Fp>> = eqs.iter().collect();
-        let any = Boolean::any(&eq_refs, sys, loc!())?;
-        any.not()
-            .to_field_var()
-            .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
-    }
     // The proofs-verified mask is the pair of witnessed prefix-mask booleans
     // (OCaml `branch_data.proofs_verified_mask`, used directly by
     // `step_main.ml:63`). Physical order matches the front-padded proof
@@ -4805,6 +4823,11 @@ impl<
         let mut reused_next_dlog_index: Option<
             PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
         > = None;
+        let mut shared_tag_index: Option<(
+            Vec<(Fp, Fp)>,
+            PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
+        )> = None;
+        let mut real_segments: Vec<&[FieldVar<Fp>]> = Vec::new();
         for i in 0..2 {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
@@ -4817,6 +4840,10 @@ impl<
                 continue;
             }
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
+            let shared_index = shared_tag_index
+                .as_ref()
+                .filter(|(pts, _)| *pts == proof_data[i].wrap_vk_pts)
+                .map(|(_, index)| index.clone());
             let (proof, index, _previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
@@ -4824,7 +4851,11 @@ impl<
                     segment,
                     &mds,
                     dummy_slots[i],
+                    shared_index.as_ref(),
                 )?;
+            if shared_tag_index.is_none() {
+                shared_tag_index = Some((proof_data[i].wrap_vk_pts.clone(), index.clone()));
+            }
             // Shared-wrap self-recursion: the next-step message commits to
             // the SAME wrap key the proof was verified with — OCaml reuses
             // the witnessed `d.wrap_key` points instead of witnessing a
@@ -4834,7 +4865,14 @@ impl<
             {
                 reused_next_dlog_index = Some(index);
             }
+            real_segments.push(segment);
             proofs.push(proof);
+        }
+        // OCaml `exists` the step statement once, AFTER every per-proof
+        // witness: the unfinalized Type2 slot checks of every real proof
+        // come back to back here.
+        for segment in real_segments {
+            statement_type2_forbidden_checks(sys, segment)?;
         }
         let next_dlog_index = match reused_next_dlog_index {
             Some(index) => index,

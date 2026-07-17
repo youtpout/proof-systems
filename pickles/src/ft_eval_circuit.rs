@@ -164,7 +164,10 @@ pub struct ScalarsEnvVar<F: PrimeField> {
     pub zk_polynomial: FieldVar<F>,
     pub omega_to_minus_zk_rows: FieldVar<F>,
     pub zeta_to_n_minus_1: FieldVar<F>,
-    pub zeta_to_srs_length: FieldVar<F>,
+    /// LAZY in OCaml (`zeta_to_srs_length = lazy (pow2pow ...)`) — never
+    /// forced by a single-chunk `ft_eval0`; `derive_plonk` forces it in the
+    /// perm-scalar phase. `None` until then.
+    pub zeta_to_srs_length: Option<FieldVar<F>>,
     pub beta: FieldVar<F>,
     pub gamma: FieldVar<F>,
     pub zeta: FieldVar<F>,
@@ -254,7 +257,8 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
         }
     };
-    let zeta_to_srs_length = pow_circuit(sys, loc, zeta, 1u64 << srs_length_log2)?;
+    let _ = srs_length_log2;
+    let zeta_to_srs_length = None;
 
     Ok(ScalarsEnvVar {
         alpha_pows,
@@ -326,16 +330,16 @@ pub fn perm_scalar_circuit<F: PrimeField>(
     acc.scale(-F::one()).seal(sys, loc)
 }
 
-/// In-circuit `ft_eval0` (mirror of [crate::plonk_checks::ft_eval0]).
-/// `constant_term` comes from [crate::expr_eval::eval_polish].
-pub fn ft_eval0_circuit<F: PrimeField>(
+/// In-circuit `ft_eval0` WITHOUT the trailing `- constant_term` (OCaml
+/// computes `Sc.constant_term env` LAST, plonk_checks.ml:398-399; the caller
+/// evaluates the linearization after this prefix and subtracts).
+pub fn ft_eval0_prefix_circuit<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
     env: &ScalarsEnvVar<F>,
     shifts: &[F],
     e: &EvalsVar<F>,
     p_eval0: &[FieldVar<F>],
-    constant_term: &FieldVar<F>,
 ) -> SnarkyResult<FieldVar<F>> {
     use crate::plonk_checks::PERM_ALPHA0;
 
@@ -347,7 +351,11 @@ pub fn ft_eval0_circuit<F: PrimeField>(
     let mut chunks = p_eval0.iter().rev();
     let mut p = chunks.next().expect("empty public evals").clone();
     for chunk in chunks {
-        let scaled = env.zeta_to_srs_length.mul(&p, None, loc.clone(), sys)?;
+        let zeta1 = env
+            .zeta_to_srs_length
+            .as_ref()
+            .expect("multi-chunk needs a forced zeta_to_srs_length");
+        let scaled = zeta1.mul(&p, None, loc.clone(), sys)?;
         p = chunk + &scaled;
     }
     let p_eval0 = p;
@@ -362,9 +370,10 @@ pub fn ft_eval0_circuit<F: PrimeField>(
         let t2 = t1.mul(&a0, None, loc.clone(), sys)?;
         let mut acc = t2.mul(zkp, None, loc.clone(), sys)?;
         for (i, (s, _)) in e.s.iter().enumerate() {
+            // OCaml: `((beta * s) + w0.(i) + gamma) * acc` — factor LEFT.
             let bs = beta.mul(s, None, loc.clone(), sys)?;
             let factor = &(&bs + &w0[i]) + gamma;
-            acc = acc.mul(&factor, None, loc.clone(), sys)?;
+            acc = factor.mul(&acc, None, loc.clone(), sys)?;
         }
         acc
     };
@@ -378,8 +387,10 @@ pub fn ft_eval0_circuit<F: PrimeField>(
             .alpha_pow(PERM_ALPHA0)
             .mul(zkp, None, loc.clone(), sys)?;
         let mut acc = a0zkp.mul(&e.z.0, None, loc.clone(), sys)?;
-        let beta_zeta = beta.mul(zeta, None, loc.clone(), sys)?;
         for (i, s) in shifts.iter().enumerate() {
+            // OCaml: `acc * (gamma + (beta * zeta * s) + w0.(i))` — the
+            // `beta * zeta` product is NOT hoisted (one mul per shift).
+            let beta_zeta = beta.mul(zeta, None, loc.clone(), sys)?;
             let bzs = beta_zeta.scale(*s);
             let factor = &(gamma + &bzs) + &w0[i];
             acc = acc.mul(&factor, None, loc.clone(), sys)?;
@@ -408,7 +419,7 @@ pub fn ft_eval0_circuit<F: PrimeField>(
     let frac = crate::plonk_curve_ops::div_var(sys, loc, &numerator, &denominator)?;
     ft = &ft + &frac;
 
-    Ok(&ft - constant_term)
+    Ok(ft)
 }
 
 #[cfg(test)]
@@ -568,15 +579,15 @@ mod tests {
             };
             let constant_term = eval_polish(sys, loc!(), &self.tokens, &penv)?;
 
-            let ft0 = ft_eval0_circuit(
+            let ft_prefix = ft_eval0_prefix_circuit(
                 sys,
                 loc!(),
                 &env,
                 &self.shifts,
                 &evals,
                 &p_eval0,
-                &constant_term,
             )?;
+            let ft0 = &ft_prefix - &constant_term;
             let perm = perm_scalar_circuit(sys, loc!(), &env, &evals)?;
             Ok((ft0, perm))
         }

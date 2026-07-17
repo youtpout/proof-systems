@@ -392,7 +392,7 @@ pub fn finalize_deferred<F: PrimeField>(
     witness: &FinalizeWitness<F>,
 ) -> SnarkyResult<FinalizedDeferred<F>> {
     use crate::{
-        ft_eval_circuit::{ft_eval0_circuit, scalars_env_circuit, EvalsVar},
+        ft_eval_circuit::{scalars_env_circuit, EvalsVar},
         plonk_checks::ZK_ROWS,
     };
     use kimchi::circuits::gate::CurrOrNext;
@@ -567,6 +567,17 @@ pub fn finalize_deferred<F: PrimeField>(
         zeta: witness.zeta.clone(),
         zk_rows: ZK_ROWS as u64,
     };
+    // OCaml ft_eval0 order (plonk_checks.ml:349-399): the ft body and the
+    // nominator/denominator division come FIRST; `Sc.constant_term env` is
+    // evaluated LAST and subtracted.
+    let ft_prefix = crate::ft_eval_circuit::ft_eval0_prefix_circuit(
+        sys,
+        Cow::Owned(format!("{loc} | ft_eval0")),
+        &env,
+        params.shifts,
+        &ft_evals,
+        &witness.public_evals[0],
+    )?;
     let constant_term = crate::scalars_ml::eval_constant_term(
         sys,
         Cow::Owned(format!("{loc} | linearization")),
@@ -576,15 +587,7 @@ pub fn finalize_deferred<F: PrimeField>(
         },
         &scalars_env,
     )?;
-    let ft_eval0 = ft_eval0_circuit(
-        sys,
-        Cow::Owned(format!("{loc} | ft_eval0")),
-        &env,
-        params.shifts,
-        &ft_evals,
-        &witness.public_evals[0],
-        &constant_term,
-    )?;
+    let ft_eval0 = &ft_prefix - &constant_term;
 
     // Step 8b-8c: the combined inner product fold and its check
     cip_entries.extend([
@@ -639,12 +642,23 @@ pub fn finalize_deferred<F: PrimeField>(
     let b_claimed = params.shift.to_field(&witness.b_repr);
     let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
 
-    // Step 10: the PlonK relation (the deferred permutation scalar)
+    // Step 10: the PlonK relation (the deferred permutation scalar).
+    // OCaml `derive_plonk` computes the perm fold, then builds the derived
+    // record — whose `zeta_to_srs_length = Lazy.force env.zeta_to_srs_length`
+    // FORCES the lazy `ζ^{2^srs_log2}` mul chain HERE (plonk_checks.ml:436),
+    // its first (and only) use in a single-chunk finalize. The value itself
+    // is discarded (`checked` compares `perm` only).
     let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(
         sys,
         Cow::Owned(format!("{loc} | perm scalar")),
         &env,
         &ft_evals,
+    )?;
+    let _zeta_to_srs_length = crate::expr_eval::pow_circuit(
+        sys,
+        Cow::Owned(format!("{loc} | perm scalar")),
+        &witness.zeta,
+        1u64 << params.srs_log2,
     )?;
     let perm_claimed = params.shift.to_field(&witness.perm_repr);
     let perm_correct = perm_derived.equal(sys, loc.clone(), &perm_claimed)?;
