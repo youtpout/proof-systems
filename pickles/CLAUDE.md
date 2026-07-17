@@ -4163,20 +4163,23 @@ coeff/wire différentes (avant fixes : ~11721, tout le cascade run-length
 a disparu). full-diff (typ+coeffs+wires) : coeff-diffs 1506 (1er @90),
 wire-diffs 2203 (1er @12). CE SONT DES DIVERGENCES PRÉ-EXISTANTES
 démasquées, PAS causées par les 2 fixes. Deux sous-classes :
-  1. PARITÉ DE PACKING double-generic (dominante). Ex. row 1895 (h_zetaw) :
+  Sur 1506 lignes Generic à coeffs ≠ : 244 sont des SWAPS de moitiés
+  (parité), 1262 sont des VRAIES ≠ de valeur. Sur 40 entrées publiques,
+  39 câblées identiques, 1 seule diffère (PI 12).
+  1. PARITÉ DE PACKING double-generic (244 swaps). Ex. row 1895 (h_zetaw) :
      jsoo=[endo|plain], rust=[plain|endo] — MÊMES 2 gadgets, moitiés
      A/B ÉCHANGÉES. C'est le « kimchi Generic row = [NEW ; PENDING] »
      (plonk_constraint_system.ml:1452-1461) : un flip de parité du slot
-     pending persiste et fait permuter toutes les moitiés en aval.
-     Réparti partout (linearization 550c/676w, cip fold 282/286,
-     statement_terms 226/220, sg_evals 166/178, h_zetaw/h_zeta 60/60…).
-  2. VALEURS de constantes / WIRING public-input. Ex. row 90 (api.rs:794)
-     coeff[0] jsoo a616dc… vs rust 5901489e… (valeur ≠, pas un swap).
-     Ex. row 12 (public input) : jsoo wire 12.0→8891.5 (cycle de perm.
-     vers un site d'usage), rust 12.0→self (singleton) ⇒ les entrées
-     publiques (= le statement du step) sont câblées/ordonnées
-     différemment ⇒ probablement lié au layout du statement step et à la
-     divergence des circuits STEP (update 36 / merge 41 encore ouverts).
+     pending persiste et fait permuter les moitiés en aval.
+  2. VRAIES ≠ de VALEUR (1262, la MAJORITÉ). Concentrées linearization
+     550, cip fold 282, statement_terms 226, sg_evals 166… — ce sont des
+     régions qui ÉVALUENT / ABSORBENT des données du STEP (linearization
+     du step, vk index absorb). Row 90 (api.rs:794) coeff[0] jsoo a616dc…
+     vs rust 5901489e… (PAS une négation ni un swap). ⇒ le wrap encode la
+     VK/linearization du step ; il ne sera byte-identique QUE quand les
+     circuits STEP le sont (update 36 / merge 41 encore ouverts). C'est
+     le VRAI prochain front : diff des STEP avec le harness labellisé.
+  3. PI 12 (1 wire) : jsoo 12.0→8891.5 (usage), rust 12.0→self. Localisé.
 PROCHAINE SONDE : trouver le PREMIER flip de parité (row 5/12) et sa
 cause (un add_generic_constraint en trop/en moins ou dans un ordre
 différent tôt dans le wrap) ; puis diff des STEP (update/merge) avec le
