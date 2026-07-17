@@ -3913,3 +3913,27 @@ FIX À FAIRE (début de prochaine session, changement LARGE) :
  • PRÉDIRE : +8 lignes/finalize chez nous, dissolution de @892/@893/
    @847/@1694 ; vérifier par le motif [endo,1,−1] dupliqué chez nous
    aux mêmes positions que jsoo (dont le doublon J1981).
+
+## ⚠ RECTIFICATIF immédiat de l'entrée précédente (vérifié au littéral)
+
+Notre `scalar_to_field` retourne DÉJÀ le lincom lazy (scalar_challenge.
+rs:285 `a.scale(endo) + b`, aucun seal). Le fix n'est PAS là.
+
+LE VRAI MÉCANISME du doublon J1981 (A et B = même (a,b)) : OCaml
+`Field.square x` = `mul x x` et le backend snarky RÉDUIT CHAQUE OPÉRANDE
+SÉPARÉMENT — le même lincom passé deux fois ⇒ DEUX gadgets de réduction
+identiques `[endo,1,−1]`, PUIS le square. Notre `square_circuit` (et
+possiblement notre mul) ne réduit qu'UNE fois un opérande dupliqué (ou
+seal partagé). Chaque `mul lincom lincom` (et chaque première
+consommation double d'un lazy) nous fait donc émettre 1 gadget là où
+jsoo en émet 2 — accumulé ≈ 16 gadgets = les −8/finalize.
+
+⇒ FIX RÉEL (prochaine session) : aligner la sémantique de réduction de
+notre mul/square (snarky/src, expr_eval::square_circuit) sur OCaml :
+réduction PAR OPÉRANDE, sans partage même si les opérandes sont le même
+lincom. Vérifier d'abord au littéral snarky OCaml (checked.ml `mul` /
+`square` → reduce_to_v ×2 ?) puis mesurer sur le motif J1981 (notre
+côté doit produire le MÊME doublon). Impact potentiellement large
+(toutes les mults sur lincoms de tous les circuits) — init=0 comme
+canari, et attention aux endroits où nous avons DÉJÀ compensé (des fixes
+passés pourraient avoir absorbé cette différence localement).
