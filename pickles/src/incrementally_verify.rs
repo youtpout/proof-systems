@@ -379,8 +379,18 @@ where
             lagranges,
             h_generator,
         } => {
-            let terms = statement_terms(sys, loc.clone(), elements, lagranges)?;
-            x_hat = public_input_commitment(sys, loc.clone(), &terms, h_generator)?;
+            let terms = statement_terms(
+                sys,
+                Cow::Owned(format!("{loc} | statement_terms")),
+                elements,
+                lagranges,
+            )?;
+            x_hat = public_input_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | x_hat commitment")),
+                &terms,
+                h_generator,
+            )?;
             std::slice::from_ref(&x_hat)
         }
     };

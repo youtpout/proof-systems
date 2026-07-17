@@ -93,9 +93,13 @@ pub fn statement_terms<F: PrimeField>(
                             x = x + branch.to_field_var().scale(px);
                             y = y + branch.to_field_var().scale(py);
                         }
-                        // materialize the masked sums once, here in the term
-                        // loop, so every consumer shares the same vars
-                        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
+                        // OCaml `lagrange` (wrap_verifier.ml:334-356) ends with
+                        // `Vector.reduce_exn ~f:(… Field.( + ))` — a plain sum
+                        // of the masked lincoms, with NO seal. Sealing here
+                        // materializes 4 extra variables per slot that jsoo
+                        // does not have.
+                        let _ = sys;
+                        Ok(Point::new(x, y))
                     };
                 let l = select(&|e| e.0, sys)?;
                 let c = select(&|e| e.1, sys)?;
