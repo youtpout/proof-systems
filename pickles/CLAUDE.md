@@ -4291,11 +4291,19 @@ shift-product de ft_eval0_prefix_circuit (ft_eval_circuit.rs:393-407).
 VÉRIFIÉ MATCHANT vs OCaml plonk_checks.ml:372-397 : ft init/fold, shift
 product (init a0·zkp·z0, factor gamma+(beta·zeta·s)+w0, acc·factor gauche),
 numérateur/dénominateur (term1=(zeta1m1·a1)·(zeta-omzk), term2, (t+t)·(1-z0),
-den=(zeta-omzk)·(zeta-1)). DONC le flip vient d'un gate en trop/en moins
-AVANT le shift-product (dans ft init/fold ou le `-= p_eval0`), à tracer
-op-par-op (compter les gates génériques émis rust vs jsoo entre le début
-de ft_eval0 ~row 1240 et 1273). decode_and_diff toujours 12/28 (bougera
-quand toute la parité est alignée ⇒ point fixe VK converge).
+den=(zeta-omzk)·(zeta-1)).
+LOCALISÉ (label ft_shift ajouté ft_eval_circuit.rs:393) : row 1272 =
+ft_shift (dernier gate du shift-product), rows 1273+ = base loc ft_eval0
+= le NUM/DEN (pas le shift-product !). Donc l'endo-red @1273 réduit
+`zeta - omega_to_minus_zk_rows` du term1 (`.mul(zeta_minus_omzk)`). rust
+insère un gate `[1,0,0,0,0]` (= assert wl=0, wl→1275.1) JUSTE AVANT
+l'endo-red → décale de 1 ⇒ flip. jsoo n'a pas ce gate. HYPOTHÈSE : diff
+Var-vs-lincom d'une valeur env (omega_to_minus_zk_rows sealed côté OCaml,
+lincom côté rust ? ou zeta_minus_omzk réduit une fois de trop). PROCHAINE
+SONDE : dumper la forme (Var/lincom) de `env.omega_to_minus_zk_rows` et
+`env.zeta_to_n_minus_1` (probe shape) et l'ordre exact des gates du num/den
+rust (labelliser term1/term2/num/den). decode_and_diff toujours 12/28
+(bougera quand toute la parité est alignée ⇒ point fixe VK converge).
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 

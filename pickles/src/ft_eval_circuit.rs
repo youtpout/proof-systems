@@ -390,18 +390,19 @@ pub fn ft_eval0_prefix_circuit<F: PrimeField>(
 
     // subtract the shift product term:
     // alpha^0 * zkp * z(zeta) * prod_i (gamma + beta*zeta*s_i + w0_i)
+    let shift_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | ft_shift"));
     ft = {
         let a0zkp = env
             .alpha_pow(PERM_ALPHA0)
-            .mul(zkp, None, loc.clone(), sys)?;
-        let mut acc = a0zkp.mul(&e.z.0, None, loc.clone(), sys)?;
+            .mul(zkp, None, shift_loc.clone(), sys)?;
+        let mut acc = a0zkp.mul(&e.z.0, None, shift_loc.clone(), sys)?;
         for (i, s) in shifts.iter().enumerate() {
             // OCaml: `acc * (gamma + (beta * zeta * s) + w0.(i))` — the
             // `beta * zeta` product is NOT hoisted (one mul per shift).
-            let beta_zeta = beta.mul(zeta, None, loc.clone(), sys)?;
+            let beta_zeta = beta.mul(zeta, None, shift_loc.clone(), sys)?;
             let bzs = beta_zeta.scale(*s);
             let factor = &(gamma + &bzs) + &w0[i];
-            acc = acc.mul(&factor, None, loc.clone(), sys)?;
+            acc = acc.mul(&factor, None, shift_loc.clone(), sys)?;
         }
         &ft - &acc
     };
