@@ -3457,3 +3457,46 @@ que c'est le DERNIER champ du record OCaml.
 et l'ordre des champs de `Types.Step.Proof_state`. PRÉDICTION à poser
 avant mesure : la ligne `r90` doit disparaître et les 2 checks
 réapparaître plus loin, groupés.
+
+## ❌ NO-OP N°3 RÉFUTÉ — « exists alloue-tout-puis-checke » (INVISIBLE)
+
+TESTÉ : réordonner le témoignage de `unf_deferred` dans l'ordre `to_data`
+d'OCaml (should_finalize EN DERNIER) + différer les checks booléens après
+toutes les allocations, iso `checked_runner.ml:219-226`.
+RÉSULTAT : **nul au bit près** (8640/7296/15309 inchangés), et la ligne
+`r90` excédentaire est TOUJOURS là (label bien déplacé 699→752 ⇒ le code
+s'exécutait). Reverté.
+
+**LA RAISON — À RETENIR ABSOLUMENT :**
+**TÉMOIGNER N'ÉMET AUCUNE GATE.** `exists`/`compute` = `store_field_elt`,
+zéro contrainte. Donc « allouer-tout-puis-checker » vs « entrelacer »
+donnent EXACTEMENT la même séquence de gates. L'ordre d'un `exists` ne
+peut agir QUE via les INDEX DE VARIABLES (que `reduce_lincom` trie en
+croissant) — et ici ces variables ne retombent sur aucune lincom
+multi-termes triée ⇒ invisible.
+⇒ COROLLAIRE GÉNÉRAL : ne JAMAIS attendre d'un réordonnancement de
+témoins qu'il déplace des lignes. Il ne déplace que des index. Ne le
+tenter que si l'on peut nommer la lincom en aval dont le tri changera.
+⇒ Ça invalide la « CIBLE N°1 » de la section précédente : le `+2` de
+`r90` n'est PAS un problème d'ordre.
+
+## 🔎 CIBLE N°1 RÉVISÉE — wrap r90 : 2 checks booléens VRAIMENT en trop
+
+FAITS ÉTABLIS (pas des hypothèses) :
+ • Tête du wrap BYTE-IDENTIQUE jusqu'à la ligne **89**. 1re divergence =
+   `r90`, +1 ligne, 2 gadgets `-0010` (`b·(b−1)=0`) labels `api.rs:699`
+   (`should_finalize`) et `:759` (slot Bool du statement).
+ • Compte GLOBAL wrap : jsoo **82** checks booléens, rust **74** (−8).
+   Donc rust en a 2 de TROP ici mais 8 de MOINS au total.
+ • jsoo CHECKE bien `should_finalize` : `Spec` mappe `Bool -> Boolean.typ`
+   (spec.ml:522 step / :566 wrap) ⇒ ce n'est PAS « on checke, eux non ».
+ • Sites rust des 74 : 55 `x_hat commitment`, 12 `statement_terms`,
+   3 `group_map u`, 2 `:699`, 2 `:759`.
+PROCHAIN PAS : localiser les 82 de jsoo par ligne et diffuser le compte
+par ZONE (pas par label, qu'on n'a pas côté jsoo) : découper les 2
+circuits en tranches entre ancres communes et comparer le nombre de
+`-0010` par tranche. La tranche où jsoo en a ~10 de plus dira où l'on
+oublie des checks — CHERCHER LES CHECKS MANQUANTS d'abord (−8 global),
+le `+2` local en est probablement le pendant (des checks émis au mauvais
+endroit, pas en trop). Candidat : `x_hat commitment` (55 chez nous) et
+les bits de `Spec.pack`/`Packed_bits` du statement.
