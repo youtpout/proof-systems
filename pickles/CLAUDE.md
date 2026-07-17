@@ -4139,26 +4139,51 @@ FIX (finalize.rs, après perm_scalar_circuit) : boucle
 RÉSULTAT : première divergence run-length wrap 847 → 2354 ; b_actual+queue
 endo-reds 36 == 36 ; séquence d'ancres identique bout-à-bout ; 21/21.
 
-## ITÉRATION EN COURS — MSM public_input (net-zero, @2354)
+## ✅ MSM public_input RÉSOLU (1316049a57) — Cond lagrange non scellé
 
-Après le fix b_actual, il RESTE 13 ancres divergentes, cumulatif dgen=0
-(REDISTRIBUTION pure, pré-existante — c'était le −24 CompleteAdd masqué
-dans les 18 ancres d'origine) :
-  @2354 dg=−24 « public_input correction add » (rust +24 Generic)
-  @2462…@4227 dg=+2 ×12 « public_input conditional add » (jsoo +2 chacun).
-12×(+2) = +24 compense le −24. C'est public_input.rs
-`public_input_commitment` (lagrange_with_correction) : 1re boucle somme
-les corrections (add_fast des points constants), 2e boucle plie chaque
-terme (Cond = add_fast(lagrange, acc) + Point::select ; Packed = scale +
-add). jsoo place 2 Generic de plus dans CHAQUE conditional add et 24 de
-moins dans la correction add ⇒ probable différence de placement de
-réduction (acc scellé trop tôt côté rust ? add_fast réduit acc dans le
-conditional plutôt qu'avant). SONDE : mêmes labels (déjà en place :
-« public_input correction add » / « conditional add » / « packed add »),
-comparer les runs Generic par label jsoo vs rust dans le dump labellisé.
-CIBLE : fermer 2354 → 0 divergence run-length ⇒ re-décoder la VK add
-(commitments 0/28 → doivent converger ; ancre finale VK_HASH jsoo
-10959392966233509715748678308838967246207769407061667940269890557862386195723).
-OUTIL clé : `SNARKY_KEEP_LABELS=1 cargo test -p pickles --release --test
-recorded dump_labeled_wrap_for_b_actual_probe -- --ignored` puis les
-scripts /tmp/claude-1000/wrap-*.mjs (anchor-walk, dist2, per-section).
+La redistribution net-zero (@2354 −24 correction/statement_terms vs
+@2462…@4227 +2 ×12 conditional add) venait de statement_terms
+(public_input.rs) qui SCELLAIT chaque point lagrange masqué (chemin
+OneHot / domaines step hétérogènes). Or un terme Cond_add utilise son
+lagrange UNE fois — `add_fast(lagrange, acc)` — et add_fast scelle
+lui-même ses entrées ⇒ le OCaml non scellé (wrap_verifier.ml:334, plain
+Vector.reduce_exn) se réduit DANS le conditional add (2 Generic avant
+chaque CompleteAdd). Sceller tôt hissait ces 24 lignes dans
+statement_terms. FIX : ne sceller QUE les lagranges Packed
+(Add_with_correction — ils nourrissent scale_fast2_prime qui re-réduit à
+chaque bit). Les Cond passent non scellés à add_fast.
+RÉSULTAT MAJEUR : la SÉQUENCE D'ANCRES et TOUTES les run-lengths
+Generic/Zero du wrap sont maintenant BYTE-IDENTIQUES à jsoo bout-à-bout
+(anchor-walk : 0 ancre divergente, 18→13→0). 21/21.
+
+## ITÉRATION EN COURS — parité de PACKING double-generic + wiring (nouvelle classe)
+
+La structure run-length est byte-identique, MAIS il reste 2279 lignes
+coeff/wire différentes (avant fixes : ~11721, tout le cascade run-length
+a disparu). full-diff (typ+coeffs+wires) : coeff-diffs 1506 (1er @90),
+wire-diffs 2203 (1er @12). CE SONT DES DIVERGENCES PRÉ-EXISTANTES
+démasquées, PAS causées par les 2 fixes. Deux sous-classes :
+  1. PARITÉ DE PACKING double-generic (dominante). Ex. row 1895 (h_zetaw) :
+     jsoo=[endo|plain], rust=[plain|endo] — MÊMES 2 gadgets, moitiés
+     A/B ÉCHANGÉES. C'est le « kimchi Generic row = [NEW ; PENDING] »
+     (plonk_constraint_system.ml:1452-1461) : un flip de parité du slot
+     pending persiste et fait permuter toutes les moitiés en aval.
+     Réparti partout (linearization 550c/676w, cip fold 282/286,
+     statement_terms 226/220, sg_evals 166/178, h_zetaw/h_zeta 60/60…).
+  2. VALEURS de constantes / WIRING public-input. Ex. row 90 (api.rs:794)
+     coeff[0] jsoo a616dc… vs rust 5901489e… (valeur ≠, pas un swap).
+     Ex. row 12 (public input) : jsoo wire 12.0→8891.5 (cycle de perm.
+     vers un site d'usage), rust 12.0→self (singleton) ⇒ les entrées
+     publiques (= le statement du step) sont câblées/ordonnées
+     différemment ⇒ probablement lié au layout du statement step et à la
+     divergence des circuits STEP (update 36 / merge 41 encore ouverts).
+PROCHAINE SONDE : trouver le PREMIER flip de parité (row 5/12) et sa
+cause (un add_generic_constraint en trop/en moins ou dans un ordre
+différent tôt dans le wrap) ; puis diff des STEP (update/merge) avec le
+même harness labellisé — le wrap ne sera byte-identique que si les steps
+le sont aussi (leur linearization + statement se propagent). Ancre finale
+VK_HASH jsoo 10959392966233509715748678308838967246207769407061667940269890557862386195723.
+OUTILS : `SNARKY_KEEP_LABELS=1 cargo test -p pickles --release --test
+recorded dump_labeled_wrap_for_b_actual_probe -- --ignored` (dump wrap
+labellisé, ~12 s, sans napi ; lit WRAP_BRANCHES_JSON) + scripts
+/tmp/claude-1000/{sep-diff,diff-dist,coeff-inspect,full-diff}.mjs.
