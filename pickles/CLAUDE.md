@@ -4299,11 +4299,22 @@ ft_shift (dernier gate du shift-product), rows 1273+ = base loc ft_eval0
 insère un gate `[1,0,0,0,0]` (= assert wl=0, wl→1275.1) JUSTE AVANT
 l'endo-red → décale de 1 ⇒ flip. jsoo n'a pas ce gate. HYPOTHÈSE : diff
 Var-vs-lincom d'une valeur env (omega_to_minus_zk_rows sealed côté OCaml,
-lincom côté rust ? ou zeta_minus_omzk réduit une fois de trop). PROCHAINE
-SONDE : dumper la forme (Var/lincom) de `env.omega_to_minus_zk_rows` et
-`env.zeta_to_n_minus_1` (probe shape) et l'ordre exact des gates du num/den
-rust (labelliser term1/term2/num/den). decode_and_diff toujours 12/28
-(bougera quand toute la parité est alignée ⇒ point fixe VK converge).
+lincom côté rust ? ou zeta_minus_omzk réduit une fois de trop). RAFFINÉ (labels ft_shift + ft_numden ajoutés) : les 4 endo-gates du
+num/den sont à J[1273.A,1275.A,1278.A,1279.B] et R[1274.B,1275.A,1278.A,
+1279.B] — SEUL le 1er (term1 `.mul(zeta_minus_omzk)`) diffère (décalé
+d'1), les 3 autres alignés. Les rows ft_shift 1270-1272 MATCHENT
+exactement (même pending state en entrée du num/den), et toutes les ops
+term1/2/num/den matchent OCaml op-par-op. `zeta_to_n_minus_1` est SEALED
+(Var, ft_eval_circuit.rs:143). ⇒ le flip est une subtilité de PACKING
+double-generic (pending slot) à la frontière ft_shift→num/den que
+l'analyse STATIQUE ne résout pas (mêmes gates, même compte, appariement ≠).
+PROCHAINE SONDE (runtime) : instrumenter plonk_constraint_system
+`add_generic_constraint` pour logger l'état pending (row courant, half
+A/B) à chaque gate autour de 1272-1274, rust vs une trace équivalente ;
+OU comparer si `env.omega_to_minus_zk_rows` (=omegas.omega_to_zk) est
+Var/lincom vs OCaml. decode_and_diff toujours 12/28 (bougera quand toute
+la parité est alignée ⇒ point fixe VK converge). Labels ft_shift/ft_numden
+gardés (diagnostic, aucun effet circuit).
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 

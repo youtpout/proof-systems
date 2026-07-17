@@ -408,6 +408,7 @@ pub fn ft_eval0_prefix_circuit<F: PrimeField>(
     };
 
     // + numerator / denominator
+    let nd: Cow<'static, str> = Cow::Owned(format!("{loc} | ft_numden"));
     let one = FieldVar::constant(F::one());
     let om_zk = env.omega_to_minus_zk_rows.clone();
     let zeta_minus_omzk = zeta - &om_zk;
@@ -416,15 +417,15 @@ pub fn ft_eval0_prefix_circuit<F: PrimeField>(
     let a2 = env.alpha_pow(PERM_ALPHA0 + 2);
     let term1 =
         zeta1m1
-            .mul(&a1, None, loc.clone(), sys)?
-            .mul(&zeta_minus_omzk, None, loc.clone(), sys)?;
+            .mul(&a1, None, nd.clone(), sys)?
+            .mul(&zeta_minus_omzk, None, nd.clone(), sys)?;
     let term2 =
         zeta1m1
-            .mul(&a2, None, loc.clone(), sys)?
-            .mul(&zeta_minus_1, None, loc.clone(), sys)?;
+            .mul(&a2, None, nd.clone(), sys)?
+            .mul(&zeta_minus_1, None, nd.clone(), sys)?;
     let one_minus_z0 = &one - &e.z.0;
-    let numerator = (&term1 + &term2).mul(&one_minus_z0, None, loc.clone(), sys)?;
-    let denominator = zeta_minus_omzk.mul(&zeta_minus_1, None, loc.clone(), sys)?;
+    let numerator = (&term1 + &term2).mul(&one_minus_z0, None, nd.clone(), sys)?;
+    let denominator = zeta_minus_omzk.mul(&zeta_minus_1, None, nd.clone(), sys)?;
     let frac = crate::plonk_curve_ops::div_var(sys, loc, &numerator, &denominator)?;
     ft = &ft + &frac;
 
