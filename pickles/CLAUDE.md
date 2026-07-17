@@ -140,6 +140,19 @@ qui se corrige seule). Prochaine sonde : compter les demi-gates de
 + le `and`(`b_eq=odd.not()` lincom vs `odd` var) — trouver le demi-gate en trop.
 Puis EndoMulScalar @279 (reorder branch_data, cf plus bas).
 
+**SONDE APPROFONDIE @241 (flatten des demi-gates, rows 240-250)** : ce n'est PAS
+qu'un wobble de packing — la SÉQUENCE des demi-gates diffère. jsoo émet
+`[0,0,0,1,0]` au flat-idx 2, rust au flat-idx 5. Le z-reduction du `equal`
+(`[1,0,W,0,<forbidden>]`) apparaît 2× des 2 côtés (les 2 r1cs réduisent z chacun),
+mais l'INTERLEAVING equal/and/any diffère. Donc l'ordre d'émission des gadgets
+booléens (`FieldVar::equal` cvar.rs:225 + `Boolean::and` + `Boolean::any`
+recursive_step.rs:4563-4571) ne matche pas l'ordre OCaml (`Field.Checked.equal` +
+`Boolean.(&&)` + `Boolean.any`, impls.ml:95-102). PROCHAIN : comparer demi-gate à
+demi-gate la séquence d'UN forbidden (equal→and) rust vs OCaml pour trouver la
+transposition, probablement une éval droite-à-gauche (comme les fixes précédents)
+dans `and`/`any` ou l'ordre des 2 r1cs de `equal_constraints` (cvar.rs:207-208,
+déjà inversé une fois — vérifier si l'inversion doit s'étendre au `and`/`any`).
+
 ### ⚠️ BLOCAGE FONDAMENTAL : pas de labels jsoo possibles
 Le gate OCaml est `{kind; wired_to; coeffs}` (plonk_constraint_system.ml:1274) —
 AUCUN champ label. `with_label` sert aux messages d'erreur, pas stocké par gate.
