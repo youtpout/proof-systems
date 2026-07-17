@@ -735,18 +735,30 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         }
         let mut elements = Vec::with_capacity(w.step_statement.len());
         let mut bool_slot = 0usize;
-        for (slot_index, slot) in w.step_statement.iter().enumerate() {
+        // The `messages_for_next_step` digest is BOTH a wrap public input
+        // (slot 12) and a step-statement element fed to `x_hat`. OCaml threads
+        // the same cvar into both instead of witnessing an equal private var,
+        // so that use appears in PI 12's permutation cycle. Its FLATTENED
+        // position is `step_statement_digest_slot` = `proofs * (17+TOCK_ROUNDS)`
+        // — 0 only in the base case (the old `slot_index == 0` hack), non-zero
+        // for update/merge (else PI 12 stays a singleton and the digest is
+        // unconstrained: a soundness gap + the wrap PI-12 wiring divergence).
+        let digest_flat_pos =
+            crate::recursive_step::step_statement_digest_slot(expanded_step_statement_len);
+        let mut flat_pos = 0usize;
+        for slot in w.step_statement.iter() {
+            let this_flat = flat_pos;
+            flat_pos += match slot {
+                WrapStepStatementSlot::Field(_) => 2,
+                _ => 1,
+            };
             match *slot {
                 WrapStepStatementSlot::Field(value) => {
                     let var = sys.compute(loc!(), move |_| value)?;
                     elements.push(StepStatementElement::Split(var));
                 }
                 WrapStepStatementSlot::Packed { value, num_bits } => {
-                    // In the base case this is the messages-for-next-step
-                    // digest already present at public-input slot 12. OCaml
-                    // threads that same cvar into x_hat instead of allocating
-                    // an equal private witness.
-                    let var = if slot_index == 0 {
+                    let var = if this_flat == digest_flat_pos {
                         stmt[12].clone()
                     } else {
                         sys.compute(loc!(), move |_| value)?
