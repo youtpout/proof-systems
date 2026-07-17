@@ -18,6 +18,7 @@ use mina_poseidon::{
 use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
 use snarky::{
     api::SnarkyCircuit, gadgets::curve::Point, loc, Boolean, FieldVar, RunState, SnarkyResult,
+    SnarkyType,
 };
 
 use crate::{
@@ -4551,6 +4552,12 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     let wt2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
         let half: FieldVar<Fp> = sys.compute(loc!(), move |_| p.0)?;
         let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
+        // OCaml `Other_field.check` (impls.ml:91-102) runs `typ_unchecked.check
+        // t` BEFORE the forbidden-values loop — for the `(field, bool)` shifted
+        // scalar that is the Boolean check on the `odd` bit. Without it `odd`
+        // is unconstrained (a soundness gap) AND we emit one gate fewer than
+        // jsoo per z1/z2 witness (step update/merge diverge here, ancre 6).
+        odd.check(sys, loc!())?;
         let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
         for &(lo, hi) in &forbidden_fp {
             let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
