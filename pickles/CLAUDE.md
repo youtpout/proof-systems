@@ -110,6 +110,27 @@ Résultats DÉCISIFS (dump courant) :
 → trouve la suivante » (comme l'ancien `differing rows`), PAS le multiset. Le
 multiset servait à voir les classes de compte ; le positional voit l'ordre+wires.
 
+### 1re divergence COEFF = ligne 236 (localisée précisément)
+Labels rust : 232-235 = `4421`(on-curve mkpt), **236 = `4554 ++ 4421`**. Donc au
+row 236, rust émet un gate `4554` (= le witness/check du scalaire z1 dans la
+closure `wt2`, recursive_step.rs:4552-4573) là où jsoo émet encore un demi-gate
+ON-CURVE (`[0,0,W,1,0]`). C'est la transition **messages(on-curve) → z1(wt2)** :
+rust apparie le demi on-curve pending avec le 1er gate de wt2 z1, jsoo l'apparie
+avec un autre on-curve. Ordre high-level identique (messages→lr→z_1→z_2→delta→sg,
+bulletproof.ml + rust 4576-4585) → c'est un écart de PACKING/parité de demi-gates
+(nb de demi-gates par assert_on_curve : x²Square + x³mul + rhs-reduction + y²Square).
+W = `00000000ed302d99…0040` = −(0x47afc1f319ba3400000001), 5 = curve b.
+
+### ⚠️ BLOCAGE FONDAMENTAL : pas de labels jsoo possibles
+Le gate OCaml est `{kind; wired_to; coeffs}` (plonk_constraint_system.ml:1274) —
+AUCUN champ label. `with_label` sert aux messages d'erreur, pas stocké par gate.
+Donc IMPOSSIBLE de dumper des labels jsoo pour differ. Les divergences de
+packing/ordre subtiles (236, 279…) se résolvent UNIQUEMENT par analyse de l'ORDRE
+d'émission dans la source OCaml (per_proof_witness.ml, bulletproof.ml, snarky_curve
+assert_on_curve, impls.ml Other_field) — pénible mais c'est la seule voie. Les 2
+fixes propres de cette session (generator, perm) venaient d'ordres OCaml lisibles ;
+236/279 demandent le même travail sur l'émission du per-proof witness.
+
 ### Résidu STEP restant (update 8/3 multiset, merge 16/8 — mais le VRAI blocage
 est le WIRING/ordre, 1re divergence positionnelle ligne 279 — prochaines sondes)
 Petits écarts de COMPTE dans du boilerplate récurrent (plus durs que les swaps
