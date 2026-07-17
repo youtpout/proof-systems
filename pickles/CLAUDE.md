@@ -2867,3 +2867,29 @@ PLAN CHIRURGIE WRAP OPT-SPONGE (précisé) :
   sont recalculées au vol normalement).
 - Arbitre: recorded 21/21 puis measure (wrap @4391+ doit passer de blocs
   6 rows à ~11 rows; net wrap −95 → ~0). Vérifier init RESTE 0.
+
+TENTÉ (session 3) puis REVERTÉ — la chirurgie opt-sponge casse la
+cohérence prover/statement. Détail du blocage pour la reprise :
+- Fait: (a) wrap circuit opt-absorb (keep,x/y) des sg_old; (b) step
+  prover recursions TRIMMÉES + mask None; (c) oracles plain; (d) helper
+  padded_step_sg_olds + pad interne from_parts.
+- Le multiphase opt-sponge est PROUVÉ correct (nouveau test lib
+  `opt_sponge_multiphase_matches_plain`, gardé) : opt-skip ≡ plain-of-kept.
+- ÉCHEC: `verify: sponge digest` (wrap) — la beta/gamma/alpha/zeta
+  DÉRIVÉES par la reconstruction wrap ≠ les CLAIMED du statement step.
+  Cause: le statement step (deferred challenges) est calculé par un
+  MIROIR fq OUT-OF-CIRCUIT qui pad encore avec des zéros, alors que le
+  kimchi prover trimmé n'absorbe plus rien → le proof step et son
+  statement divergent dès qu'on trim. Il FAUT trimmer AUSSI ce miroir
+  (chercher où les beta/gamma/etc du step statement sont calculées:
+  probablement dans le calcul du wrap witness / unfinalized, via un
+  fq_sponge qui rejoue le transcript step — le mettre en cohérence avec
+  le prover: soit tout trimmer, soit tout padder-zéros ET faire le wrap
+  circuit absorber (true, 0) au lieu d'opt-skip). ⚠ Décision AVANT de
+  recommencer: Mina trim VRAIMENT (donc viser le trim partout) — mais
+  c'est un changement transverse (prover + oracles + miroir statement +
+  dummy/donor data). REVERTÉ pour rester à 21/21; le gap wrap −85 reste
+  ouvert. NB pièges confirmés: kimchi/src/prover.rs:314 absorbe des ZÉROS
+  pour keep=false (pas skip) — c'est notre padding actuel, cohérent avec
+  le wrap circuit actuel (mask-muls → (true,0)). Donc l'état REVERTÉ est
+  self-consistent (juste pas iso-jsoo sur ce bloc).

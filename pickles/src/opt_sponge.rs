@@ -313,6 +313,83 @@ mod tests {
     /// 5 flagged inputs; flags fixed by the test matrix.
     const N: usize = 5;
 
+    /// Multiphase transcript pattern (the wrap IVP shape): 37 flagged
+    /// absorbs (4 skipped), squeeze, 2 absorbs, squeeze, 14 absorbs,
+    /// squeeze — compared against a plain sponge over the kept values.
+    struct MultiPhaseCircuit;
+
+    impl SnarkyCircuit for MultiPhaseCircuit {
+        type Curve = Vesta;
+        type Proof = OpeningProof<Self::Curve, { snarky::FULL_ROUNDS }>;
+        type PrivateInput = Vec<Fp>;
+        type PublicInput = ();
+        type PublicOutput = FieldVar<Fp>;
+
+        fn circuit(
+            &self,
+            sys: &mut RunState<Fp>,
+            _public: Self::PublicInput,
+            private: Option<&Self::PrivateInput>,
+        ) -> SnarkyResult<Self::PublicOutput> {
+            let mut sponge = OptSponge::new();
+            let flags: Vec<bool> = (0..37).map(|i| !(1..=4).contains(&i)).collect();
+            for i in 0..37 {
+                let x: FieldVar<Fp> =
+                    sys.compute(loc!(), move |_| private.unwrap()[i])?;
+                let keep = flags[i];
+                let flag: Boolean<Fp> = sys.compute(loc!(), move |_| keep)?;
+                sponge.absorb((flag, x));
+            }
+            let _beta = sponge.squeeze(sys, loc!())?;
+            for i in 37..39 {
+                let x: FieldVar<Fp> =
+                    sys.compute(loc!(), move |_| private.unwrap()[i])?;
+                sponge.absorb((Boolean::true_(), x));
+            }
+            let _alpha = sponge.squeeze(sys, loc!())?;
+            for i in 39..53 {
+                let x: FieldVar<Fp> =
+                    sys.compute(loc!(), move |_| private.unwrap()[i])?;
+                sponge.absorb((Boolean::true_(), x));
+            }
+            sponge.squeeze(sys, loc!())
+        }
+    }
+
+    #[test]
+    fn opt_sponge_multiphase_matches_plain() {
+        let mut rng = o1_utils::tests::make_test_rng(None);
+        use ark_ff::UniformRand;
+        let values: Vec<Fp> = (0..53).map(|_| Fp::rand(&mut rng)).collect();
+
+        let mut reference =
+            ArithmeticSponge::<Fp, PlonkSpongeConstantsKimchi, { snarky::FULL_ROUNDS }>::new(
+                Vesta::sponge_params(),
+            );
+        for (i, v) in values[..37].iter().enumerate() {
+            if !(1..=4).contains(&i) {
+                reference.absorb(&[*v]);
+            }
+        }
+        let _beta = reference.squeeze();
+        for v in &values[37..39] {
+            reference.absorb(&[*v]);
+        }
+        let _alpha = reference.squeeze();
+        for v in &values[39..53] {
+            reference.absorb(&[*v]);
+        }
+        let expected = reference.squeeze();
+
+        let circuit = MultiPhaseCircuit;
+        let (mut prover_index, verifier_index) = circuit.compile_to_indexes().unwrap();
+        let (proof, public_output) = prover_index
+            .prove::<BaseSponge, ScalarSponge>((), values, true)
+            .unwrap();
+        assert_eq!(*public_output, expected, "multiphase opt == plain-of-kept");
+        verifier_index.verify::<BaseSponge, ScalarSponge>(proof, (), *public_output);
+    }
+
     struct OptSpongeCircuit {
         flags: [bool; N],
     }
