@@ -376,28 +376,23 @@ where
         .assert_equals(sys, loc.clone(), &must_verify.to_field_var())?;
 
     // finalize the previous step proof's deferred values (map_plonk_to_field:
-    // alpha/zeta raw -> field via the endomorphism; beta/gamma used raw)
-    let alpha_f = scalar_to_field(sys, loc.clone(), &stmt.alpha, finalize_params.endo_r)?
-        .seal(sys, loc.clone())?;
-    let zeta_f = scalar_to_field(sys, loc.clone(), &stmt.zeta, finalize_params.endo_r)?
-        .seal(sys, loc.clone())?;
+    // alpha/zeta raw -> field via the endomorphism; beta/gamma used raw).
+    // OCaml does NOT seal the converted challenges: the `endo·a + b` lincom
+    // flows into every use and is re-reduced there (the `[c,1,-1,0,0]` rows
+    // all over the env and linearization).
+    let alpha_f = scalar_to_field(sys, loc.clone(), &stmt.alpha, finalize_params.endo_r)?;
+    let zeta_f = scalar_to_field(sys, loc.clone(), &stmt.zeta, finalize_params.endo_r)?;
     let witness = FinalizeWitness {
         alpha: alpha_f,
-        beta: stmt.beta.seal(sys, loc.clone())?,
-        gamma: stmt.gamma.seal(sys, loc.clone())?,
+        beta: stmt.beta.clone(),
+        gamma: stmt.gamma.clone(),
         zeta: zeta_f,
-        xi: stmt.xi.seal(sys, loc.clone())?,
-        cip_repr: stmt.combined_inner_product.seal(sys, loc.clone())?,
-        b_repr: stmt.b.seal(sys, loc.clone())?,
-        perm_repr: stmt.perm.seal(sys, loc.clone())?,
-        bulletproof_challenges: stmt
-            .bulletproof_challenges
-            .iter()
-            .map(|c| c.seal(sys, loc.clone()))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        digest: stmt
-            .sponge_digest_before_evaluations
-            .seal(sys, loc.clone())?,
+        xi: stmt.xi.clone(),
+        cip_repr: stmt.combined_inner_product.clone(),
+        b_repr: stmt.b.clone(),
+        perm_repr: stmt.perm.clone(),
+        bulletproof_challenges: stmt.bulletproof_challenges.clone(),
+        digest: stmt.sponge_digest_before_evaluations.clone(),
         prev_challenges: finalize_prev_challenges.to_vec(),
         prev_challenge_mask: proofs_verified_mask.map(<[Boolean<F>]>::to_vec),
         ft_eval1: finalize_evals.ft_eval1.clone(),
