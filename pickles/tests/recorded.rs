@@ -196,6 +196,42 @@ fn recorded_program_compiles_n0_n1_n2_with_one_wrap_key() {
 }
 
 #[test]
+#[ignore = "diagnostic dump, run explicitly"]
+fn dump_labeled_wrap_for_b_actual_probe() {
+    use pickles::recorded::{
+        dump_recorded_program_circuits, RecordedCircuit, RecordedProgramBranch,
+    };
+
+    #[derive(serde::Deserialize)]
+    struct BranchJson {
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+        circuit: RecordedCircuit,
+    }
+    // Recorded add-program branches (init pv0 / update pv1 / merge pv2) as
+    // dumped by o1js's `rust-pickles-program-gates-diff` harness. Point
+    // WRAP_BRANCHES_JSON at that dump; skip if it is not present.
+    let path = std::env::var("WRAP_BRANCHES_JSON")
+        .unwrap_or_else(|_| "/tmp/claude-1000/program-branches.json".to_string());
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        eprintln!("skipping: {path} not found (set WRAP_BRANCHES_JSON)");
+        return;
+    };
+    let parsed: Vec<BranchJson> = serde_json::from_str(&raw).unwrap();
+    let branches = parsed
+        .into_iter()
+        .map(|b| RecordedProgramBranch {
+            witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+            circuit: b.circuit,
+            proofs_verified: b.proofs_verified,
+        })
+        .collect();
+    let json = dump_recorded_program_circuits(branches).unwrap();
+    std::fs::write("/tmp/claude-1000/wrap-labeled-rust.json", json).unwrap();
+    eprintln!("wrote /tmp/claude-1000/wrap-labeled-rust.json (add-program branches)");
+}
+
+#[test]
 fn recorded_compiled_base_cache_round_trips_and_rejects_corruption() {
     use pickles::recorded::RecordedCompiledBase;
 

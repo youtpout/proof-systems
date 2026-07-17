@@ -139,9 +139,15 @@ pub fn b_actual<F: PrimeField>(
     // (wrap_verifier.ml:1752-1753) — `+` is a function application whose
     // arguments evaluate RIGHT-TO-LEFT, so the ZETAW evaluation chain (and
     // the `r · h(zetaw)` product) is emitted before the zeta chain.
-    let h_zetaw = challenge_polynomial_circuit(sys, loc.clone(), chals, &zetaw)?;
-    let r_h_zetaw = r.mul(&h_zetaw, None, loc.clone(), sys)?;
-    let h_zeta = challenge_polynomial_circuit(sys, loc, chals, zeta)?;
+    let h_zetaw = challenge_polynomial_circuit(
+        sys,
+        Cow::Owned(format!("{loc} | h_zetaw")),
+        chals,
+        &zetaw,
+    )?;
+    let r_h_zetaw = r.mul(&h_zetaw, None, Cow::Owned(format!("{loc} | r_mul")), sys)?;
+    let h_zeta =
+        challenge_polynomial_circuit(sys, Cow::Owned(format!("{loc} | h_zeta")), chals, zeta)?;
     Ok(&h_zeta + &r_h_zetaw)
 }
 
@@ -671,6 +677,23 @@ pub fn finalize_deferred<F: PrimeField>(
         &env,
         &ft_evals,
     )?;
+    // OCaml `derive_plonk` (plonk_checks.ml:429-440) builds the whole plonk
+    // record right after the `perm` fold, eagerly forcing
+    // `zeta_to_srs_length = Lazy.force (pow2pow zeta srs_length_log2)`
+    // (:436, :294) even though only `perm` is later compared. `pow2pow`
+    // (:68) squares with `x * x` — a MUL that double-reduces the lincom
+    // `zeta` on its first step (jsoo's row-1981 `zeta^2` double-endo), unlike
+    // the `Field.square` `zeta_n` dead chain in step 6. With a single public
+    // eval chunk `ft_eval0` never forces it, so this is its only force site;
+    // emit it here to stay byte-identical with jsoo.
+    {
+        let zsl_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | zeta_to_srs_length"));
+        let mut zsl = witness.zeta.clone();
+        for _ in 0..env.srs_length_log2 {
+            zsl = zsl.mul(&zsl, None, zsl_loc.clone(), sys)?;
+        }
+        let _ = zsl;
+    }
     // `Shifted_value.equal Field.equal (f plonk) (f actual)`
     // (plonk_checks.ml:473) — claimed first here too.
     let perm_claimed = params.shift.to_field(&witness.perm_repr);

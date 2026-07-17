@@ -55,10 +55,11 @@ pub fn challenge_polynomial_circuit<F: PrimeField>(
 ) -> SnarkyResult<FieldVar<F>> {
     let k = chals.len();
     // pow_two_pows[i] = pt^{2^i}
+    let pow_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | pow"));
     let mut pow_two_pows = vec![pt.clone()];
     for i in 1..k {
         let prev = &pow_two_pows[i - 1];
-        pow_two_pows.push(prev.mul(prev, None, loc.clone(), sys)?);
+        pow_two_pows.push(prev.mul(prev, None, pow_loc.clone(), sys)?);
     }
     // product of the terms 1 + chals[i] * pt^{2^{k-1-i}}. OCaml `prod`
     // (step.ml:130) folds `r := f i * !r` — the NEW term is the LEFT operand
