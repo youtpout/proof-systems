@@ -3951,3 +3951,40 @@ c'est LA différence : la désactiver (re-réduction par contrainte, iso
 OCaml) en gardant le cache des constantes ; (2) mesurer sur le motif
 J1981 (notre dump doit produire le même doublon [endo,1,−1] ×2) ;
 (3) init=0 en canari — impact potentiellement TRÈS large.
+
+## ★ GATE zkapp-rust (VkParity.check, 4 backends) — le chemin COMPILE diverge
+
+Le gate `/home/eddy/Projects/zkapp-rust/contracts/src/VkParity.check.ts`
+(réf jsoo = o1js **2.15.0 upstream**) a révélé, sur le square minimal
+(publicOutput-only, 1 mul) :
+ • jsoo local = upstream = `73665795…45675` ✓ (nos bindings jsoo fidèles)
+ • rust chemin DIRECT (proveBaseCase / rust-pickles-vk-parity.ts) =
+   `73665795…45675` = **FULL MATCH** ✓✓ (28/28 commitments)
+ • rust chemin **Program.compile** (compileRecordedProgram → pipeline
+   program partagé mina-runtime) = `20282053…44794` ✗ — DEUX PIPELINES
+   RUST, DEUX VK. A/B : avec/sans privateInput → aucun effet (les deux
+   variants donnent la même VK par backend) ; le zkApp mono-méthode via
+   le MÊME chemin compile matche pourtant (hash 24921192…, avec
+   ZkappPublicInput). Le discriminant reste à confirmer.
+HYPOTHÈSE PRINCIPALE : le pipeline program compile un wrap à LARGEUR
+FIXE (max 2 → domaine wrap 2^15) même pour un programme non-récursif,
+là où jsoo/le chemin direct font le wrap width-0 (2^13,
+actualWrapDomainSize=0). ⇒ SONDE : décoder la VK `20282…` du chemin
+compile champ par champ (codec du rapport parity) — si
+actualWrapDomainSize/wrap divergent, corriger la sélection de largeur
+du pipeline program (recursive_step / compileRecordedProgram) pour
+suivre OCaml (largeur = max réel du programme). ⚠ le zkApp qui matche
+via compile est CONTRADICTOIRE avec l'hypothèse largeur-fixe simple —
+peut-être une différence de STATEMENT (2 champs d'entrée vs sortie
+seule) qui change la branche du pipeline. À trancher par le décodage.
+
+CONTEXTE o1js DE CETTE PASSE (non commité) : branche rust ajoutée dans
+SmartContract.compile (zkapp.ts, jalon compile+VK, provers stub),
+garde d'enveloppe legacy retiré de verify() (zkprogram.ts:152),
+smoke test N0 mis à jour, pin mina-rust bumpé e1f10bba→3321d0a9,
+benchs: tmp-bench-native.ts, tmp-zkapp-vk-iso.ts, tmp-square-ab.ts,
+tmp-square-parity.ts. Roundtrip toJSON→verify des preuves rust: encore
+cassé (préfixe présent, rejet plus profond — non résolu).
+BENCH NATIF (3 méthodes, sans cache): rust compile 11,6s / jsoo 16,5s ;
+prove N0 1,9s / N1 3,5s / N2 3,2s. zkApp: rust compile 1,9s vs jsoo
+4,2s, VK iso (hash 24921192…).
