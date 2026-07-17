@@ -2942,3 +2942,32 @@ anormal (run recorded normal ≈ 2 min).
 `ps -eo pid,comm | awk '$2 ~ /^recorded/'` à la place.
 ⚠ TOUJOURS lancer recorded avec `timeout -s KILL 420` (le deadlock semble
 être un flake de parallélisme, pas lié aux changements de circuit).
+
+## Deux métriques, deux AXES différents (leçon clé session 3)
+
+- **Histogramme de signatures** (coeffs normalisés) ne voit QUE la forme
+  des coefficients. Il attrape: ordre d'opérandes d'un `equal` (z=a−b vs
+  b−a → `[c,1,-,0,c]` vs `[c,-,-,0,c]`), square-vs-mul, lincom scalée.
+- **differingRows** (typ+coeffs+wires à index égal) voit AUSSI le câblage.
+  Il attrape: ordre d'opérandes d'un `mul` — car `R1CS(x,y,z)` compile en
+  `add_generic_constraint ~l:x ~r:y ~o:z [|0;0;s3;-s1*s2;0|]` : swapper
+  x/y change QUELLE variable va en l vs r (le wiring) mais PAS les
+  coefficients (`001-0` des deux côtés).
+
+⇒ Un fix d'ordre de `mul` est INVISIBLE dans l'histogramme et ne se voit
+que dans differingRows. Un fix d'ordre d'`equal` se voit dans les deux.
+Mesurer les DEUX après chaque fix.
+
+RÉSULTAT du fix challenge_polynomial (`f i * !r`, terme neuf à gauche):
+signature mismatch inchangé (123, attendu) mais differingRows AMÉLIORÉ
+partout: update 8367→8345, merge 15898→15885, wrap 11178→11158; init
+reste 0. Petit mais réel, et valide l'approche.
+
+PROCHAIN GROS GISEMENT: le **wrap** a 689 de signature-mismatch (5× celui
+d'update = 123). Top: `001c0` j2019/r1862 (−157), `c0c01` j187/r79
+(−108), `c0c00` j0/r55 (+55), `cc000` j136/r83 (−53), `00100` +36,
+`c1c0c` +34, `10c00` +34, `00c00` +34. Ces formes en `c` (coeff
+arbitraire) suggèrent des lincoms scalées/masquées — cohérent avec le
+chantier opt-sponge wrap (les mask-muls `keep·x` produisent des `c`
+partout où jsoo a des opt-absorbs). À traiter APRÈS la décision de design
+trim-partout, car les deux se recouvrent.
