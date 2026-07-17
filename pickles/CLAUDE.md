@@ -2777,6 +2777,21 @@ MÉTHODES qui marchent : sig-histogramme par gadget entre ancres
 (delta sensible à quelles cellules), LCS ciblé block_diff.mjs, et
 labels par phase (loc | sous-phase).
 
+WRAP OPT-SPONGE (@4391+, ~−85) — CAUSE COMPRISE : OCaml opt-absorbe
+sg_old en PAIRES (keep_var, coord) (wrap_verifier.ml:842 mask_g1_opt) ;
+dès le premier flag VARIABLE, next_index devient variable POUR TOUJOURS
+→ tous les absorbs suivants (même (true, x)) émettent la machinerie
+complète (~11 rows/paire, têtes 25/21/17 pendant le rinçage des
+constantes). NOUS pré-masquons par muls (keep·x) et absorbons
+(true, masked) → p reste CONSTANT → blocs dégénérés 6 rows (que les
+add_in). FIX : Transcript::Opt doit absorber (keep, x),(keep, y)
+directement (pas de pré-masquage) — ATTENTION à la couche PHYSIQUE :
+la sémantique opt = SKIP si keep=0 (l'état n'avance pas) ≠ absorber 0 ;
+le prover wrap physique doit absorber la largeur RÉELLE (Vector.trim
+Mina) — vérifier prove_with_recursion_mask / le param recursions de
+kimchi (notre fork a un recursion_mask maison) pour rester cohérent ;
+les recorded tests trancheront.
+
 SESSION 3, suite — **INIT = differingRows 0 (byte-identique, gates+coeffs+
 wires)** après : pinning des segments dummy EN FIN de circuit (r-slot,
 Equal(Constant,Var) constant-first — les dernières lignes de tout step jsoo)
