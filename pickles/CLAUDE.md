@@ -3988,3 +3988,44 @@ cassé (préfixe présent, rejet plus profond — non résolu).
 BENCH NATIF (3 méthodes, sans cache): rust compile 11,6s / jsoo 16,5s ;
 prove N0 1,9s / N1 3,5s / N2 3,2s. zkApp: rust compile 1,9s vs jsoo
 4,2s, VK iso (hash 24921192…).
+
+## ÉTAT FINAL DE LA PASSE o1js/zkapp (suite du gate 4-backends)
+
+DÉCOUVERTE CLEF : `./run` ne rebuild QUE le fichier de test, JAMAIS la
+lib (dist/ datait de la veille) — toutes les mesures o1js du début de
+passe tournaient sur une lib périmée. `npm run build` obligatoire après
+toute édition de src/lib. (Le « FULL MATCH zkApp » initial était
+jsoo-vs-jsoo pour cette raison.)
+
+APRÈS REBUILD, MESURES AUTHENTIQUES (natif) :
+ • GATE SQUARE (zkapp-rust, réf o1js 2.15.0 upstream) : **VERT** —
+   rust-native = jsoo-native = 7366579…45675. Fix : router les
+   programmes tout-N0 du chemin mina-runtime vers le per-branch width-0
+   (rust-pickles-recorded.ts, miroir de la règle du chemin direct).
+   Cause d'origine : le pipeline program partagé bootstrap width≥1
+   (VK 20282053…, maxProofsVerified=1, wrap 2^14).
+ • verify()/roundtrip JSON des preuves rust : RÉPARÉS (garde d'enveloppe
+   legacy retiré + lib rebuildée) — smoke N0 tout vert.
+ • zkApp simple (SmartContract.compile branché rust — NOUVEAU, zkapp.ts):
+   compile 1,85 s, enveloppe canonique, VK **diverge** :
+   rust 10211940… vs jsoo 24921192…. Deux tolérances analyze ajoutées
+   (le recorder EXÉCUTE les closures witness, jsoo non) : instance Mina
+   éphémère à comptes dummy pendant le record, et fallback Field(0)
+   dans ProofAuthorization.setKind sous inAnalyze.
+ • Contrat SIDE-LOADED (test NEUF zkapp-rust :
+   SideLoadedZkapp{Jsoo,Rust}.ts + SideLoadedVkParityChild.ts) :
+   compile rust OK (DynamicProof + vk s'enregistrent), VK diverge :
+   rust 20829101… vs jsoo 2268640….
+ • add récursif : diverge (23669624… vs 10959392…) — c'est la tâche #9
+   (le −8/finalize lincom per-constraint, plan au carnet plus haut).
+
+PROCHAINES CIBLES, dans l'ordre :
+ 1. add récursif = reprendre la tâche #9 côté proof-systems.
+ 2. zkApp/side-loaded : diff de gates des circuits account-update
+    (dumper le recorded circuit rust vs le dump jsoo du même
+    contrat — même méthodologie ancres/runs que toute la session).
+ 3. wasm (après le natif, décision utilisateur).
+o1js NON COMMITÉ : zkapp.ts (branche rust + 2 tolérances),
+rust-pickles-recorded.ts (bypass width-0), zkprogram.ts (verify),
+mina-runtime-zkprogram.ts (smoke), pin src/mina-rust (Cargo.lock),
+tests tmp-*. zkapp-rust NON COMMITÉ : les 3 fichiers side-loaded.
