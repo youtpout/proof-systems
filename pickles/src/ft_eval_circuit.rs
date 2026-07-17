@@ -55,12 +55,22 @@ impl<F: PrimeField> SelectedDomain<F> {
         log2s: &[u32],
         domain_log2: &FieldVar<F>,
     ) -> SnarkyResult<Self> {
-        let which = log2s
-            .iter()
-            .map(|&l| {
-                FieldVar::constant(F::from(u64::from(l))).equal(sys, loc.clone(), domain_log2)
-            })
-            .collect::<SnarkyResult<Vec<_>>>()?;
+        // OCaml `domain_for_compiled` builds the one-hot with `Vector.map`,
+        // whose `f` runs from the LAST element to the FIRST (right-to-left, the
+        // same evaluation order behind the api.rs `choose_pts` `.rev()`). So the
+        // equality bit for the LARGEST log2 is allocated first (smallest
+        // variable index). `reduce_lincom` later orders terms by ascending
+        // variable index, so this decides how the masked-generator lincom
+        // `Σ which[i]·ω_i` pairs its domain generators when multiplied by zeta.
+        // Allocating left-to-right swaps that pairing (`finalize | zetaw` and
+        // `| env` half-gates diverge from jsoo). Emit right-to-left, keeping
+        // `which[i]` paired with `log2s[i]`.
+        let mut which: Vec<Option<Boolean<F>>> = (0..log2s.len()).map(|_| None).collect();
+        for (i, &l) in log2s.iter().enumerate().rev() {
+            which[i] =
+                Some(FieldVar::constant(F::from(u64::from(l))).equal(sys, loc.clone(), domain_log2)?);
+        }
+        let which = which.into_iter().map(|b| b.expect("all set")).collect();
         Ok(Self {
             log2s: log2s.to_vec(),
             which,
