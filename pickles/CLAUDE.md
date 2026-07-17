@@ -2837,3 +2837,8 @@ lagrange = (ζⁿ−1)/(ζ−ω^off) avec numérateur partagé et ω^{-4} LAZY.
 Le flux Polish de kimchi calcule la même valeur mais avec une séquence
 de gadgets différente (~+238 muls / −47 squares / −89 reduces).
 
+
+⚠ PIÈGE ADDON : le loader de @o1js/mina-runtime-linux-x64 (index.js) charge
+`mina_runtime.node`, PAS `index.node` ! Copier target/napi/index.node vers
+`mina_runtime.node` (node_modules/@o1js/... ET native/...) sinon le bench
+tourne sur un addon périmé (les VK affichées ne bougent pas).
