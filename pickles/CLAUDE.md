@@ -121,6 +121,25 @@ bulletproof.ml + rust 4576-4585) → c'est un écart de PACKING/parité de demi-
 (nb de demi-gates par assert_on_curve : x²Square + x³mul + rhs-reduction + y²Square).
 W = `00000000ed302d99…0040` = −(0x47afc1f319ba3400000001), 5 = curve b.
 
+### FIX #3 landé (commit 74b006e645) — openings bulletproof right-to-left
+Le `Typ` OCaml vérifie les champs d'un record DROITE-À-GAUCHE. Le record
+bulletproof `{lr; z_1; z_2; delta; sg}` → OCaml émet les on-curve de `sg` puis
+`delta` AVANT les `Other_field` de z_2/z_1. Rust témoinait z1/z2 d'abord → ses 2
+points on-curve d'openings tombaient après les gates wt2. Fix : témoin sg, delta,
+z2, z1. **1re divergence positionnelle 236 → 241** (delta/sg on-curve byte-match).
++ `forbidden_shifted_values_fp_pairs` trie/dedup les valeurs 255-bit (OCaml
+impls.ml:30 `dedup_and_sort`) — neutre pour les constantes pasta actuelles.
+
+### Résidu courant : ligne 241 = wobble de PACKING dans wt2 (z2/z1 Other_field)
+Les valeurs forbidden matchent EN ORDRE (jsoo=rust : `01..ff3f`, `00..ff3f`,
+`803b..ff1f`). Mais décalage de packing d'1 ligne : jsoo met le 2e forbidden aux
+lignes 244-245, rust 245-246, puis RÉALIGNE à 248. Donc rust émet 1 demi-gate de
+trop entre forbidden #1 et #2 dans le gadget `equal`/`and` (phase double-generic
+qui se corrige seule). Prochaine sonde : compter les demi-gates de
+`FieldVar::equal` (cvar.rs:225 `z=self-other`, 2 r1cs) vs OCaml `Field.Checked.equal`
++ le `and`(`b_eq=odd.not()` lincom vs `odd` var) — trouver le demi-gate en trop.
+Puis EndoMulScalar @279 (reorder branch_data, cf plus bas).
+
 ### ⚠️ BLOCAGE FONDAMENTAL : pas de labels jsoo possibles
 Le gate OCaml est `{kind; wired_to; coeffs}` (plonk_constraint_system.ml:1274) —
 AUCUN champ label. `with_label` sert aux messages d'erreur, pas stocké par gate.
