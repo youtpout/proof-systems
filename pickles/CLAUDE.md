@@ -58,19 +58,40 @@ Effet : update 14/10→10/6, merge 28/20→20/12, init 0. recorded 21/21.
 NB : générateurs identiques des 2 côtés (`Domain::new(1<<log2).group_gen`,
 cf kimchi-stubs/src/arkworks/pasta_fq.rs:305 = generator_of) — c'était l'ORDRE.
 
-### Résidu STEP restant (prochaines sondes, localisés)
-Après le fix, il reste dans update (×2 dans merge) :
-- `finalize | perm check` (finalize.rs:704 `perm_claimed.equal(perm_derived)`) :
-  jsoo `[1, X, W, 0, V]` vs rust `[2, W, W, 0, Z]` — DIFFÉRENCE DE FORMULE (pas
-  juste ordre) dans le scalaire de permutation. W=`00000000ed302d99…0040`.
-  Rust rows 2669-2670, jsoo 2672-2673.
-- `[1,0,−1,0,5]` (o=l+5, constante 5) jsoo 101/rust 99 — offset domaine/zk.
-- `[0,0,−1,1,0]` mul (252→248), `[1,1,−1,0,0]` add (718→720) — petits écarts de
-  compte mul/add dans env/scalars_env.
+### FIX #2 landé (commit 96eef3169e) — perm check `of_field` + unseal du negate
+`finalize | perm check` (finalize.rs:703) : OCaml `derive_plonk` enveloppe le
+scalaire perm DÉRIVÉ dans `Shifted_value.of_field ~shift` et `Shifted_value.equal`
+compare les reprs shiftées DIRECTEMENT (shifted_value.ml:49 `equal t1 t2`) — au
+contraire des checks cip/b qui `to_field` le côté CLAIMED. Rust `to_field`-ait le
+claimed repr (×2, l-coeff 2 vs 1 jsoo). Deux parties :
+1. `type1_of_field`/`type2_of_field` + `ShiftKind::of_field` ; comparer
+   `perm_repr` (brut) contre `of_field(perm_derived)`. → l-coeff 2→1 + const OK.
+2. `perm_scalar_circuit` SEALait son `negate(fold)` dans une var fraîche (coeff
+   dérivé -1/2 vs +1/2 jsoo). OCaml garde `negate(fold)` en lincom NON-sealé
+   (plonk_checks.ml:427). Retourner le lincom ; sealer seulement au site de test
+   (ft_eval_circuit.rs:611 câble perm en sortie → besoin d'une var).
+Effet : update 10/6→**8/3**, merge 20/12→**16/8**. Classe perm check éliminée.
+
+### ⚠️ Tests recursion (`cargo test -p pickles --test recursion`) : 2 rouges PRÉ-
+EXISTANTS (avant cette session, vérifié sur 94c6661b9c) :
+`pickles_recursive_step_n1_is_physically_padded` et
+`program_wrap_index_is_shared_by_n0_n1_n2` (+ `recursive_wrap_ipa_equation_holds`).
+Ce sont des tests de PREUVE réelle qui resteront rouges tant que l'alignement VK
+n'est pas complet — PAS une régression des fixes de session. lib 112/112,
+recorded 21/21 verts. **Toujours lancer `--test recursion` en plus de recorded
+avant de conclure « pas de régression ».**
+
+### Résidu STEP restant (update 8/3, merge 16/8 — prochaines sondes)
+Petits écarts de COMPTE dans du boilerplate récurrent (plus durs que les swaps
+propres, il faut trouver LES instances qui diffèrent) :
+- `[1,0,W,0,5]` (W=`00000000ed302d99…0040`, const 5) jsoo 101/rust 99 →
+  `recursive_step.rs:4421` (83) + `verify wrap proof | bp reduce` (15).
+- `[0,0,1,−1,0]`/`[0,0,−1,1,0]` mul (1695→1694, 252→248), `[1,1,−1,0,0]` add
+  (718→720), `[0,0,0,1,−1]` inverse (4→3), `[−1,0,0,1,0]` (43→44).
 - ⚠️ RAPPEL : le multiset est invariant à l'ordre → il ne voit PAS les pures
   réordonnances (qui cassent quand même la VK positionnellement). Le vrai juge
-  reste `decode_and_diff` (VK réelle, **12/28** — inchangé par ce fix seul : le
-  wrap-VK n'inverse un commitment que quand TOUTE la step-VK converge).
+  reste `decode_and_diff` (VK réelle, **12/28** — n'avance que quand TOUTE la
+  step-VK converge).
 
 ## Handoff WRAP — parité gates (état courant)
 
