@@ -4243,6 +4243,25 @@ génériques) vs OCaml `Inner_curve.typ`'s check ; puis le premier run
 générique qui swappe (wrap row 1895 h_zetaw [endo|plain] vs [plain|endo]).
 La VK (decode_and_diff) reste à 12/28 tant que ces appariements ne sont
 pas alignés.
+
+## TROIS classes de ≠ résiduelles wrap (first-swap.mjs / pi12.mjs)
+
+1. **row 12 — wiring PI 12** (1re ≠, isolée) : 39/40 entrées publiques
+   câblées pareil ; SEULE PI 12 diffère. jsoo câble 8891.col5 → 12.0
+   (row 8891 = « x_hat commitment »), rust laisse 8891.col5 en singleton.
+   ⇒ le MSM public input rust ne LIE pas PI 12 à son usage (trou de
+   contrainte POSSIBLE, ou re-witness au lieu de wire). À AUDITER : est-ce
+   que mon fix Cond-no-seal a affecté ça ? (PI 12 = un bit odd de Split ?).
+2. **row 90 — valeur** (api.rs:788-799, choose_coordinate.seal) : les
+   POINTS de la wrap VK masqués one-hot embarqués dans le step. C'est le
+   POINT FIXE circulaire : le step embarque la wrap VK, la wrap absorbe la
+   step VK. Ces valeurs convergent AUTOMATIQUEMENT quand la structure
+   (gates+wires+packing) matche. Pas un bug séparé.
+3. **row 194+ — swaps de packing** (sg_evals, challenge_polynomial) :
+   la parité double-generic (cœur, voir ci-dessus).
+ORDRE D'ATTAQUE conseillé : (1) auditer/fixer PI 12 (concret, isolé) ;
+(3) parité de packing (trouver le 1er flip < row 194 et sa cause d'ordre
+d'émission) ; (2) se résout tout seul. Puis re-mesurer decode_and_diff.
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
