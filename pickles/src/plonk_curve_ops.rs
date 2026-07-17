@@ -37,7 +37,21 @@ pub fn add_fast<F: PrimeField>(
     p1: &Point<F>,
     p2: &Point<F>,
 ) -> SnarkyResult<Point<F>> {
-    add_complete(sys, loc, p1, p2)
+    // OCaml `add_fast` (plonk_curve_ops.ml:12) SEALS both points first:
+    // `let p1 = seal p1 in let p2 = seal p2 in`. A coordinate that is a
+    // scaled lincom (e.g. the `-y` of `G.negate g`) therefore becomes its
+    // own variable through `exists + Field.Assert.equal` — gate form
+    // `[c,c,0,0,0]` — instead of being reduced inside the gate's own input
+    // handling (`reduce_to_v`, form `[c,0,c,0,0]`).
+    let p1 = Point::new(
+        p1.x.seal(sys, loc.clone())?,
+        p1.y.seal(sys, loc.clone())?,
+    );
+    let p2 = Point::new(
+        p2.x.seal(sys, loc.clone())?,
+        p2.y.seal(sys, loc.clone())?,
+    );
+    add_complete(sys, loc, &p1, &p2)
 }
 
 /// Scalar multiplication by MSB-first bits, using the VarBaseMul gate
