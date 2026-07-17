@@ -263,6 +263,7 @@ pub fn finalize_other_proof<F: PrimeField>(
 
 /// Compile-time data for [`finalize_deferred`]: the linearization
 /// constant-term tokens, the step domain, and the field constants.
+#[derive(Clone)]
 pub struct FinalizeParams<'a, F: PrimeField> {
     /// The linearization constant-term (from the step verifier index).
     pub tokens: &'a [kimchi::circuits::expr::PolishToken<

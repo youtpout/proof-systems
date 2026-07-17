@@ -3668,3 +3668,61 @@ PISTES WIRING PARQUÉES ICI (pour la phase wiring, ne pas oublier) :
    L'ORDRE de témoignage diffère aussi (indices de vars ⇒ wiring).
  • Slots `Packed` (digest/challenges/bp) : mêmes re-témoignages frais
    (api.rs:751) vs refil OCaml — même chantier.
+
+## ✅✅ TÊTE DU WRAP RÉSOLUE — runDiffs 196 → 17 (trois sous-fixes)
+
+Le trou @0 (−9 lignes) était TROIS choses, toutes identifiées au littéral
+puis mesurées à zéro (ancres 0-500 : 0 runDiff, le @16 +1 a disparu
+aussi, et la queue de phase net-0 est passée de 187 → ~12 diffs) :
+
+ 1. **`is_base_case` SUPPRIMÉ** : notre `proofs_verified.equal(0)`
+    (~5 gadgets) n'existe pas chez OCaml — le paramètre wrap_main était
+    même `_is_base_case` (inutilisé). Pure invention de notre port.
+ 2. **`prev_step_accs` DÉDUPLIQUÉ** : OCaml n'a QU'UN exists
+    (wrap_main.ml:301-305, 2 points) qui sert à la fois de `~sg_old` et
+    d'accumulateur par proof dans les hashes (:425-431). Nous témoignions
+    4 points (sg_olds + u.prev_step_acc) → +4 lignes on-curve et des vars
+    dupliquées (wiring). Les valeurs coïncident position par position
+    (dummies front-padded identiques) — assert ajouté dans api.rs.
+ 3. **SÉLECTION DU DOMAINE WRAP EN CIRCUIT** (wrap_main.ml:352-368) :
+    OCaml témoigne `Req.Wrap_domain_indices` (un vecteur, AVANT tout
+    gadget), puis PAR PROOF (Vector.map = descendant) :
+    `One_hot_vector.of_index index ~length:3` + `Pseudo.Domain.to_domain`.
+    • `of_index` (one_hot_vector.ml) = init DESCENDANT de
+      `Field.equal (of_int j) i` **+ `Boolean.Assert.any`** =
+      assert_non_zero(somme) = witness inverse + r1cs (somme, inv, 1) —
+      le gadget `0001-` observé. ~9 gadgets/proof.
+    • `all_possible_domains` = log2 ∈ **[13;14;15]**
+      (wrap_verifier.ml:59-64, common.ml:25-30) ; index = log2 − 13
+      (`actual_wrap_domain_size`). max_log2 = 15.
+    • to_domain : shifts = CONSTANTES (optim all-the-same, pseudo.ml),
+      generator = lincom masquée (0 gate à la sélection),
+      vanishing_polynomial à l'USAGE = 15 carrés + 3 mults (b·pow) + seal.
+    IMPLÉMENTATION : l'infra du step (tâche #6) a TOUT servi —
+    `FinalizeDomain::Selected`/`SelectedDomain` (ft_eval_circuit.rs).
+    wrap_main fait un pass-0 (indices puis one_hots en ordre inverse,
+    Assert.any copié du pattern validé api.rs:588 — ordre (somme, inv,
+    1)) et la boucle finalize reconstruit FinalizeParams { domain:
+    Selected([13,14,15], which) } (FinalizeParams est devenu Clone).
+    PerUnfinalized porte `wrap_domain_index` (valeur), rempli par api
+    depuis finalize_domain.log2 − 13.
+
+MÉTRIQUES après (recorded 21/21, init 0, update/merge inchangés) :
+  wrap runDiffs **17**, netGeneric +22, differingRows 8482.
+  Restants, cartographiés lignes exactes :
+  • FINALIZE +11/proof : @788 j630/r638 (+8, rows ~1768) et @908
+    j109/r112 (+3, ~1997) ; miroir proof1 @1696/@1816. Notre chemin
+    Selected émet PLUS que jsoo dans la linéarisation — suspects :
+    `pow_circuit(zeta, 2^srs_log2)` EAGER (ft_eval_circuit.rs:262) vs
+    OCaml LAZY (plonk_checks.ml:294 forcé :367/:436), et les inverses
+    du générateur (div_var vs `one/gen` OCaml), et l'ordre/nombre des
+    seals autour du vanishing.
+  • X_HAT ±0 net mais mal PLACÉ : 11 ancres CompleteAdd avec j2/r0
+    (rows j5133..8783) + un +24 à @2536 (j4967/r5013). Ce sont les 11
+    termes 255-bit (5 splits × 2 proofs + digest msgs) : OCaml émet les
+    4 gadgets de `scale_fast2'` (exists (s/2,odd)+bool+`2y+odd=s` ;
+    top-bit=0 ; n_acc=s) PAR TERME, dans le fold, juste avant le
+    CompleteAdd du terme (wrap_verifier.ml:950-955 → plonk_curve_ops.
+    ml:254-278). Nous les consolidons en un bloc en amont (+24). ⇒
+    Déplacer l'émission par-terme dans public_input.rs (le fold), pas en
+    pré-passe.

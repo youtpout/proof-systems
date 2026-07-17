@@ -17,12 +17,14 @@
 //!
 //! The step-proof transcript asserts (sponge digest, bulletproof challenges,
 //! plonk challenges) are unconditional on this side (no base case), which
-//! [`verify`] realises with `is_base_case = false`.
+//! [`verify`] realises unconditionally.
 
 use std::borrow::Cow;
 
 use ark_ff::PrimeField;
-use snarky::{gadgets::curve::Point, Boolean, FieldVar, RunState, SnarkyResult};
+use snarky::{
+    gadgets::curve::Point, runner::WitnessGeneration, Boolean, FieldVar, RunState, SnarkyResult,
+};
 
 pub use crate::public_input::StatementElement as StepStatementElement;
 use crate::{
@@ -38,8 +40,14 @@ use crate::{
 /// One unfinalized proof of the step statement, as handled by [`wrap_main`].
 pub struct PerUnfinalized<'a, F: PrimeField> {
     /// Finalization parameters ([`crate::finalize::ShiftKind::Type2`] on this
-    /// side) for the wrap proof the unfinalized entry refers to.
+    /// side) for the wrap proof the unfinalized entry refers to. The `domain`
+    /// carried here is replaced inside [`wrap_main`] by the one-hot-selected
+    /// pseudo domain (OCaml witnesses `Req.Wrap_domain_indices` and selects
+    /// among the three possible wrap domains in-circuit, wrap_main.ml:352-368).
     pub finalize_params: FinalizeParams<'a, F>,
+    /// The witnessed wrap-domain index (`Common.actual_wrap_domain_size`:
+    /// log2 13 → 0, 14 → 1, 15 → 2) of the wrap proof being finalized.
+    pub wrap_domain_index: F,
     pub finalize_evals: crate::step_verifier::FinalizeEvals<F>,
     // the unfinalized deferred values (raw challenges, Type2 representatives)
     pub alpha: FieldVar<F>,
@@ -75,8 +83,8 @@ pub struct WrapMainOutput<F: PrimeField> {
 
 /// Runs the wrap circuit body. `step_statement_elements`/`lagranges` describe
 /// the step proof's public input; `claimed` carries this wrap statement's own
-/// deferred transcript values (asserted unconditionally — `is_base_case`
-/// false); `messages_for_next_wrap_proof_digest` is this statement's digest,
+/// deferred transcript values (asserted unconditionally);
+/// `messages_for_next_wrap_proof_digest` is this statement's digest,
 /// asserted against the recomputed hash of the *new* accumulator.
 #[allow(clippy::too_many_arguments)]
 pub fn wrap_main<F, C, W>(
@@ -104,7 +112,6 @@ pub fn wrap_main<F, C, W>(
     // this statement's accumulator digest
     messages_for_next_wrap_proof_digest: &FieldVar<F>,
     new_acc_dummy_challenges: &[Vec<F>],
-    _is_base_case: &Boolean<F>,
     // constants
     group_map_params: &groupmap::BWParameters<C>,
     endo_base: F,
@@ -116,10 +123,66 @@ where
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
     W: FnOnce(&mut RunState<F>) -> SnarkyResult<(OpeningProof<F>, Messages<F>)>,
 {
+    // == select each unfinalized proof's wrap domain in-circuit ==
+    // OCaml witnesses `Req.Wrap_domain_indices` as ONE vector (wrap_main.ml:
+    // 356-358) — every index var is allocated before any selection gadget.
+    let domain_loc = Cow::Borrowed("wrap_main: wrap domain");
+    let mut wrap_domain_index_vars = Vec::with_capacity(unfinalized.len());
+    for u in unfinalized {
+        let value = u.wrap_domain_index;
+        let index_var: FieldVar<F> = sys.compute(domain_loc.clone(), move |_| value)?;
+        wrap_domain_index_vars.push(index_var);
+    }
+    // `Vector.map wrap_domain_indices ~f:(one_hot; to_domain)` (:360-367).
+    // vector.ml's `map` conses right-to-left, so `f` runs for the LAST proof
+    // first; the resulting vector stays in proof order.
+    let all_wrap_log2s: Vec<u32> = vec![13, 14, 15];
+    let mut selected_domains: Vec<Option<crate::ft_eval_circuit::SelectedDomain<F>>> =
+        (0..unfinalized.len()).map(|_| None).collect();
+    for k in (0..unfinalized.len()).rev() {
+        let index = &wrap_domain_index_vars[k];
+        // `One_hot_vector.of_index i ~length` is `Vector.init length
+        // ~f:(fun j -> Field.equal (Field.of_int j) i)` — `init` also conses
+        // right-to-left, so the equalities are emitted for j = length-1 down
+        // to 0 — followed by `Boolean.Assert.any`, which Snarky implements as
+        // `assert_non_zero (sum bits)`: witness the inverse and constrain
+        // `inverse * sum = 1`.
+        let mut which = Vec::with_capacity(all_wrap_log2s.len());
+        for j in (0..all_wrap_log2s.len()).rev() {
+            which.push(FieldVar::constant(F::from(j as u64)).equal(
+                sys,
+                domain_loc.clone(),
+                index,
+            )?);
+        }
+        which.reverse();
+        let bit_sum = which
+            .iter()
+            .fold(FieldVar::zero(), |sum, bit| sum + bit.to_field_var());
+        let bit_sum_for_witness = bit_sum.clone();
+        let bit_sum_inv: FieldVar<F> =
+            sys.compute(domain_loc.clone(), move |env: &dyn WitnessGeneration<F>| {
+                env.read_var(&bit_sum_for_witness)
+                    .inverse()
+                    .unwrap_or_else(F::zero)
+            })?;
+        sys.assert_r1cs(
+            Some("wrap domain one-hot any".into()),
+            domain_loc.clone(),
+            bit_sum,
+            bit_sum_inv,
+            FieldVar::constant(F::one()),
+        )?;
+        selected_domains[k] = Some(crate::ft_eval_circuit::SelectedDomain {
+            log2s: all_wrap_log2s.clone(),
+            which,
+        });
+    }
+
     // == finalize each unfinalized proof (Type2 claimed values) ==
     let mut new_bulletproof_challenges = Vec::with_capacity(unfinalized.len());
     let mut prev_msgs_wrap = Vec::with_capacity(unfinalized.len());
-    for u in unfinalized {
+    for (u, selected) in unfinalized.iter().zip(selected_domains) {
         let finalize_loc = Cow::Borrowed("wrap_main: finalize unfinalized");
         let alpha_f = scalar_to_field(
             sys,
@@ -150,7 +213,15 @@ where
             public_evals: u.finalize_evals.public_evals.clone(),
             evals: u.finalize_evals.evals.clone(),
         };
-        let fin = finalize_deferred(sys, finalize_loc.clone(), &u.finalize_params, &witness)?;
+        // OCaml passes the pseudo `wrap_domain` selected above into
+        // `finalize_other_proof` (wrap_main.ml:409-416) — never the constant.
+        let params = FinalizeParams {
+            domain: crate::ft_eval_circuit::FinalizeDomain::Selected(
+                selected.expect("one selected domain per unfinalized proof"),
+            ),
+            ..u.finalize_params.clone()
+        };
+        let fin = finalize_deferred(sys, finalize_loc.clone(), &params, &witness)?;
 
         // Boolean.Assert.any [finalized; not should_finalize]
         let ok = Boolean::any(
@@ -503,6 +574,10 @@ mod tests {
             let per_unf = PerUnfinalized {
                 finalize_params,
                 finalize_evals,
+                // The synthetic witness has `should_finalize = false`, so the
+                // finalize outcome is masked; any in-range index satisfies the
+                // domain one-hot.
+                wrap_domain_index: Fq::zero(),
                 alpha: mksc(sys, self.unf_scalars[0])?,
                 beta: mksc(sys, self.unf_scalars[1])?,
                 gamma: mksc(sys, self.unf_scalars[2])?,
@@ -605,7 +680,6 @@ mod tests {
                 &claimed,
                 &msgs_wrap_digest,
                 std::slice::from_ref(&self.new_acc_dummies),
-                &Boolean::false_(),
                 &params,
                 crate::endo::tock::base(),
                 <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::endos().1,

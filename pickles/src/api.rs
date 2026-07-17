@@ -892,12 +892,25 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
 
         // OCaml witness order (wrap_main.ml): `prev_step_accs` (sg_olds), then
         // `openings_proof` (:440), then `messages` (:470).
+        // `prev_step_accs` (wrap_main.ml:301-305) is witnessed ONCE and serves
+        // both as `~sg_old` for the verifier and as the per-proof accumulator
+        // in the previous-accumulator hashes (:425-431). The physical sg_olds
+        // and the per-unfinalized prev_step_acc carry the same values in the
+        // same order (both front-padded with the canonical dummy), so a second
+        // witness would add on-curve rows jsoo does not have.
         let sg_olds = mkpts(sys, &w.sg_olds)?;
-        // `prev_step_accs` (wrap_main.ml:301): the per-unfinalized previous
-        // step accumulators, witnessed right after the physical sg_olds.
-        let mut unf_prev_step_accs = Vec::with_capacity(w.unfinalized.len());
-        for u in &w.unfinalized {
-            unf_prev_step_accs.push(mkpt(sys, u.prev_step_acc)?);
+        if !w.unfinalized.is_empty() {
+            assert_eq!(
+                sg_olds.len(),
+                w.unfinalized.len(),
+                "one physical sg_old per unfinalized proof"
+            );
+            for (k, u) in w.unfinalized.iter().enumerate() {
+                assert_eq!(
+                    u.prev_step_acc, w.sg_olds[k],
+                    "prev_step_acc must alias sg_olds[{k}]"
+                );
+            }
         }
         // `old_bp_chals` (wrap_main.ml:306): the old bulletproof challenge
         // vectors (both the finalize copy and the accumulator-hash copy).
@@ -972,9 +985,18 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 mds: &mds,
                 shift: ShiftKind::Type2,
             };
+            // `Req.Wrap_domain_indices` (wrap_main.ml:356): the wrap-domain
+            // index of the proof being finalized — `actual_wrap_domain_size`
+            // maps log2 13/14/15 to 0/1/2 (common.ml:32-38).
+            let wrap_log2 = u.finalize_domain.log_size_of_group;
+            assert!(
+                (13..=15).contains(&wrap_log2),
+                "wrap domain log2 out of the possible range"
+            );
             unfinalized.push(PerUnfinalized {
                 finalize_params,
                 finalize_evals,
+                wrap_domain_index: Fq::from(wrap_log2 as u64 - 13),
                 alpha: deferred.alpha,
                 beta: deferred.beta,
                 gamma: deferred.gamma,
@@ -987,7 +1009,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sponge_digest_before_evaluations: deferred.sponge_digest_before_evaluations,
                 should_finalize: deferred.should_finalize,
                 old_bulletproof_challenges: old_bp,
-                prev_step_acc: unf_prev_step_accs.remove(0),
+                prev_step_acc: sg_olds[unfinalized.len()].clone(),
                 hash_dummy_challenges: u.hash_dummy_challenges.clone(),
                 hash_old_bulletproof_challenges: hash_old_bp,
             });
@@ -1097,8 +1119,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         };
 
         let params = groupmap::BWParameters::<VestaParameters>::setup();
-        let is_base_case =
-            proofs_verified.equal(sys, loc!(), &FieldVar::constant(Fq::from(0u64)))?;
         let _out = wrap_main::<Fq, VestaParameters, _>(
             sys,
             loc!(),
@@ -1115,7 +1135,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             &claimed,
             &msgs_wrap_digest,
             &w.new_acc_dummies,
-            &is_base_case,
             &params,
             crate::endo::tock::base(),
             <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1,
