@@ -3937,3 +3937,17 @@ côté doit produire le MÊME doublon). Impact potentiellement large
 (toutes les mults sur lincoms de tous les circuits) — init=0 comme
 canari, et attention aux endroits où nous avons DÉJÀ compensé (des fixes
 passés pourraient avoir absorbé cette différence localement).
+
+PRÉCISION FINALE (littéral plonk_constraint_system.ml:1554-1579) :
+`reduce_to_v` mémoïse les CONSTANTES (`cached_constants`) mais PAS les
+lincoms — chaque CONTRAINTE re-réduit son opérande lincom. Et
+`Square (a, c)` ne réduit `a` qu'UNE fois par contrainte — le doublon
+J1981 vient donc de DEUX contraintes consécutives consommant chacune le
+ζ brut (zeta_n S6 + un autre site à identifier ; zetaw S2 avait déjà
+consommé ζ une 1re fois).
+⇒ REPRISE : (1) chercher si NOTRE chemin de réduction (RunState /
+add_constraint côté rust) MÉMOÏSE les réductions de lincoms — si oui,
+c'est LA différence : la désactiver (re-réduction par contrainte, iso
+OCaml) en gardant le cache des constantes ; (2) mesurer sur le motif
+J1981 (notre dump doit produire le même doublon [endo,1,−1] ×2) ;
+(3) init=0 en canari — impact potentiellement TRÈS large.
