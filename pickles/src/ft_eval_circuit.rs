@@ -221,9 +221,9 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             let omega_to_minus_1 =
                 crate::plonk_curve_ops::div_var(sys, loc.clone(), &one, &generator)?;
             // OCaml: `omega_to_minus_2 = square omega_to_minus_1`
-            // (plonk_checks.ml:250) — a Square constraint.
+            // (plonk_checks.ml:250) with `square x = x * x` — a MUL gadget.
             let omega_to_zk_plus_1 =
-                crate::expr_eval::square_circuit(sys, loc.clone(), &omega_to_minus_1)?;
+                omega_to_minus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
             let omega_to_zk = omega_to_zk_plus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
             DomainOmegas {
                 generator,

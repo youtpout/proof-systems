@@ -22,7 +22,7 @@ use kimchi::circuits::{
 use serde_json::Value;
 use snarky::{FieldVar, RunState, SnarkyResult};
 
-use crate::expr_eval::{pow_circuit, square_circuit};
+use crate::expr_eval::pow_circuit;
 
 static TICK_JSON: &str = include_str!("scalars_tick.json");
 static TOCK_JSON: &str = include_str!("scalars_tock.json");
@@ -211,8 +211,10 @@ impl<F: PrimeField + FftField> Eval<'_, '_, F> {
                 a.mul(&b, None, self.loc.clone(), sys)
             }
             "square" => {
+                // env `square x = x * x` (plonk_checks.ml:225) — a MUL, not
+                // a Square constraint.
                 let a = self.eval(sys, &arr[1])?;
-                square_circuit(sys, self.loc.clone(), &a)
+                a.mul(&a.clone(), None, self.loc.clone(), sys)
             }
             "double" => {
                 let a = self.eval(sys, &arr[1])?;

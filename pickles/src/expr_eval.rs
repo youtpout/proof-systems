@@ -132,8 +132,9 @@ pub fn square_circuit<F: PrimeField>(
 }
 
 /// `base^exp` in circuit — OCaml `Plonk_checks.pow`'s exact recursion
-/// (plonk_checks.ml:226): `pow x n = x * pow (square x) (n/2)` when odd,
-/// `pow (square x) (n/2)` when even; squarings are Square constraints.
+/// (plonk_checks.ml:226) with the env's `square x = x * x` (a MUL gadget,
+/// plonk_checks.ml:225): `pow x n = x * pow (x*x) (n/2)` when odd,
+/// `pow (x*x) (n/2)` when even.
 pub fn pow_circuit<F: PrimeField>(
     sys: &mut RunState<F>,
     loc: Cow<'static, str>,
@@ -144,7 +145,7 @@ pub fn pow_circuit<F: PrimeField>(
         0 => Ok(FieldVar::constant(F::one())),
         1 => Ok(base.clone()),
         _ => {
-            let sq = square_circuit(sys, loc.clone(), base)?;
+            let sq = base.mul(&base.clone(), None, loc.clone(), sys)?;
             let y = pow_circuit(sys, loc.clone(), &sq, exp / 2)?;
             if exp & 1 == 1 {
                 base.mul(&y, None, loc, sys)
