@@ -4705,7 +4705,15 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         should_finalize.clone(),
     )?;
     let should_finalize = Boolean::create_unsafe(should_finalize);
-    let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| false)?;
+    // OCaml takes `must_verify` from the RULE (`proof_must_verify`), not from
+    // the statement: for a slot we actually verify it is the CONSTANT
+    // `Boolean.true_`, so `not must_verify` is the constant false and both
+    // `Field.if_ is_base_case` (the 16 bulletproof-challenge bypasses) and
+    // the `||| not must_verify` of the per-proof result fold away with no
+    // gate. `verify_one` still asserts `should_finalize == must_verify`
+    // (step_main.ml:28), which pins the statement slot.
+    let must_verify = Boolean::true_();
+    let is_base_case: Boolean<Fp> = must_verify.not();
     // OCaml witnesses the previous challenge-polynomial commitments last in
     // the per-proof witness (`Vector.typ Inner_curve.typ`, on-curve rows) and
     // reuses the SAME points as the old accumulators of the digest
@@ -4767,7 +4775,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         xi: statement[15].clone(),
         claimed,
         should_finalize: should_finalize.clone(),
-        must_verify: should_finalize,
+        must_verify,
         is_base_case,
     };
     let app_state = wvec(sys, &d.prev_app_state)?;

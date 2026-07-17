@@ -301,8 +301,8 @@ where
                 coords.push(pt.x.clone());
                 coords.push(pt.y.clone());
             }
-            index_sponge.absorb(sys, loc.clone(), &coords);
-            index_sponge.squeeze(sys, loc.clone())
+            index_sponge.absorb(sys, Cow::Owned(format!("{loc} | vk index absorb")), &coords);
+            index_sponge.squeeze(sys, Cow::Owned(format!("{loc} | vk index squeeze")))
         }
         IndexDigest::SpongeAfterIndex(after_index) => {
             let mut index_sponge = after_index.clone();
@@ -332,7 +332,11 @@ where
         // then PLAIN absorbs — a wrap proof always accumulates the full
         // padded vector, so nothing is masked or skipped here.
         for sg in sg_old {
-            sponge.absorb_commitment(sys, loc.clone(), &[(sg.x.clone(), sg.y.clone())]);
+            sponge.absorb_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | absorb sg_old")),
+                &[(sg.x.clone(), sg.y.clone())],
+            );
         }
     }
 
@@ -346,7 +350,12 @@ where
     let x_hat = match x_hat_input {
         XHatInput::Precomputed(points) => points,
         XHatInput::PublicInput { terms, h_generator } => {
-            x_hat = public_input_commitment(sys, loc.clone(), terms, h_generator)?;
+            x_hat = public_input_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | x_hat commitment")),
+                terms,
+                h_generator,
+            )?;
             std::slice::from_ref(&x_hat)
         }
         XHatInput::MultiscaleKnown { terms, h_generator } => {
@@ -423,7 +432,7 @@ where
     // == IVC Step 14: ft_comm (linearization commitment) ==
     let ft = ft_comm(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | ft_comm")),
         &vk.sigma_last,
         &messages.t_comm,
         &advice.perm,
@@ -536,7 +545,7 @@ where
     // absorb(delta); c = squeeze_scalar (raw 128-bit)
     absorb_commitment(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | absorb delta")),
         &mut sponge_before_evaluations,
         std::slice::from_ref(&to_pv(&openings.delta)),
     );
@@ -549,7 +558,7 @@ where
     // == The final inner-product-argument equation ==
     let success = check_bulletproof_equation_from_q(
         sys,
-        loc,
+        Cow::Owned(format!("{loc} | equal_g")),
         &q,
         &u,
         &advice.b,
