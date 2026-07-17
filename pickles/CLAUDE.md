@@ -2754,6 +2754,29 @@ xor = 3 ; add_in = 5 ; y*before = 2. Dump isolé :
 Après parité histogramme+ordre : câblage (differing rows → 0), puis les VK
 seront identiques (les constantes choose_pt suivent automatiquement).
 
+ÉTAT FIN SESSION 3 (tout pushé jusqu'à « step: no seal on converted
+alpha/zeta ») : init differingRows=0 ; update runDiffs 42 net +39
+(@764 +8 : +15 muls = la chaîne zeta_to_srs (16 muls) placée en fin d'env
+chez nous mais ABSENTE de la fenêtre @764 jsoo — jsoo l'a dans la fenêtre
+@892 (le sig-diff @892 montre jsoo +24 muls) ; le c1-00 est équilibré
+(241/243) grâce au NON-SEAL d'alpha/zeta) ; merge net +79 (structure @7/@8
+résorbée) ; wrap net −95 : (a) ~−85 = blocs opt-sponge @4391+ (« wrap_main:
+verify step proof », labels os:add_in_*) : la Transcript::Opt du wrap
+absorbe avec flags CONSTANTS chez nous → blocs dégénérés 6 rows (que les
+add_in) vs jsoo 10-25 rows : OCaml NE replie PAS Boolean.all/any sur
+constantes (la version liste émet equal(3, 1+1+p) même avec flags true_ —
+seuls lxor (to_constant) et Checked.mul replient) → aligner notre
+opt_sponge/Boolean sur ce profil de repli ; (b) @2354 +56 (CompleteAdd,
+jsoo 226/rust 282) à analyser ; (c) ±1 ×~160 = bruit de phase.
+@892 update (j113/r120) = fin finalize (b/perm/conjoncts + ~100 rows
+non-labellisées) — y déplacer la chaîne zsl n'a PAS suffi la 1re fois
+(mesuré +14) mais le sig-diff dit que jsoo y a plus de muls : à réanalyser
+finement (la fenêtre a d'autres écarts : -0-01 +10, 11-00 +10, c1-0c +8).
+MÉTHODES qui marchent : sig-histogramme par gadget entre ancres
+(5 symboles l,r,o,m,c), clustering de positions, perturbation
+(delta sensible à quelles cellules), LCS ciblé block_diff.mjs, et
+labels par phase (loc | sous-phase).
+
 SESSION 3, suite — **INIT = differingRows 0 (byte-identique, gates+coeffs+
 wires)** après : pinning des segments dummy EN FIN de circuit (r-slot,
 Equal(Constant,Var) constant-first — les dernières lignes de tout step jsoo)
