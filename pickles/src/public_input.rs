@@ -46,9 +46,11 @@ pub enum StatementElement<F: PrimeField> {
     Bool(Boolean<F>),
 }
 
-/// Builds x_hat [`Term`]s from Pickles statement elements. Full-field elements
-/// expand per OCaml `Spec.pack`/`wrap_main.split_field`: `Split(x)` becomes
-/// `[Packed(x_div_2, 255), Cond(x_odd)]`.
+/// Builds x_hat [`Term`]s from Pickles statement elements. Full-field
+/// elements (`Split`) are expanded by wrap_main BEFORE this runs — OCaml
+/// splits them at the incrementally_verify_proof call site, not inside the
+/// x_hat loop — so this only maps `Packed`/`Bool` onto terms, re-asserting
+/// booleanity of every 1-bit entry (wrap_verifier.ml:917).
 /// Where the x_hat Lagrange constants come from, per statement slot.
 pub enum StatementLagranges<'a, F: PrimeField> {
     /// Pre-built (constant or already-selected) `(L_i, correction_i)` points.
@@ -134,17 +136,13 @@ pub fn statement_terms<F: PrimeField>(
                     correction: correction.expect("packed term needs a correction"),
                 });
             }
-            StatementElement::Split(x) => {
-                let (y, odd) = split_field(sys, loc.clone(), x)?;
-                let (lagrange, correction) = next(sys, &mut slot, true)?;
-                terms.push(Term::Packed {
-                    value: y,
-                    num_bits: 255,
-                    lagrange,
-                    correction: correction.expect("packed term needs a correction"),
-                });
-                let (lagrange, _) = next(sys, &mut slot, false)?;
-                terms.push(Term::Cond { bit: odd, lagrange });
+            StatementElement::Split(_) => {
+                // OCaml splits full-field elements at the CALL to
+                // incrementally_verify_proof (wrap_main.ml:486-493), before
+                // the verifier-index absorb — wrap_main expands `Split` into
+                // `[Packed(y, 255), Bool(odd)]` there, so the terms loop
+                // only ever sees the post-split shape.
+                unreachable!("Split is expanded by wrap_main before statement_terms")
             }
             StatementElement::Bool(b) => {
                 b.check(sys, loc.clone())?;

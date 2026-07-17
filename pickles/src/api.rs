@@ -734,6 +734,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             );
         }
         let mut elements = Vec::with_capacity(w.step_statement.len());
+        let mut bool_slot = 0usize;
         for (slot_index, slot) in w.step_statement.iter().enumerate() {
             match *slot {
                 WrapStepStatementSlot::Field(value) => {
@@ -755,12 +756,23 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                         num_bits,
                     });
                 }
-                WrapStepStatementSlot::Bool(value) => {
-                    let bit = sys.compute(loc!(), move |_| value)?;
+                WrapStepStatementSlot::Bool(_) => {
+                    // OCaml threads prev_proof_state's own vars into
+                    // pack_statement (wrap_main.ml:423-438): the statement's
+                    // Bool slots ARE the should_finalize booleans witnessed
+                    // above — re-witnessing one here would emit a second
+                    // boolean check jsoo does not have.
+                    let bit = unf_deferred[bool_slot].should_finalize.clone();
+                    bool_slot += 1;
                     elements.push(StepStatementElement::Bool(bit));
                 }
             }
         }
+        assert_eq!(
+            bool_slot,
+            unf_deferred.len(),
+            "one statement Bool slot per unfinalized proof"
+        );
         // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
         // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
         // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,

@@ -3577,3 +3577,94 @@ qu'on matérialise au mauvais endroit (2 en tête) et pas là où il faut
 (10 dans le x_hat). Traiter les deux ensemble, pas séparément.
 ⇒ PRÉDICTION à poser : tranche ancres 2000..2100 de 0 → 10 checks,
 tranche 0..100 de 4 → 2, total 82/82. C'est du GATE ⇒ mesurable.
+
+## ✅✅ FIX VALIDÉ : les 10 checks = `split_field` × 10 à l'ÉVALUATION
+## D'ARGUMENT — et l'hypothèse « Branch_data » ci-dessus est RÉFUTÉE
+
+CORRECTION de l'entrée précédente : les 10 bits ne sont PAS Branch_data.
+Le statement du STEP (celui que le wrap commit en x_hat) n'en contient
+pas — son spec par proof (composition_types.ml:1213-1221) est :
+  `[ Vector (B Field, 5); Vector (B Digest, 1); Vector (B Challenge, 2);
+     Vector (Scalar Challenge, 3); Vector (B Bulletproof_challenge, 16);
+     Vector (B Bool, 1) ]`
+  fq = [cip; b; zeta_to_srs_length; zeta_to_domain_size; perm] (l.1245).
+`Branch_data -> Packed_bits (x, 10)` (spec.ml:236) existe bien mais vit
+dans le statement du WRAP consommé par le STEP (step_verifier), pas ici.
+La chaîne littérale était vraie, le circuit visé était le mauvais.
+
+CE QUE C'ÉTAIT VRAIMENT (prouvé par les WIRES jsoo, puis mesuré) :
+**5 slots `Field` × 2 proofs = 10 `split_field`** émis par OCaml à
+l'évaluation de `~public_input:(Array.map … split_field …)`
+(wrap_main.ml:486-493) — c.-à-d. AU CALL de incrementally_verify_proof :
+après les exists openings (:440) + messages (:470) (les on-curve), AVANT
+le sponge « absorb verifier index ». `split_field` (wrap_main.ml:57-69) =
+exists (field × Boolean.typ) [1 check bool] + `Assert.equal (2y+odd) x`
+[1 gadget `[2,1,-1,0,0]`]. Preuve par wires (jsoo 4368-4377) :
+  • bit de 4368A câblé dans le r du `[2,1,-1]` de 4369B (cycle
+    4368.1→4369.4) — appariement décalé d'un ;
+  • le x du split câblé vers la région finalize (o de 4369B → 1765.3) ;
+  • le 10e linéaire DIFFÉRÉ à 4390B, apparié au 1er gadget generic de la
+    région sponge — preuve de la file des demi-lignes.
+La 2e anomalie (+2 en tête) : nos slots `Bool` du statement étaient
+RE-témoignés (api.rs:759, compute → check Boolean.typ) alors qu'OCaml
+REFILE les vars `should_finalize` de prev_proof_state (wrap_main.ml:
+423-438) — pas de 2e check. Et wrap_verifier.ml:917 RE-asserte la
+booléanité de chaque entrée (b,1) dans la boucle x_hat (odd bits inclus)
+⇒ 12 checks x_hat (10 odd + 2 should_finalize), qu'on avait déjà.
+
+RÈGLE STRUCTURELLE NEUVE (à réutiliser) :
+**le csys kimchi apparie les gadgets Generic (NOUVEAU, PENDING)** —
+plonk_constraint_system.ml:1452-1461 : `add_row [| l;r;o; l2;r2;o2 |]`
+où (l2,r2,o2) est le PENDING ⇒ dans une ligne, le slot A est le gadget
+émis en DERNIER, le slot B le plus ancien. Corollaire : la répartition
+des gadgets dans les lignes dépend de la PARITÉ du nombre de gadgets
+generic émis en amont (la « phase »). Un net amont ≠ 0 fait dériver la
+phase de TOUT l'aval : les runs se re-découpent en paires ±1 autour des
+ancres SANS différence de contenu. Signature mesurable : une queue de
+runDiffs nombreux à NET 0 (aujourd'hui : 187 diffs net 0 sur ancres
+2300+). NE PAS les chasser un par un — ils tomberont quand les nets
+amont seront à 0.
+
+LE FIX (commit courant, 3 éditions) :
+ 1. wrap_main.rs (après `witness_proof`) : expansion des
+    `StepStatementElement::Split(x)` → `split_field` → `[Packed(y,255),
+    Bool(odd)]` — à la position d'évaluation d'argument OCaml.
+ 2. public_input.rs `statement_terms` : branche `Split` → unreachable!
+    (l'expansion est en amont) ; la branche `Bool` fait le re-assert
+    :917 pour odd bits ET should_finalize.
+ 3. api.rs : slots `Bool` du statement → RÉUTILISENT
+    `unf_deferred[k].should_finalize` (plus de re-témoignage).
+
+PRÉDICTION POSÉE PUIS MESURÉE — VERDICT :
+ • P1 ✓✓ EXACT : boolslice wrap tête 4→2, tranche 2000..2100 0→10,
+   TOTAL 82/82, TOUTES les tranches égales (boolslice n'affiche plus
+   aucune ligne).
+ • P2 ✓ substance / ✗ octets : les 10 lignes sont émises au bon endroit
+   (ancres 1900-2300 : ZÉRO runDiff), mais la ligne rust est (lin,bool)
+   là où jsoo a (bool,lin) — pure PHASE héritée de l'amont (jsoo arrive
+   avec un y² on-curve pending, nous avec une file vide). Se résoudra
+   par l'amont, pas localement.
+ • P3 ✓ : init differingRows=0 ; update/merge STRICTEMENT inchangés.
+ • P4 ✓ : le @0 (tête) subsiste — j167/r158 désormais (−9 lignes).
+ • recorded 21/21.
+MÉTRIQUES wrap après : runDiffs 197→196, netGeneric +2→+6 (attendu :
++8 gadgets = +4 lignes, 3216→3220 pile), differingRows 8654→9864
+(cascade wiring, toujours trompeur). Répartition des 196 :
+  ancres 0-500 : 2 diffs net −8 (@0 −9, @16 +1) ← PROCHAINE CIBLE
+  ancres 500-1000 : 5 diffs net +7 (@676 −1, @695 +1, @727 +2,
+    @847 +4, @863 +1)
+  ancres 1000-1900 : 2 diffs net +7 (@1574 +2, + un autre)
+  ancres 1900-2300 : 0 ✓ (la zone du fix)
+  ancres 2300+ : 187 diffs NET 0 = phase (voir règle ci-dessus).
+
+PISTES WIRING PARQUÉES ICI (pour la phase wiring, ne pas oublier) :
+ • Les x des splits : OCaml refile les VARS de prev_proof_state (cip, b,
+   zsrs, zdom, perm — jsoo wire 1765.3 vers finalize) ; nous
+   re-témoignons des vars fraîches (api.rs:740, self-loop 4374.2).
+   Gates identiques, WIRING différent. Réutiliser les vars comme pour
+   les Bool — mais notre UnfDeferred n'a PAS zsrs/zdom (on ne témoigne
+   que 8 champs hors bp ; OCaml en témoigne 10 dans l'ordre du spec :
+   [cip;b;zsrs;zdom;perm], digest, [β;γ], [α;ζ;ξ], bp16, bool).
+   L'ORDRE de témoignage diffère aussi (indices de vars ⇒ wiring).
+ • Slots `Packed` (digest/challenges/bp) : mêmes re-témoignages frais
+   (api.rs:751) vs refil OCaml — même chantier.

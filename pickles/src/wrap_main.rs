@@ -184,6 +184,39 @@ where
     // witnessed here, after finalize/hash-prev, before the verifier.
     let (openings, messages) = witness_proof(sys)?;
 
+    // OCaml evaluates `~public_input:(Array.map (pack_statement ...) ...)`
+    // (wrap_main.ml:486-493) at the CALL to incrementally_verify_proof —
+    // after the openings/messages witnesses, before the verifier-index
+    // absorb. Each full-field element is split THERE (`split_field`,
+    // wrap_main.ml:57): one boolean check + one `2·y + odd − x` row per
+    // element, rows the x_hat terms loop does not carry. The terms loop
+    // then re-asserts booleanity of every 1-bit entry (wrap_verifier.ml:917)
+    // — the odd bits travel on as `Bool` so `statement_terms` emits exactly
+    // that second assert.
+    let mut expanded_elements: Vec<StepStatementElement<F>> =
+        Vec::with_capacity(step_statement_elements.len() * 2);
+    for element in step_statement_elements {
+        match element {
+            StepStatementElement::Split(x) => {
+                let (y, odd) = crate::plonk_curve_ops::split_field(sys, loc.clone(), x)?;
+                expanded_elements.push(StepStatementElement::Packed {
+                    value: y,
+                    num_bits: 255,
+                });
+                expanded_elements.push(StepStatementElement::Bool(odd));
+            }
+            StepStatementElement::Packed { value, num_bits } => {
+                expanded_elements.push(StepStatementElement::Packed {
+                    value: value.clone(),
+                    num_bits: *num_bits,
+                });
+            }
+            StepStatementElement::Bool(b) => {
+                expanded_elements.push(StepStatementElement::Bool(b.clone()));
+            }
+        }
+    }
+
     // == commit to the step statement and fully verify the step proof ==
     // The dynamic proofs-verified mask, aligned to the physical sg_old
     // layout. `Util.ones_vector` marks the ACTIVE slots first
@@ -207,7 +240,7 @@ where
         sg_olds,
         &sg_old_mask,
         XHatInput::Statement {
-            elements: step_statement_elements,
+            elements: &expanded_elements,
             lagranges,
             h_generator,
         },
