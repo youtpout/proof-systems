@@ -335,9 +335,12 @@ pub fn perm_scalar_circuit<F: PrimeField>(
         let factor = &(&env.gamma + &bs) + &e.w[i].0;
         acc = acc.mul(&factor, None, loc.clone(), sys)?;
     }
-    // seal so the (negated) result is a direct variable, safe to wire as a
-    // public output alongside others
-    acc.scale(-F::one()).seal(sys, loc)
+    // OCaml `derive_plonk` keeps `negate(fold)` as an UNSEALED lincom
+    // (plonk_checks.ml:427); the perm check's `Shifted_value.of_field` + `equal`
+    // then reference the positive fold var at +1/2. Sealing the negated value
+    // into a fresh var would flip the perm-check gate's derived coeff to -1/2
+    // (measured vs jsoo's +1/2). Return the negate as a lincom.
+    Ok(acc.scale(-F::one()))
 }
 
 /// In-circuit `ft_eval0` WITHOUT the trailing `- constant_term` (OCaml
@@ -608,7 +611,10 @@ mod tests {
                 &p_eval0,
             )?;
             let ft0 = &ft_prefix - &constant_term;
-            let perm = perm_scalar_circuit(sys, loc!(), &env, &evals)?;
+            // This test wires `perm` as a circuit output, so seal the lincom to
+            // a var here (the production perm check keeps it unsealed to match
+            // OCaml's `Shifted_value.of_field` pairing).
+            let perm = perm_scalar_circuit(sys, loc!(), &env, &evals)?.seal(sys, loc!())?;
             Ok((ft0, perm))
         }
     }

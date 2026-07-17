@@ -170,6 +170,23 @@ pub fn type2_to_field<F: PrimeField>(repr: &FieldVar<F>) -> FieldVar<F> {
     repr + &FieldVar::constant(crate::shifted_value::two_to_size::<F>())
 }
 
+/// In-circuit `Shifted_value.Type1.of_field`: `(s − (2^size + 1)) / 2` — the
+/// inverse of [`type1_to_field`]. `Shifted_value.equal` compares the shifted
+/// reprs directly (shifted_value.ml:49 `equal t1 t2`), so the perm check
+/// applies `of_field` to the DERIVED scalar and compares it to the raw claimed
+/// repr, rather than `to_field`-ing the claimed repr.
+pub fn type1_of_field<F: PrimeField>(s: &FieldVar<F>) -> FieldVar<F> {
+    let half = F::from(2u64).inverse().expect("2 invertible");
+    let c = (crate::shifted_value::two_to_size::<F>() + F::one()) * half;
+    let scaled = s.scale(half);
+    &scaled - &FieldVar::constant(c)
+}
+
+/// In-circuit `Shifted_value.Type2.of_field`: `s − 2^size`.
+pub fn type2_of_field<F: PrimeField>(s: &FieldVar<F>) -> FieldVar<F> {
+    s - &FieldVar::constant(crate::shifted_value::two_to_size::<F>())
+}
+
 /// Which `Shifted_value` convention the claimed deferred values use:
 /// [`ShiftKind::Type1`] on the step side, [`ShiftKind::Type2`] on the wrap
 /// side.
@@ -185,6 +202,15 @@ impl ShiftKind {
         match self {
             ShiftKind::Type1 => type1_to_field(repr),
             ShiftKind::Type2 => type2_to_field(repr),
+        }
+    }
+
+    /// The in-circuit `Shifted_value.of_field` for this convention (inverse of
+    /// [`Self::to_field`]).
+    pub fn of_field<F: PrimeField>(self, s: &FieldVar<F>) -> FieldVar<F> {
+        match self {
+            ShiftKind::Type1 => type1_of_field(s),
+            ShiftKind::Type2 => type2_of_field(s),
         }
     }
 }
@@ -698,10 +724,19 @@ pub fn finalize_deferred<F: PrimeField>(
         let _ = zsl;
     }
     // `Shifted_value.equal Field.equal (f plonk) (f actual)`
-    // (plonk_checks.ml:473) — claimed first here too.
-    let perm_claimed = params.shift.to_field(&witness.perm_repr);
-    let perm_correct =
-        perm_claimed.equal(sys, Cow::Owned(format!("{loc} | perm check")), &perm_derived)?;
+    // (plonk_checks.ml:473). Unlike the cip/b checks (which `to_field` the
+    // CLAIMED side, wrap_verifier.ml:1732/1755), `derive_plonk` wraps the
+    // DERIVED perm through `Shifted_value.of_field ~shift` (plonk_checks.ml:
+    // 429-430) and `Shifted_value.equal` compares the shifted reprs directly
+    // (shifted_value.ml:49). So compare the raw claimed repr (claimed first)
+    // against `of_field(perm_derived)` — `to_field`-ing the claimed repr scales
+    // it by 2 and diverges from jsoo (l-coeff 2 vs 1 on the reduced difference).
+    let perm_derived_repr = params.shift.of_field(&perm_derived);
+    let perm_correct = witness.perm_repr.equal(
+        sys,
+        Cow::Owned(format!("{loc} | perm check")),
+        &perm_derived_repr,
+    )?;
 
     // Step 11: combine all checks. OCaml folds the four booleans DIRECTLY
     // into `Boolean.all [xi_correct; b_correct; combined_inner_product_
