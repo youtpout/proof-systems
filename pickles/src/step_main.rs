@@ -137,30 +137,32 @@ where
             endo_scalar,
             num_bits,
         )?;
-        let not_must_verify = p.must_verify.not();
-        let verified_or_skipped =
-            verified.or(&not_must_verify, Cow::Borrowed("wrap proof verified"), sys);
-        let finalized_or_skipped =
-            finalized.or(&not_must_verify, Cow::Borrowed("step proof finalized"), sys);
-        verified_or_skipped.to_field_var().assert_equals(
+        // OCaml `step_main.ml:117`: the per-proof result is the single
+        // expression `Boolean.(verified &&& finalized ||| not must_verify)`
+        // — one `and` then one `or`, and NO per-proof assertion (the
+        // conjunction is asserted once at the end).
+        let verified_and_finalized =
+            verified.and(&finalized, sys, Cow::Borrowed("wrap proof verified"));
+        let ok = verified_and_finalized.or(
+            &p.must_verify.not(),
+            Cow::Borrowed("step proof finalized"),
             sys,
-            Cow::Borrowed("step_main: wrap proof verified"),
-            &FieldVar::constant(F::one()),
-        )?;
-        finalized_or_skipped.to_field_var().assert_equals(
-            sys,
-            Cow::Borrowed("step_main: step proof finalized"),
-            &FieldVar::constant(F::one()),
-        )?;
+        );
         chalss.push(p.next_step_challenges.clone().unwrap_or(chals));
-        oks.push(verified_or_skipped.and(&finalized_or_skipped, sys, loc.clone()));
+        oks.push(ok);
     }
 
-    // Boolean.Assert.all vs
+    // `Boolean.Assert.all vs` (utils.ml): asserts the SUM of the booleans
+    // equals their count — not a computed `Boolean.all` followed by an
+    // is-true assertion.
     if !oks.is_empty() {
-        let all = Boolean::all(&oks, sys, loc.clone())?;
-        all.to_field_var()
-            .assert_equals(sys, loc.clone(), &FieldVar::constant(F::one()))?;
+        let ok_vars: Vec<FieldVar<F>> = oks.iter().map(|b| b.to_field_var()).collect();
+        let sum = FieldVar::sum(&ok_vars.iter().collect::<Vec<_>>());
+        sum.assert_equals(
+            sys,
+            loc.clone(),
+            &FieldVar::constant(F::from(oks.len() as u64)),
+        )?;
     }
 
     // the new accumulator digest: this proof's app state, the verified proofs'
