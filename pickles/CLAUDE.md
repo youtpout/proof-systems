@@ -3118,3 +3118,44 @@ PROCHAIN PAS — les 3 plus gros runDiffs, dans l'ordre:
    débloqué @892 et le wrap. NE PAS deviner: labelliser puis mesurer.
  • **wrap @2354 (+53)**: ancre CompleteAdd, j226/r279.
  • wrap @2046 (−10), @0 (−8); update @764 (+8), @892 (+7), @6 (−4).
+
+## CIBLE N°1 CARACTÉRISÉE — update @6645 (+24), merge @6646/@13284
+
+Sous-labels ajoutés cette session (impact circuit NUL, gardés):
+step_verifier: `| index sponge`, `| old digest[ opt]`, `| alpha/zeta
+to_field`, `| finalize`, `| verify wrap proof`, `| should_finalize==
+must_verify`; step_main: `| new index sponge`, `| new digest`,
+`| Assert.all oks`; incrementally_verify: `| multiscale_known`,
+`| absorb x_hat`, `| absorb w_comm`, `| absorb z_comm`,
+`| absorb vk_digest`; finalize: `| sg_evals`, `| fr-sponge`, `| b_actual`,
+`| b check`, `| cip check`, `| perm check`, `| zetaw`,
+`| domain_for_compiled`.
+
+ATTRIBUTION @6645: les 28 lignes tombent dans **`| verify wrap proof`**
+(donc dans incrementally_verify_proof) mais AUCUN des sous-labels ajoutés
+ne les capte ⇒ elles viennent d'un site encore à loc nu dans
+incrementally_verify.rs (candidats restants: squeeze beta/gamma/alpha via
+`lowest_128_bits` l.377-389, absorb t_comm, ft_comm, combine_commitments,
+bulletproof/ipa_challenges_transcript).
+
+CONTEXTE EXACT (mesuré):
+  ancres: @6641 VarBaseMul, @6642 VarBaseMul, @6643 CompleteAdd(run 1),
+          @6644 CompleteAdd(run 3), @6645 **Poseidon** (train = une
+          permutation de sponge)
+  jsoo run=6, rust run=30.
+  Les 5 PREMIÈRES lignes sont IDENTIQUES à jsoo:
+    00010|1--00, -0-01|1--00, 1--00|001-0, 1--00|00010, 001-0|-0-01
+  jsoo s'arrête à la 6e (001-0|001-0). Nous enchaînons 24 lignes d'un
+  MOTIF RÉPÉTITIF: 1--00|001-0, 001-0|-1-00, -1-00|1--00, … (reduce de
+  lincom 2-termes + mul, en boucle ~8×).
+⇒ Lecture: on fait la même chose que jsoo puis on exécute une BOUCLE que
+jsoo n'a pas (ou qu'il fait hors-circuit / replie). `1--00`=[1,-,-,0,0]=
+reduce `x−y`; `001-0`=mul. Chercher une boucle de ~8 itérations
+(mul+reduce) juste avant une absorption de sponge, après un scale_fast
+(VarBaseMul) + add_fast (CompleteAdd). PISTE: b_poly/challenge_polynomial
+recalculé en circuit là où OCaml passe une valeur déjà connue, ou
+`lowest_128_bits`/squeeze qui reconstruit des bits.
+ACTION SUIVANTE: labelliser les sites restants d'incrementally_verify.rs
+(l.377-389 squeeze/lowest_128_bits, t_comm, ft_comm, combine, bulletproof)
+puis re-mesurer. NE PAS deviner — chaque cycle = ~4 min de rebuild natif,
+donc labelliser LARGE d'un coup.

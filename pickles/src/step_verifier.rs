@@ -371,17 +371,29 @@ where
     };
 
     // Boolean.Assert (unfinalized.should_finalize == must_verify)
-    should_finalize
-        .to_field_var()
-        .assert_equals(sys, loc.clone(), &must_verify.to_field_var())?;
+    should_finalize.to_field_var().assert_equals(
+        sys,
+        Cow::Owned(format!("{loc} | should_finalize==must_verify")),
+        &must_verify.to_field_var(),
+    )?;
 
     // finalize the previous step proof's deferred values (map_plonk_to_field:
     // alpha/zeta raw -> field via the endomorphism; beta/gamma used raw).
     // OCaml does NOT seal the converted challenges: the `endo·a + b` lincom
     // flows into every use and is re-reduced there (the `[c,1,-1,0,0]` rows
     // all over the env and linearization).
-    let alpha_f = scalar_to_field(sys, loc.clone(), &stmt.alpha, finalize_params.endo_r)?;
-    let zeta_f = scalar_to_field(sys, loc.clone(), &stmt.zeta, finalize_params.endo_r)?;
+    let alpha_f = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | alpha to_field")),
+        &stmt.alpha,
+        finalize_params.endo_r,
+    )?;
+    let zeta_f = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | zeta to_field")),
+        &stmt.zeta,
+        finalize_params.endo_r,
+    )?;
     let witness = FinalizeWitness {
         alpha: alpha_f,
         beta: stmt.beta.clone(),
@@ -399,7 +411,12 @@ where
         public_evals: finalize_evals.public_evals.clone(),
         evals: finalize_evals.evals.clone(),
     };
-    let fin = finalize_deferred(sys, loc.clone(), finalize_params, &witness)?;
+    let fin = finalize_deferred(
+        sys,
+        Cow::Owned(format!("{loc} | finalize")),
+        finalize_params,
+        &witness,
+    )?;
     for (label, check) in [
         ("finalize: xi", &fin.xi_correct),
         ("finalize: cip", &fin.cip_correct),
@@ -415,14 +432,17 @@ where
     // OCaml (step_main.ml:45): the wrap-VK index sponge is (re)emitted here,
     // per proof, AFTER finalize — `hash_messages_for_next_step_proof_opt
     // ~index:d.wrap_key` eagerly absorbs the 56 coordinates.
-    let sponge_after_index =
-        &crate::hash_messages::sponge_after_index(sys, loc.clone(), dlog_index);
+    let sponge_after_index = &crate::hash_messages::sponge_after_index(
+        sys,
+        Cow::Owned(format!("{loc} | index sponge")),
+        dlog_index,
+    );
 
     // the previous accumulator digest, recomputed in-circuit
     let msgs_step_digest = match proofs_verified_mask {
         Some(mask) => crate::hash_messages::hash_messages_for_next_step_proof_opt(
             sys,
-            loc.clone(),
+            Cow::Owned(format!("{loc} | old digest opt")),
             sponge_after_index,
             app_state,
             messages_for_next_step_accumulators,
@@ -431,7 +451,7 @@ where
         )?,
         None => hash_messages_for_next_step_proof(
             sys,
-            loc.clone(),
+            Cow::Owned(format!("{loc} | old digest")),
             sponge_after_index,
             app_state,
             messages_for_next_step_accumulators,
@@ -454,7 +474,7 @@ where
     };
     let verified = verify::<F, C>(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | verify wrap proof")),
         index_digest,
         false,
         vk,

@@ -311,7 +311,11 @@ where
         IndexDigest::Precomputed(digest) => digest.clone(),
     };
     // == IVC Step 2: absorb the digest, then sg_old (PC) ==
-    sponge.absorb(sys, loc.clone(), std::slice::from_ref(&vk_digest));
+    sponge.absorb(
+        sys,
+        Cow::Owned(format!("{loc} | absorb vk_digest")),
+        std::slice::from_ref(&vk_digest),
+    );
     if let Transcript::Opt(opt) = &mut sponge {
         // Wrap side (wrap_verifier.ml:842 `mask_g1_opt`): the verified step
         // proof carries only its ACTUAL-width accumulators, so the padded
@@ -348,7 +352,11 @@ where
         XHatInput::MultiscaleKnown { terms, h_generator } => {
             // multiscale_known |> negate, then blinding `add_fast x_hat H`
             // (step_verifier.ml:554-577)
-            let sum = crate::public_input::multiscale_known::<F, C>(sys, loc.clone(), terms)?;
+            let sum = crate::public_input::multiscale_known::<F, C>(
+                sys,
+                Cow::Owned(format!("{loc} | multiscale_known")),
+                terms,
+            )?;
             x_hat = crate::plonk_curve_ops::add_fast(
                 sys,
                 Cow::Owned(format!("{loc} | x_hat blinding")),
@@ -367,9 +375,9 @@ where
             std::slice::from_ref(&x_hat)
         }
     };
-    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(x_hat));
+    sponge.absorb_commitment(sys, Cow::Owned(format!("{loc} | absorb x_hat")), &to_pvs(x_hat));
     for w in &messages.w_comm {
-        sponge.absorb_commitment(sys, loc.clone(), &to_pvs(w));
+        sponge.absorb_commitment(sys, Cow::Owned(format!("{loc} | absorb w_comm")), &to_pvs(w));
     }
 
     // == IVC Step 7: beta, gamma (raw 128-bit, `Opt.challenge`) ==
@@ -383,7 +391,11 @@ where
     };
 
     // == IVC Steps 9-10: absorb z_comm, sample alpha (`Opt.scalar_challenge`) ==
-    sponge.absorb_commitment(sys, loc.clone(), &to_pvs(&messages.z_comm));
+    sponge.absorb_commitment(
+        sys,
+        Cow::Owned(format!("{loc} | absorb z_comm")),
+        &to_pvs(&messages.z_comm),
+    );
     let alpha = {
         let squeezed = sponge.squeeze(sys, loc.clone())?;
         crate::challenge::lowest_128_bits(sys, loc.clone(), &squeezed, false)?

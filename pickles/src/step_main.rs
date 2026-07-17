@@ -160,14 +160,18 @@ where
         let sum = FieldVar::sum(&ok_vars.iter().collect::<Vec<_>>());
         sum.assert_equals(
             sys,
-            loc.clone(),
+            Cow::Owned(format!("{loc} | Assert.all oks")),
             &FieldVar::constant(F::from(oks.len() as u64)),
         )?;
     }
 
     // the new accumulator digest: this proof's app state, the verified proofs'
     // challenge-polynomial commitments, and the freshly-derived challenges
-    let after_index = sponge_after_index(sys, loc.clone(), dlog_plonk_index);
+    let after_index = sponge_after_index(
+        sys,
+        Cow::Owned(format!("{loc} | new index sponge")),
+        dlog_plonk_index,
+    );
     let cpcs: Vec<Point<F>> = proofs
         .iter()
         .map(|p| p.next_step_accumulator.clone())
@@ -179,5 +183,12 @@ where
     // computes the same digest out of circuit with the same unconditional
     // absorbs (`hash_messages_for_next_step_proof_ref`), dummy accumulators
     // included, so masking here would diverge from both.
-    hash_messages_for_next_step_proof(sys, loc, &after_index, app_state, &cpcs, &chalss)
+    hash_messages_for_next_step_proof(
+        sys,
+        Cow::Owned(format!("{loc} | new digest")),
+        &after_index,
+        app_state,
+        &cpcs,
+        &chalss,
+    )
 }
