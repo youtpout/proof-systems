@@ -3263,3 +3263,37 @@ MultiscaleKnown du step l.349, chemin Statement du wrap l.373-374). Mes
 sed/replace en `count=1` n'ont labellisé que le premier, donc le wrap
 restait anonyme alors que je le croyais couvert. Vérifier le NOMBRE
 d'occurrences avant de remplacer.
+
+## ✅ FIX Cond_add sans correction — wrap +26 → +2
+
+CAUSE: OCaml a DEUX constructeurs de terme (wrap_verifier.ml:911-922):
+  | b, 1 -> `Cond_add (b, lagrange …)             ← PAS de correction
+  | x, n -> `Add_with_correction ((x,n), lagrange_with_correction …)
+Notre `next()` sélectionnait ET scellait TOUJOURS les 2 points, puis les
+arms Cond jetaient la correction (`let (lagrange, _) = next(...)`). Chaque
+élément de champ se décompose en [Packed(255), Cond(bit)] ⇒ ~15-20
+corrections payées pour rien = les +53 de wrap @2354.
+FIX: `next(sys, &mut slot, want_correction) -> (Point, Option<Point>)`.
+MESURE: wrap net **+26→+2** (Generic 3214 vs 3216 !), rows 8992→**8654**.
+
+## 📊 ÉTAT — le chantier PLACEMENT est quasi fini
+
+  init    net **0**   rows **0**     ✅ byte-identique
+  update  net **+6**  rows 7296
+  merge   net **+13** rows 15309
+  wrap    net **+2**  rows 8654
+Les 4 circuits sont à quelques lignes du volume jsoo. Les runDiffs
+restants sont majoritairement des paires ±1 (packing).
+
+## 🧭 INFLEXION DE MÉTHODE (ce qui marche le mieux en fin de parcours)
+
+Les 6 premiers fixes venaient des OUTILS (histogramme de signatures,
+anchor-walk) qui POINTENT l'anomalie. Les 2 derniers (`must_verify`
+constant, `Cond_add` sans correction) viennent d'une lecture STRUCTURELLE
+du littéral: comparer les TYPES/CONSTRUCTEURS d'OCaml, pas les gates.
+`Cond_add` vs `Add_with_correction` = 2 constructeurs distincts: la
+divergence était dans le TYPE, invisible au niveau gate.
+⇒ En fin de parcours, lire les types de données OCaml (Spec.pack, les
+variants) est plus rentable que traquer les gadgets.
+INDICE UTILE: un `let (x, _) = f(...)` qui jette une valeur coûteuse est
+un signal fort (on paie une construction qu'OCaml ne fait pas).
