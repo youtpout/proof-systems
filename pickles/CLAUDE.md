@@ -4208,10 +4208,19 @@ y²=x³+5) sur J237-240 = 2 points de courbe de PLUS. forbidden pairs = 4
 (calculé). Les lr sont UNCHECKED (mkpt_unchecked, 4543-4546 — OK), donc
 ces assert_on_curve sont sur w_comm/z_comm/t_comm ou delta/sg. Ordre
 Bulletproof.typ = lr, z1, z2, delta, sg ⇒ delta/sg APRÈS wt2 (comme
-rust). Donc les 2 points en trop côté jsoo sont des commitments
-(w_comm/z_comm/t_comm) que jsoo `assert_on_curve` là où rust ne le fait
-pas / le fait ailleurs. PROCHAINE SONDE : compter et ordonner les mkpt
-des commitments (per_proof_witness.ml typ) rust vs OCaml.
+rust). Les 2 points en trop côté jsoo sont donc des commitments
+(w_comm/z_comm/t_comm, checkés AVANT lr). COMPTAGE (marqueur coeff 05 =
+constante de courbe) : jsoo 101 points assert_on_curve, rust 99 (Δ=2) ;
+les 2 en trop sont aux rows jsoo 237/239, juste avant la branch-data —
+donc les DERNIERS commitments checkés = `t_comm` (ordre vk[6 sél + 15
+coeff + sigma_init(6) + sigma_last(1)], puis messages[w_comm, z_comm,
+t_comm]). rust `d.t_comm = wrap_proof.commitments.t_comm.chunks` — donc
+le proof donor/bootstrap du compile a probablement 2 chunks t_comm de
+MOINS que celui de jsoo (kimchi standard = 7 chunks quotient). PROCHAINE
+SONDE : vérifier le nb de chunks t_comm (et w_comm) du proof bootstrap
+rust vs OCaml (per_proof_witness.ml typ ~num_chunks) ; s'il manque 2
+chunks t_comm, les ajouter au donor. C'est un trou de soundness AUSSI
+(2 points de courbe non contraints).
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
