@@ -3233,3 +3233,27 @@ CIBLES RÉELLES RESTANTES (ordre de taille):
  4. update @892 (+2), wrap @1694 (+5).
 MÉTHODE: labels des ANCRES d'abord (gratuit, sans rebuild) pour borner la
 fenêtre, PUIS labels par-op si besoin.
+
+## ⛔ ANTI-RÈGLE — ne JAMAIS optimiser le compte de lignes
+
+Le `seal` des sommes lagrange one-hot (public_input.rs::statement_terms)
+avait été AJOUTÉ par une session antérieure parce qu'il RÉDUISAIT le
+compte (3639→3581, "meilleur que sans"). C'était une optimisation
+empirique à l'aveugle — et c'était la source des +53 lignes de wrap @2354.
+OCaml `lagrange` (wrap_verifier.ml:334-356) masque chaque branche par le
+bit one-hot puis fait `Vector.reduce_exn ~f:(… Field.( + ))`: une SOMME de
+lincoms, SANS seal.
+
+⇒ Réduire l'écart de VOLUME n'est PAS l'objectif; reproduire la STRUCTURE
+exacte l'est. Une "amélioration" du compte peut éloigner de la VK. Ne
+jamais juger un changement à sa réduction de lignes: le seul juge est le
+littéral OCaml. (Symétrique du fix add_fast: là il MANQUAIT un seal, ici
+il y en avait un EN TROP — même cause: on n'avait pas lu le littéral.)
+
+## ⚠ PIÈGE LABELLING — replace(a,b,1) ne touche que la 1re occurrence
+
+3 cycles de rebuild perdus: `public_input_commitment` apparaît 2× (chemin
+MultiscaleKnown du step l.349, chemin Statement du wrap l.373-374). Mes
+sed/replace en `count=1` n'ont labellisé que le premier, donc le wrap
+restait anonyme alors que je le croyais couvert. Vérifier le NOMBRE
+d'occurrences avant de remplacer.
