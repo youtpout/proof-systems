@@ -3411,3 +3411,49 @@ formes différentes) — candidats : `step_verifier.ml:902`,
 `step_verifier.ml:1203` (`Vector.map2 proofs_verified_mask ...` — masqué
 donc les blocs DIFFÈRENT ⇒ le meilleur candidat), `wrap_verifier.ml:63`
 et `:338/:362/:430` (`Vector.map domains`).
+
+## 🐞 BUG D'OUTILLAGE CORRIGÉ — le wrap était décodé dans le MAUVAIS CORPS
+
+Les scripts décodaient TOUS les circuits avec le module **Fp** (Pallas
+scalar). Or le WRAP est sur **Fq** (Vesta scalar). Conséquence : le vrai
+`-1` de Fq (= Fq−1) ne tombait pas sur `Fp−1` et sortait donc en `c`
+« constante quelconque » au lieu de `-`.
+⇒ Les gadgets du wrap paraissaient exotiques (`1cc00`, `c0010`) alors
+qu'ils sont banals : `1c-00` = `1·w0 + c·w1 − res = 0` (réduction de
+lincom), `-0010` = `b·(b−1) = 0` (**check booléen**), `11-00` = somme.
+⇒ Le DIFF restait valide (même décodage des 2 côtés), mais la LECTURE
+était faussée et le chiffre « wrap formes 211 » des notes antérieures est
+calculé avec le mauvais module (les BUCKETS sont faux, pas le diff).
+FIX : `FP_MODULUS`/`FQ_MODULUS` + sélection par circuit dans
+`gstream.mjs`, `head_dump.mjs`, `rawcoeff.mjs` (`measure.mjs` n'utilise
+que les TYPES de gates, pas de module).
+LEÇON : un outil de mesure a aussi besoin d'être vérifié. Un symbole
+`c` inattendu et récurrent = suspecter le décodeur AVANT la théorie.
+
+## 🎯 TÊTE DU WRAP — désormais BYTE-IDENTIQUE jusqu'à la ligne 89
+
+Le fix one-hot a fait bien plus que ses −12 lignes agrégées : le bloc
+RÉORDONNÉ des lignes 73-79 (`other_field_equal`) a disparu AVEC lui —
+même cause racine (l'ordre d'émission de la boucle de branches). Avant :
+identique jusqu'à 72. Après : **identique jusqu'à 89**.
+⇒ Rappel : `differingRows` agrégé SOUS-ESTIME les vrais progrès de tête.
+Vérifier avec `gstream.mjs` où la 1re divergence tombe VRAIMENT.
+
+## 🔎 CIBLE N°1 SUIVANTE — wrap r90, +1 ligne, checks booléens INLINE
+
+1re divergence du wrap = `r90` : rust émet 2 gadgets `-0010`
+(= `b·(b−1)=0`) de plus, labels `api.rs:699` (`should_finalize`) et
+`api.rs:759` (slot Bool du statement).
+COMPTE GLOBAL wrap : jsoo **82** checks booléens, rust **74** (−8) — et
+`wrap @0` vaut exactement **−8**. Sites rust : 55 `x_hat commitment`,
+12 `statement_terms`, 3 `group_map u`, 2 `:699`, 2 `:759`.
+HYPOTHÈSE (à VÉRIFIER avant d'implémenter, cf. protocole) : OCaml
+`exists typ` ALLOUE TOUS LES CHAMPS PUIS lance `typ.check` sur la
+structure entière ⇒ les checks booléens arrivent APRÈS toutes les
+allocations. Nous témoignons+checkons EN LIGNE, champ par champ. Pire,
+notre `api.rs:698` calcule `should_finalize` AVANT alpha/beta/… alors
+que c'est le DERNIER champ du record OCaml.
+⇒ Lire `Typ`/`exists` dans snarky (`typ.var_of_fields` puis `typ.check`)
+et l'ordre des champs de `Types.Step.Proof_state`. PRÉDICTION à poser
+avant mesure : la ligne `r90` doit disparaître et les 2 checks
+réapparaître plus loin, groupés.
