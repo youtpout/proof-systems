@@ -4066,3 +4066,25 @@ les deux tolérances analyze déjà commitées (e8289c733).
 mina-rust a0a38b48 LOCAL (push https refusé sans askpass — à pousser à
 la main). Probe zkapp.ts checkPublicInput ACTIVE (BENCH_DEBUG) — à
 retirer avant commit suivant.
+
+## ✅✅ ZKAPP ISO ATTEINT (2e cas) — deux fixes recorder décisifs
+
+ 1. Hook `Snarky.poseidon.update` (o1js 5cf006477) : le recorder rendait
+    des vars NON CONTRAINTES pour chaque Poseidon.hash (trou de solidité
+    + 286 lignes manquantes). Il témoigne maintenant les 55 états de
+    ronde (kimchi : sbox→MDS→+rc, pas d'ARK initial, rate 2, pad zéro,
+    input vide → 1 permutation) et émet la contrainte poseidon (11
+    lignes + Zero de sortie). Histogramme step zkApp : IDENTIQUE.
+ 2. Indices denses = ORDRE D'ALLOCATION (o1js hook enterAsProver) :
+    l'assignation à la première-contrainte inversait l/r des adds
+    d'absorption (7 lignes wiring-only). RÈGLE : reduce_lincom trie par
+    index de var ⇒ l'ordre des indices doit suivre l'allocation jsoo.
+RÉSULTAT : step SimpleZkapp FULL MATCH (1024 gates, 0 ligne) ; VK zkApp
+BYTE-IDENTIQUE (hash 24921192…) ; compile rust 2,0 s vs jsoo 4,2 s ;
+canari square intact (7366579…).
+RESTANTS : side-loaded (rust 5002117… ≠ jsoo 2268640… — pv=1 ⇒ wrap
+récursif largeur 1 ; refaire son diff de STEP avec le harness
+tmp-zkapp-gates-diff adapté + la parité récursive) et add (tâche #9 —
+le plan lincom per-constraint du carnet). Les hooks poseidon/allocation
+peuvent AUSSI avoir rapproché le add (les steps update/merge absorbent
+des hash) — RE-MESURER le gate add avant d'attaquer #9.
