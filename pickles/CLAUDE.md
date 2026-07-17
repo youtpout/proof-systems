@@ -3234,21 +3234,27 @@ CIBLES RÉELLES RESTANTES (ordre de taille):
 MÉTHODE: labels des ANCRES d'abord (gratuit, sans rebuild) pour borner la
 fenêtre, PUIS labels par-op si besoin.
 
-## ⛔ ANTI-RÈGLE — ne JAMAIS optimiser le compte de lignes
+## ⚠ statement_terms seal — HYPOTHÈSE RÉFUTÉE PAR LA MESURE
 
-Le `seal` des sommes lagrange one-hot (public_input.rs::statement_terms)
-avait été AJOUTÉ par une session antérieure parce qu'il RÉDUISAIT le
-compte (3639→3581, "meilleur que sans"). C'était une optimisation
-empirique à l'aveugle — et c'était la source des +53 lignes de wrap @2354.
-OCaml `lagrange` (wrap_verifier.ml:334-356) masque chaque branche par le
-bit one-hot puis fait `Vector.reduce_exn ~f:(… Field.( + ))`: une SOMME de
-lincoms, SANS seal.
-
-⇒ Réduire l'écart de VOLUME n'est PAS l'objectif; reproduire la STRUCTURE
-exacte l'est. Une "amélioration" du compte peut éloigner de la VK. Ne
-jamais juger un changement à sa réduction de lignes: le seul juge est le
-littéral OCaml. (Symétrique du fix add_fast: là il MANQUAIT un seal, ici
-il y en avait un EN TROP — même cause: on n'avait pas lu le littéral.)
+J'ai cru (session 3) que le `seal` des sommes lagrange one-hot
+(public_input.rs::statement_terms) était un ajout abusif d'une session
+antérieure, au motif qu'OCaml `lagrange` (wrap_verifier.ml:334-356) finit
+par `Vector.reduce_exn ~f:(… Field.( + ))` — une SOMME de lincoms SANS
+seal. J'ai retiré le seal ⇒ **le wrap a EMPIRÉ**: netGeneric +26→**+84**,
+differingRows 8992→9856 (+58 lignes). REVERTÉ.
+RAISON: sans seal, la lincom est RE-MATÉRIALISÉE à chaque usage par nos
+consommateurs (c'était déjà noté session 2: "lazy hetero lagranges made
+wrap Generic WORSE 3639 vs 3581"). OCaml ne scelle pas MAIS son pattern de
+CONSOMMATION diffère (chaque terme est réduit une seule fois par son
+consommateur). Le seal compense chez nous.
+⇒ Pour vraiment matcher: il faudrait aligner AUSSI la façon dont les
+termes lagrange sont consommés (x_hat/MSM), pas juste le seal. Tant que ce
+n'est pas fait, GARDER le seal (approximation la plus proche).
+⇒ LEÇON: le littéral OCaml est le juge, mais un fragment isolé ne suffit
+pas — il faut le littéral DU CONTEXTE COMPLET (production ET
+consommation). Et TOUJOURS mesurer avant de conclure: mon raisonnement
+"OCaml ne scelle pas donc on ne doit pas sceller" était plausible et FAUX.
+Le +53 de wrap @2354 reste donc OUVERT (cause: pattern de consommation).
 
 ## ⚠ PIÈGE LABELLING — replace(a,b,1) ne touche que la 1re occurrence
 

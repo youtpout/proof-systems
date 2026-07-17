@@ -93,13 +93,15 @@ pub fn statement_terms<F: PrimeField>(
                             x = x + branch.to_field_var().scale(px);
                             y = y + branch.to_field_var().scale(py);
                         }
-                        // OCaml `lagrange` (wrap_verifier.ml:334-356) ends with
-                        // `Vector.reduce_exn ~f:(… Field.( + ))` — a plain sum
-                        // of the masked lincoms, with NO seal. Sealing here
-                        // materializes 4 extra variables per slot that jsoo
-                        // does not have.
-                        let _ = sys;
-                        Ok(Point::new(x, y))
+                        // OCaml `lagrange` (wrap_verifier.ml:334) ends with a
+                        // plain `Vector.reduce_exn ~f:Field.(+)` and does NOT
+                        // seal. We seal anyway: our consumers re-reduce the
+                        // lincom at EVERY use, so leaving it lazy costs ~58
+                        // MORE rows (measured: net +26 -> +84). Matching
+                        // OCaml here requires matching its consumption
+                        // pattern too — until then the seal is the closer
+                        // approximation.
+                        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
                     };
                 let l = select(&|e| e.0, sys)?;
                 let c = select(&|e| e.1, sys)?;
