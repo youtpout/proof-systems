@@ -4217,19 +4217,32 @@ delta/sg APRÈS wt2 (OCaml plonk_types.ml:1436-1440 record openings =
 lr, z_1, z_2, delta, challenge_polynomial_commitment ; rust idem). RÉFUTÉ :
 prev_challenge_polynomial_commitments checkés à recursive_step.rs:4730,
 APRÈS wt2 (= dernier élément du typ per_proof_witness, Vector Inner_curve).
-DONC les 2 points en trop sont dans vk/messages AVANT l'opening, mais
-tous les comptes standards (6 sél, coeff 15, sigma 6+1, w_comm 15, z_comm
-1, t_comm 7) semblent égaux. PROCHAINE SONDE (fine) : dumper les WIRES
-c4 des mkpt jsoo J233-240 vs rust R233-236 (déjà fait : jsoo réfère
-9374/9387/9408/9421/9442, rust 6298/6311/6332 — sites d'usage aval, donc
-cascade) ; comparer la LISTE exacte de points per_proof_witness OCaml
-(per_proof_witness.ml to_hlist) vs rust champ-à-champ pour trouver les 2
-que rust ne construit/check pas. NB : attention aux branches
-data-dépendantes (recursive_step.rs:4735 `if
-messages_for_next_step_accumulators == prev_challenge_polynomial_commitments`)
-— une telle branche compile-time sur les valeurs du donor divergerait de
-jsoo (à auditer). C'est un trou de soundness POSSIBLE (2 points non
-contraints).
+RÉFUTÉ AUSSI (sonde PROBE_MKPT, compteur dans le closure mkpt + marqueurs
+de groupe) : les COMPTES de mkpt MATCHENT — par per_proof_witness :
+vk_pts 28, vk 28, messages 23 (w15+z1+t7), openings 4 (delta+sg+2
+prev_cpcs). Donc AUCUN point manquant, la structure est correcte, PAS de
+trou de soundness ici. Le +2 marqueurs @237/239 est donc un décalage de
+PACKING double-generic dans la région assert_on_curve/messages (rust
+finit les messages ~2 lignes plus tôt que jsoo), PAS des points en trop.
+
+## CŒUR DU RESTE : ordre de PACKING double-generic (step ET wrap)
+
+Constat unifié : partout où ça diverge encore (wrap coefficient[0..9] +
+sigma[0..5] ; step update/merge assert_on_curve), les GATES et les
+COMPTES matchent, mais les demi-gates sont APPARIÉES différemment dans
+les lignes double-generic ([NEW ; PENDING], plonk_constraint_system.ml:
+1452-1461). Comme un run générique repart à neuf après chaque ancre
+(le pending est flush par un gate non-générique), un même run avec le
+même nb de gates devrait s'apparier pareil — SAUF si l'ORDRE d'émission
+des sous-contraintes dans le run diffère (une paire (g1,g2) vs (g2,g1)).
+⇒ C'est la LONGUE TRAÎNE de la parité byte : aligner l'ordre d'émission
+gadget-par-gadget (equal_constraints inversé était déjà un cas ; ici :
+assert_on_curve, et les gadgets de wt2/equal/and). PROCHAINE SONDE
+CONCRÈTE : comparer `assert_on_curve` rust (l'ordre de ses contraintes
+génériques) vs OCaml `Inner_curve.typ`'s check ; puis le premier run
+générique qui swappe (wrap row 1895 h_zetaw [endo|plain] vs [plain|endo]).
+La VK (decode_and_diff) reste à 12/28 tant que ces appariements ne sont
+pas alignés.
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
