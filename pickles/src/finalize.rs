@@ -135,9 +135,13 @@ pub fn b_actual<F: PrimeField>(
     r: &FieldVar<F>,
 ) -> SnarkyResult<FieldVar<F>> {
     let zetaw = zetaw.clone();
-    let h_zeta = challenge_polynomial_circuit(sys, loc.clone(), chals, zeta)?;
+    // OCaml: `challenge_poly plonk.zeta + (r * challenge_poly zetaw)`
+    // (wrap_verifier.ml:1752-1753) — `+` is a function application whose
+    // arguments evaluate RIGHT-TO-LEFT, so the ZETAW evaluation chain (and
+    // the `r · h(zetaw)` product) is emitted before the zeta chain.
     let h_zetaw = challenge_polynomial_circuit(sys, loc.clone(), chals, &zetaw)?;
-    let r_h_zetaw = r.mul(&h_zetaw, None, loc, sys)?;
+    let r_h_zetaw = r.mul(&h_zetaw, None, loc.clone(), sys)?;
+    let h_zeta = challenge_polynomial_circuit(sys, loc, chals, zeta)?;
     Ok(&h_zeta + &r_h_zetaw)
 }
 
