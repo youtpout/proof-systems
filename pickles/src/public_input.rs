@@ -76,11 +76,21 @@ pub fn statement_terms<F: PrimeField>(
         StatementLagranges::Prepared(l) => l.len(),
         StatementLagranges::OneHot { sets, .. } => sets[0].len(),
     };
-    let next = |sys: &mut RunState<F>, slot: &mut usize| -> SnarkyResult<(Point<F>, Point<F>)> {
+    // `want_correction`: OCaml only builds a correction for
+    // `Add_with_correction` terms (`x, n`); a `Cond_add` term (`b, 1`) takes
+    // ONLY the lagrange (wrap_verifier.ml:911-922). Selecting + sealing a
+    // correction for every boolean slot costs rows jsoo does not have.
+    let next = |sys: &mut RunState<F>,
+                slot: &mut usize,
+                want_correction: bool|
+     -> SnarkyResult<(Point<F>, Option<Point<F>>)> {
         let index = *slot;
         *slot += 1;
         Ok(match lagranges {
-            StatementLagranges::Prepared(l) => l[index].clone(),
+            StatementLagranges::Prepared(l) => {
+                let (lag, corr) = l[index].clone();
+                (lag, want_correction.then_some(corr))
+            }
             StatementLagranges::OneHot { sets, branches } => {
                 let mut select =
                     |pick: &dyn Fn(&((F, F), (F, F))) -> (F, F),
@@ -104,7 +114,11 @@ pub fn statement_terms<F: PrimeField>(
                         Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
                     };
                 let l = select(&|e| e.0, sys)?;
-                let c = select(&|e| e.1, sys)?;
+                let c = if want_correction {
+                    Some(select(&|e| e.1, sys)?)
+                } else {
+                    None
+                };
                 (l, c)
             }
         })
@@ -112,29 +126,29 @@ pub fn statement_terms<F: PrimeField>(
     for e in elements {
         match e {
             StatementElement::Packed { value, num_bits } => {
-                let (lagrange, correction) = next(sys, &mut slot)?;
+                let (lagrange, correction) = next(sys, &mut slot, true)?;
                 terms.push(Term::Packed {
                     value: value.clone(),
                     num_bits: *num_bits,
                     lagrange,
-                    correction,
+                    correction: correction.expect("packed term needs a correction"),
                 });
             }
             StatementElement::Split(x) => {
                 let (y, odd) = split_field(sys, loc.clone(), x)?;
-                let (lagrange, correction) = next(sys, &mut slot)?;
+                let (lagrange, correction) = next(sys, &mut slot, true)?;
                 terms.push(Term::Packed {
                     value: y,
                     num_bits: 255,
                     lagrange,
-                    correction,
+                    correction: correction.expect("packed term needs a correction"),
                 });
-                let (lagrange, _) = next(sys, &mut slot)?;
+                let (lagrange, _) = next(sys, &mut slot, false)?;
                 terms.push(Term::Cond { bit: odd, lagrange });
             }
             StatementElement::Bool(b) => {
                 b.check(sys, loc.clone())?;
-                let (lagrange, _) = next(sys, &mut slot)?;
+                let (lagrange, _) = next(sys, &mut slot, false)?;
                 terms.push(Term::Cond {
                     bit: b.clone(),
                     lagrange,
