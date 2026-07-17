@@ -2971,3 +2971,38 @@ arbitraire) suggèrent des lincoms scalées/masquées — cohérent avec le
 chantier opt-sponge wrap (les mask-muls `keep·x` produisent des `c`
 partout où jsoo a des opt-absorbs). À traiter APRÈS la décision de design
 trim-partout, car les deux se recouvrent.
+
+## ✅ CHIRURGIE OPT-SPONGE WRAP — RÉUSSIE (commit 04e437da4b)
+
+Le blocage de la 1re tentative était le **4e maillon manqué**:
+`crate::wrap::wrap_witness` (wrap.rs:~100) est un MIROIR hors-circuit qui
+rejoue la transcript Fq pour produire les `claimed` du statement wrap — il
+absorbait encore des ZÉROS pour les slots masqués pendant que le prover
+trimmé n'absorbait rien ⇒ claimed ≠ derived ⇒ `verify: sponge digest`.
+Les 4 maillons DOIVENT bouger ensemble:
+ 1. step prover: recursions filtrées (trim), mask=None au prove
+ 2. oracles: sans masque (la preuve trimmée porte la vérité)
+ 3. circuit wrap: sg_old en opt-absorbs (keep,x)/(keep,y) — PAS de
+    pré-masquage keep·x; combinaison = Opt.Maybe côté wrap / Just côté step
+ 4. wrap_witness: SKIP des slots masqués (pas d'absorb de zéros)
++ re-padding des vecteurs WITNESS à la largeur physique là où le masque
+  décide (sg_olds dans from_parts, finalize_prev_challenges).
+
+MÉTHODE QUI A DÉBLOQUÉ: instrumenter les TROIS points à la fois
+(oracles kimchi hors-circuit / derived in-circuit / claimed in-circuit).
+derived==oracles mais ≠claimed ⇒ le coupable est le miroir, pas le
+circuit. En une exécution. (La 1re tentative devinait.)
+
+GAINS: wrap netGeneric −95→+26 ; differingRows 11158→**8992** (−2166) ;
+signature-mismatch 689→**317**. init reste 0, update/merge inchangés
+(8345/15885). Les pires formes `001c0`(−157)/`c0c01`(−108) ont disparu:
+c'étaient bien les mask-muls.
+
+PROCHAIN FILON WRAP: couple sign-flip `c0c00` j0/r55 (+55) vs `cc000`
+j136/r83 (−53), dans `scale_fast2 h_minus_g add` (27) + `verify step
+proof` (28). Lecture des formes: jsoo émet un **Equal(Var,Var) scalé**
+(`[c,c,0,0,0]` = s1·x1 − s2·x2 = 0) là où nous émettons un **reduce_to_v**
+(`[c,0,c,0,0]` = s·x − sx = 0). Chercher dans plonk_curve_ops.rs
+scale_fast2 / add_fast(h, g.negate()) l'endroit où OCaml fait un
+`Field.Assert.equal` de deux lincoms scalées au lieu de matérialiser une
+variable scalée. Puis `c1c0c` +36 (finalize/ft_eval0/env).
