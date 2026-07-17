@@ -3072,3 +3072,49 @@ Attribution actuelle de `c1c0c` (+36, forme `[c,1,c,0,c]` vs jsoo
 `[1,1,c,0,c]` — 1er coeff scalé vs nu, donc encore un seal/opérande
 matérialisé manquant): 16 nu, 7 ft_eval0, 5 env, 5 verify step proof,
 4 cip check, 4 b check. Diffus ⇒ traiter APRÈS runDiffs.
+
+## ÉTAT FIN SESSION 3 — reprise ici
+
+Tout pushé sur `pickle-rs`, recorded 21/21 à chaque commit, **init
+differingRows=0** (byte-identique) en permanence.
+
+MESURES ACTUELLES (après les 5 fixes ci-dessous):
+  init    runDiffs 0    net +0    differingRows 0 ✅
+  update  runDiffs 42   net +37   8613   formes 123
+  merge   runDiffs 224  net +73   17952
+  wrap    runDiffs 197  net +26   8992   formes 211 (était 689)
+
+⚠ differingRows n'est PAS une métrique de progrès tant que le placement
+diverge: retirer/ajouter 1 ligne décale tout l'aval et désaligne la
+comparaison index-par-index (le fix step_main a amélioré netGeneric
++39→+37 mais fait monter differingRows 8345→8613). Suivre **runDiffs +
+netGeneric** d'abord; differingRows ne devient lisible qu'une fois le
+placement exact.
+
+FIXES LANDÉS SESSION 3 (tous = conventions littérales OCaml, aucune
+valeur changée, toutes structurelles pour la VK):
+ 1. `Boolean::all` → `equal (const n) sum` (constante à gauche). -64
+    gadgets de forme.
+ 2. `challenge_polynomial` → `f i * !r` (facteur neuf à GAUCHE).
+ 3. **opt-sponge wrap** (4 maillons: prover trim / oracles / circuit
+    opt-absorb / **wrap_witness skip**). wrap formes 689→317, rows
+    11158→8992 à ce moment-là.
+ 4. `add_fast` → `seal` des 2 points (plonk_curve_ops.ml:12). formes
+    317→211, `c0c00` 55→0.
+ 5. `step_main` → ok = `verified &&& finalized ||| not must_verify` (1
+    and + 1 or, PAS d'assert par proof) + `Boolean.Assert.all` =
+    `assert_equal (sum bs) (const n)`. net −2/proof seulement.
+
+PROCHAIN PAS — les 3 plus gros runDiffs, dans l'ordre:
+ • **update @6645 (+24)** et merge @6646/@13284 (+23 chacun): fenêtre
+   entre [CompleteAdd][CompleteAdd] et [Poseidon], 30 lignes chez nous vs
+   6 chez jsoo. Motif RÉPÉTITIF xor/mul/`-1-00` → ressemble à un
+   consume_pairs d'opt-sponge. Labels = `recursive_step.rs:4943` = le loc
+   NU de step_main, MAIS ce loc est aussi transmis à verify_one ⇒ ces
+   lignes viennent probablement de la QUEUE de verify_one (candidat:
+   `hash_messages_for_next_step_proof_opt`, l'ANCIEN digest opt-sponge,
+   ou la ré-émission de la sponge d'index). ACTION: sous-labelliser
+   verify_one (step_verifier.rs) phase par phase — c'est ce qui a
+   débloqué @892 et le wrap. NE PAS deviner: labelliser puis mesurer.
+ • **wrap @2354 (+53)**: ancre CompleteAdd, j226/r279.
+ • wrap @2046 (−10), @0 (−8); update @764 (+8), @892 (+7), @6 (−4).
