@@ -4210,17 +4210,26 @@ ces assert_on_curve sont sur w_comm/z_comm/t_comm ou delta/sg. Ordre
 Bulletproof.typ = lr, z1, z2, delta, sg ⇒ delta/sg APRÈS wt2 (comme
 rust). Les 2 points en trop côté jsoo sont donc des commitments
 (w_comm/z_comm/t_comm, checkés AVANT lr). COMPTAGE (marqueur coeff 05 =
-constante de courbe) : jsoo 101 points assert_on_curve, rust 99 (Δ=2) ;
-les 2 en trop sont aux rows jsoo 237/239, juste avant la branch-data —
-donc les DERNIERS commitments checkés = `t_comm` (ordre vk[6 sél + 15
-coeff + sigma_init(6) + sigma_last(1)], puis messages[w_comm, z_comm,
-t_comm]). rust `d.t_comm = wrap_proof.commitments.t_comm.chunks` — donc
-le proof donor/bootstrap du compile a probablement 2 chunks t_comm de
-MOINS que celui de jsoo (kimchi standard = 7 chunks quotient). PROCHAINE
-SONDE : vérifier le nb de chunks t_comm (et w_comm) du proof bootstrap
-rust vs OCaml (per_proof_witness.ml typ ~num_chunks) ; s'il manque 2
-chunks t_comm, les ajouter au donor. C'est un trou de soundness AUSSI
-(2 points de courbe non contraints).
+constante de courbe) : jsoo 101 assert_on_curve, rust 99 (Δ=2), les 2 en
+trop aux rows jsoo 237/239 JUSTE avant wt2(z1). RÉFUTÉ : t_comm = 7 chunks
+des DEUX côtés (mina_bin_prot.rs:35 `[(Fp,Fp);7]` + assert :380). RÉFUTÉ :
+delta/sg APRÈS wt2 (OCaml plonk_types.ml:1436-1440 record openings =
+lr, z_1, z_2, delta, challenge_polynomial_commitment ; rust idem). RÉFUTÉ :
+prev_challenge_polynomial_commitments checkés à recursive_step.rs:4730,
+APRÈS wt2 (= dernier élément du typ per_proof_witness, Vector Inner_curve).
+DONC les 2 points en trop sont dans vk/messages AVANT l'opening, mais
+tous les comptes standards (6 sél, coeff 15, sigma 6+1, w_comm 15, z_comm
+1, t_comm 7) semblent égaux. PROCHAINE SONDE (fine) : dumper les WIRES
+c4 des mkpt jsoo J233-240 vs rust R233-236 (déjà fait : jsoo réfère
+9374/9387/9408/9421/9442, rust 6298/6311/6332 — sites d'usage aval, donc
+cascade) ; comparer la LISTE exacte de points per_proof_witness OCaml
+(per_proof_witness.ml to_hlist) vs rust champ-à-champ pour trouver les 2
+que rust ne construit/check pas. NB : attention aux branches
+data-dépendantes (recursive_step.rs:4735 `if
+messages_for_next_step_accumulators == prev_challenge_polynomial_commitments`)
+— une telle branche compile-time sur les valeurs du donor divergerait de
+jsoo (à auditer). C'est un trou de soundness POSSIBLE (2 points non
+contraints).
 RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
 wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
