@@ -4104,3 +4104,32 @@ RESTE pour add/side-loaded : commitments 0/28 = les OCTETS des circuits
 (update 36 / merge 41 / wrap 18 runDiffs) — c'est EXACTEMENT le plan
 lincom per-constraint déjà écrit (doublon J1981). Pins : mina-rust
 Cargo.lock bumpé e55d208f (commit local — push https à faire à la main).
+
+## ITÉRATION b_actual EN COURS — état précis pour reprendre
+
+LITTÉRAL OCaml (wrap_verifier.ml:35-57, G.challenge_polynomial) :
+  pow_two_pows.(i) <- M.(y * y)   ← MUL générique (PAS square) ⇒ le
+  snarky OCaml réduit CHAQUE opérande (2 gadgets [endo,1,−1] pour
+  mul(ζ_lazy, ζ_lazy) — le doublon J1981 A+B adjacents ✓).
+  prod : r := f i * !r (terme à GAUCHE) ; terme = one + c_i·pow(k−1−i).
+NOTRE ipa.rs:50-73 challenge_polynomial_circuit : pow chain
+  prev.mul(prev) puis boucle (c.mul(pow) ; (1+scaled).mul(res)).
+NOTRE canonicalisation R1CS (constraint_system.rs:1203) réduit AUSSI
+  v1 et v2 séparément (2 reds ✓ pas de mémo — hypothèse mémo RÉFUTÉE).
+MAIS l'ENTRELACEMENT diffère (dump frais, run @847 j109/r101) :
+  jsoo J1981 : [red, red] adjacents PUIS squares (J1982-1988…).
+  rust R1925-1934 : [red,sq][sq,red][sq×6][red][red][1+c·x]… —
+  les reds éparpillés entre les squares.
+⇒ PROCHAINE SONDE (wires, 1 commande) : attribuer chaque red rust
+  (ζ ou chals — les 16 bp-chals sont AUSSI des endo-lincoms lazy) via
+  les cycles de wires comme pour J1981 (droite vers les états finaux
+  EndoMulScalar rows ~167-174 = ζ/α ; vers les trains bp = chals).
+  Ensuite aligner l'ordre d'émission de challenge_polynomial_circuit
+  terme à terme sur OCaml (la chaîne pow d'abord AVEC les 2 reds du
+  premier mul adjacents, puis les termes du prod), et vérifier de même
+  cip (combined_evaluation) dans le même run.
+CIBLE MESURABLE : wrap @847/@1694 j109→r109 ; update @892, merge @893
+  (j113-114/r105) se ferment pareil. PUIS re-décoder la VK add
+  (commitments 0/28 → doivent commencer à converger une fois les
+  steps/wrap byte-identiques ; l'ancre finale = VK_HASH jsoo
+  10959392966233509715748678308838967246207769407061667940269890557862386195723).
