@@ -2928,3 +2928,17 @@ update signature-mismatch total 123 (était ~230). Restants (r−j):
 MÉTHODE: pour chaque couple, `<sig> by label` (grep coeffs+labels) puis
 comparer la formule OCaml du gadget nommé; corriger l'ordre/forme;
 recorded 21/21; commit; re-mesurer l'histogramme.
+
+⚠ DIAGNOSTIC PROCESS BLOQUÉ (leçon session 3) : un run `recorded` a pendu
+26 min (deadlock, 52 threads en `futex_do_wait`). Le temps CPU cumulé
+(`ps aux` colonne TIME) est TROMPEUR — il montrait 5:54 et donnait
+l'illusion d'un calcul en cours. VERDICT FIABLE = échantillonner
+`/proc/<pid>/stat` (champs 14+15 = jiffies CPU) 2-3× : s'il n'AVANCE PAS
++ `cat /proc/<pid>/wchan` = futex_do_wait → deadlock certain. Comparer
+aussi elapsed (`ps -o etime=`) au CPU : 26 min écoulées pour 6 min CPU =
+anormal (run recorded normal ≈ 2 min).
+⚠ `pgrep -f "<motif>"` MATCHE SA PROPRE LIGNE DE COMMANDE → faux
+"STILL RUNNING" avec des PID à elapsed 00:00. Utiliser
+`ps -eo pid,comm | awk '$2 ~ /^recorded/'` à la place.
+⚠ TOUJOURS lancer recorded avec `timeout -s KILL 420` (le deadlock semble
+être un flake de parallélisme, pas lié aux changements de circuit).

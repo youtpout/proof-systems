@@ -60,12 +60,15 @@ pub fn challenge_polynomial_circuit<F: PrimeField>(
         let prev = &pow_two_pows[i - 1];
         pow_two_pows.push(prev.mul(prev, None, loc.clone(), sys)?);
     }
-    // product of the terms 1 + chals[i] * pt^{2^{k-1-i}}
+    // product of the terms 1 + chals[i] * pt^{2^{k-1-i}}. OCaml `prod`
+    // (step.ml:130) folds `r := f i * !r` — the NEW term is the LEFT operand
+    // of each mul, so the reduced product gate has `f(i)` in `l` and the
+    // accumulator in `r` (form parity with jsoo's `b_actual`).
     let mut res = FieldVar::constant(F::one());
     for (i, c) in chals.iter().enumerate() {
         let scaled = c.mul(&pow_two_pows[k - 1 - i], None, loc.clone(), sys)?;
         let term = &FieldVar::constant(F::one()) + &scaled;
-        res = res.mul(&term, None, loc.clone(), sys)?;
+        res = term.mul(&res, None, loc.clone(), sys)?;
     }
     Ok(res)
 }

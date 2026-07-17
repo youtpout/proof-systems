@@ -437,10 +437,11 @@ pub fn finalize_deferred<F: PrimeField>(
     // then all of them at zetaw (`(sg_evals zeta, sg_evals zetaw)`).
     let mut sg_at_zeta = Vec::with_capacity(witness.prev_challenges.len());
     let mut sg_at_zetaw = Vec::with_capacity(witness.prev_challenges.len());
+    let sg_evals_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | sg_evals"));
     for old_challenges in &witness.prev_challenges {
         sg_at_zeta.push(crate::ipa::challenge_polynomial_circuit(
             sys,
-            loc.clone(),
+            sg_evals_loc.clone(),
             old_challenges,
             &witness.zeta,
         )?);
@@ -448,7 +449,7 @@ pub fn finalize_deferred<F: PrimeField>(
     for old_challenges in &witness.prev_challenges {
         sg_at_zetaw.push(crate::ipa::challenge_polynomial_circuit(
             sys,
-            loc.clone(),
+            sg_evals_loc.clone(),
             old_challenges,
             &zetaw,
         )?);
@@ -475,8 +476,9 @@ pub fn finalize_deferred<F: PrimeField>(
         // step (Type1) constrains both xi halves; wrap (Type2) only the high
         xi_constrain_low_bits: matches!(params.shift, ShiftKind::Type1),
     };
-    let (xi_actual, r_actual) = squeeze_xi_r(sys, loc.clone(), &sponge_inputs)?;
-    let xi_correct = xi_actual.equal(sys, loc.clone(), &witness.xi)?;
+    let fr_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | fr-sponge"));
+    let (xi_actual, r_actual) = squeeze_xi_r(sys, fr_loc.clone(), &sponge_inputs)?;
+    let xi_correct = xi_actual.equal(sys, fr_loc, &witness.xi)?;
     let xi_field = scalar_to_field(
         sys,
         Cow::Owned(format!("{loc} | xi to_field")),
@@ -633,14 +635,14 @@ pub fn finalize_deferred<F: PrimeField>(
     }
     let b_derived = b_actual(
         sys,
-        loc.clone(),
+        Cow::Owned(format!("{loc} | b_actual")),
         &challenges,
         &witness.zeta,
         &zetaw,
         &r_field,
     )?;
     let b_claimed = params.shift.to_field(&witness.b_repr);
-    let b_correct = b_derived.equal(sys, loc.clone(), &b_claimed)?;
+    let b_correct = b_derived.equal(sys, Cow::Owned(format!("{loc} | b check")), &b_claimed)?;
 
     // Step 10: the PlonK relation (the deferred permutation scalar)
     let perm_derived = crate::ft_eval_circuit::perm_scalar_circuit(
