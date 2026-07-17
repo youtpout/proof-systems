@@ -129,7 +129,11 @@ where
         let xs: Vec<_> = xs.iter().map(|x| &x.0).collect();
         let sum = FieldVar::sum(&xs);
 
-        sum.equal(cs, loc, &expected)
+        // OCaml `Boolean.all` (utils.ml:245) is `equal (constant n) (sum)` —
+        // the CONSTANT is the first operand, so the reduced difference is
+        // `n - sum` (gadget `[c,-,-,0,c]`), not `sum - n` (`[c,1,-,0,c]`).
+        // The truth value is identical; only the gate form must match jsoo.
+        expected.equal(cs, loc, &sum)
     }
 
     pub fn to_constant(&self) -> Option<bool> {
