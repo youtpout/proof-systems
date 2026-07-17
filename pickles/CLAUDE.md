@@ -4196,8 +4196,18 @@ x_eq.and(b_eq) (4558) } ; Boolean::any (4561) ; any.not().assert_equals(1)
 classe que les fixes wrap (placement de gadget equal/and/any). C'est le
 front STEP : le step VK absorbé dans le wrap propage ses ≠ dans les
 coeff commitments — donc fermer update/merge fait converger coeff[0..9].
-SONDE : lire l'OCaml Other_field.check (per_proof_witness.ml) + comparer
-la séquence equal/and/any de `wt2` gadget-à-gadget.
+FIX #1 (b37ea559be) : `odd.check()` manquait dans wt2 — OCaml
+`Other_field.check` (impls.ml:100) fait `typ_unchecked.check t` (Boolean
+check du bit odd) AVANT la boucle. Trou de soundness + 1 gate en moins.
+step update 8485→7049, merge 14918→14590. MAIS reste +3 (run 205/202) :
+la 1re ≠ est maintenant à recursive_step.rs:4563 = `half.equal(const lo)`
+DANS la boucle forbidden (jsoo `1######1##` vs rust `1#######1#` — proche,
+≠ de packing/gadget) puis `and` (4565) `Boolean::any` (4568). C'est la
+séquence equal/and/any de wt2 (2 appels z1/z2). PROCHAINE SONDE : comparer
+`Boolean::any` rust (assert_non_zero(sum) ?) et `x_eq.and(b_eq)` à l'OCaml
+`Boolean.(&&)` / `Boolean.any` gadget-à-gadget ; le +3 restant y est.
+RAPPEL : la VK ne bougera (>12/28) que quand le STEP diff atteint 0 (le
+wrap absorbe la step VK). Mesurer avec `decode_and_diff_add_vk_against_jsoo`.
 
 ## ITÉRATION EN COURS — parité de PACKING double-generic + wiring (wrap)
 
