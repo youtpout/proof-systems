@@ -3876,3 +3876,40 @@ re-témoignés à dédupliquer).
    seal — comparer à NOTRE émission de zetaw (labels `| zetaw`).
  • Après ça : re-LCS ciblé du run @847 (109 vs 101) maintenant que
    b_actual est zetaw-first — le delta résiduel sera plus lisible.
+
+## ★ LE −8/FINALIZE EST ÉLUCIDÉ (sonde wires J1981) — À IMPLÉMENTER
+
+Les deux gadgets-graines J1981 `[−C, 1, −1, 0, 0]` : C = 0x6819a58283e5
+28e511db4d81cf70f5a0fed467d47c033af2aa9d2e050aa0e50 = **−endo mod q**
+(le gadget est `o = endo·a + b`). Leurs wires prouvent que A et B
+réduisent LE MÊME couple (a,b) (cycle A.l→B.l→174.4 : les états finaux
+du train EndoMulScalar rows 167-174 = le to_field de ζ) — c'est-à-dire
+LE MÊME LINCOM RÉDUIT DEUX FOIS.
+
+MÉCANISME : OCaml `scalar_to_field` = `SC.to_field_checked` retourne le
+LINCOM LAZY `a·endo + b` (les rows EndoMulScalar ne produisent pas de
+var finale). `map_plonk_to_field` (wrap_verifier.ml:1485-1489) ne SELLE
+que les challenges simples (β,γ via ~f:Util.Wrap.seal) — PAS les scalar
+challenges (~scalar:scalar_to_field, α,ζ) ni ξ/r (:1616-1618). Donc
+CHAQUE usage de ζ/α/ξ/r re-réduit le lincom = 1 gadget `[endo,1,−1]`
+à CHAQUE site de consommation : zetaw (S2), sg_evals (S3), zeta_n (S6,
+×2 le même — J1981 !), env/vanishing (S7), cip (ξ, r), b_correct (r)…
+≈ 16 gadgets = 8 lignes par finalize. NOUS, on selle le résultat de
+scalar_to_field UNE fois ⇒ −8/finalize sur les 3 circuits (update @892,
+merge @893, wrap @847/@1694 — tous j−8 exactement).
+
+FIX À FAIRE (début de prochaine session, changement LARGE) :
+ • notre `scalar_to_field` (scalar_challenge.rs) doit RETOURNER le
+   lincom lazy (endo·a + b, pas de seal/gadget de clôture) ;
+ • chaque consommateur re-réduit naturellement (notre reduce à l'usage
+   existe — cf. la réfutation lazy-lagrange : c'est le même mécanisme,
+   ici il joue POUR nous) ;
+ • ATTENTION aux 16 bp-challenges (compute_challenges) : usage unique
+   chacun ⇒ même nombre de gadgets mais POSITION déplacée (dans les
+   chaînes b_actual au lieu du site to_field) — prévoir le déplacement
+   dans la prédiction ;
+ • ATTENTION : β/γ SONT sellés (seal explicite) — ne pas les laisser
+   lazy ; et le step (step_verifier.ml:~994+) a la même structure.
+ • PRÉDIRE : +8 lignes/finalize chez nous, dissolution de @892/@893/
+   @847/@1694 ; vérifier par le motif [endo,1,−1] dupliqué chez nous
+   aux mêmes positions que jsoo (dont le doublon J1981).
