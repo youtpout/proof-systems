@@ -3791,3 +3791,65 @@ check — fenêtre bruitée, à relire après le prochain fix), la
 relocalisation x_hat net-0 (bloc +24 vs 11×j2/r0, voir réfutation n°4),
 et des ±1 de phase. STEP : @6 (−4, 3 circuits, recursive_step.rs:4420),
 @892 (+2), et des ±1.
+
+## ═══ BILAN DE SESSION (2026-07-17, suite) — runDiffs 111/121/197 → 36/41/18
+
+COMMITS (ordre) : 616ddb5cd3 (split_field à l'éval d'argument + Bool
+réutilisés), 64c975348b (tête wrap : −is_base_case, dédup prev_step_accs,
+domaine wrap sélectionné en circuit), 045f7d3f63 (zeta_to_srs_length
+lazy), 03c5d7e2a9 (Assert.any + claimed-first step-path), 5fcc5ce181
+(dédup equals wrap-path), 478fe699a1 (chaîne zetaw d'abord dans
+b_actual). recorded 21/21 à CHAQUE étape ; init byte-identique partout.
+
+SCOREBOARD (runDiffs / netGeneric / differingRows) :
+  début session→ fin : update 111/+6/7296 → **36/−12/7440**
+                       merge  121/+13/15309 → **41/−24/14665**
+                       wrap   197/+2/8654  → **18/−17/11721**
+                       init   0 (canari, jamais bougé)
+
+RÈGLES NEUVES (à réutiliser, toutes vérifiées littéral + mesure) :
+ • Ligne Generic kimchi = [NOUVEAU ; PENDING] (plonk_constraint_system.
+   ml:1452-1461) ⇒ la répartition en lignes dépend de la PARITÉ amont ;
+   une queue de runDiffs net-0 = cascade de phase, ne pas la chasser.
+ • Les λ paresseux OCaml (`lazy`) n'émettent qu'au PREMIER force réel —
+   chercher le site de force AVANT d'émettre eager (zeta_to_srs_length :
+   jamais forcé en single-chunk).
+ • `a + (b * c)` : args droite-à-gauche ⇒ le terme DROIT s'émet d'abord
+   (chaînes zetaw avant zeta dans b_actual — effet MASSIF sur les runs
+   step car les chaînes y sont distinguables).
+ • Un DUPLICATA à nous peut MASQUER un manque réel : la dédup des equals
+   wrap a fait passer @847 de +2 à −8 — le vrai trou était couvert.
+ • `Boolean.Assert.any` = assert_non_zero(somme) SANS gate OR ;
+   `Boolean.all` (n≥3) = equal(constante n, somme) — constante en 1er.
+ • Les equals de finalize sont CLAIMED-first (cip :1732, b :1755, perm
+   plonk_checks:473) SAUF xi (actual-first, :1613).
+
+L'ANOMALIE UNIQUE RESTANTE DES FINALIZE (−8/finalize, LES 3 CIRCUITS —
+update @892 j113/r105, merge @893 j114/r105, wrap @847/@1694 j109/r101):
+jsoo a ~16 gadgets mult (`001-0`) consécutifs + 2 `c1-00` dans la zone
+b/sg_evals que nous n'émettons pas. Piste : une application de
+challenge_polynomial (chaîne de puissances 15 carrés + produits) émise
+DEUX fois côté jsoo là où nous une (staged closure appliquée 2× ? ou
+sg_evals au MAUVAIS endroit chez nous — nos labels `zetaw`/`sg_evals`
+apparaissent APRÈS les EndoMulScalar alpha/zeta du proof suivant,
+jsoo AVANT). ⇒ SONDE À FAIRE (session suivante, contexte frais) :
+  1. rawrange + wires sur jsoo j1981-1990 (wrap) : à quoi sont câblés
+     les 16 mults (vers les OLD challenges ⇒ sg_evals ; vers les NEW ⇒
+     b_actual ; vers zetaw ⇒ chaîne zetaw).
+  2. Compter les gadgets d'UNE application challenge_polynomial_circuit
+     chez nous (labels) vs le bloc jsoo.
+  3. Vérifier l'ORDRE de nos émissions de tête de finalize_deferred vs
+     OCaml Step 1-6 : map_plonk_to_field (EndoMulScalar α/ζ),
+     zetaw (mult gén. masqué), sg_olds/sg_evals (chaînes anciennes),
+     digest absorb… — wrap_verifier.ml:1529-1546. Nos zetaw/sg_evals
+     semblent DÉCALÉS après les to_field.
+RESTE AUSSI : step @6 (−4, domain_for_compiled : equals DESCENDANTS
+distinguables par constantes 10/14/15 — notre SelectedDomain::create est
+ascendant — ET des mults jsoo en plus, peut-être l'Opt_sponge du
+challenge_digest) ; @764 (−1 phase) ; paires CompleteAdd ±1 (phase) ;
+wrap : famille relocalisation x_hat net-0 (réfutation n°4 documentée),
+@1523/@1542 (±1), @1574 (−1). PUIS : la phase WIRING (leads parqués :
+vars des slots Field du statement à réutiliser depuis unf_deferred
+[jsoo wire 1765.3], ordre de témoignage unf_deferred = ordre spec OCaml
+[5fq;digest;β,γ;α,ζ,ξ;bp16;bool] avec zsrs/zdom witnessés, slots Packed
+re-témoignés à dédupliquer).
