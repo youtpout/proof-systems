@@ -78,6 +78,41 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### CAMPAGNE SIDE-LOADED (tâche #13) — SCOPING MESURÉ (2026-07-19)
+Harnais : o1js `src/tests/tmp-sideloaded-gates-diff.ts` (MODE=jsoo|rust),
+dumps `/tmp/claude-1000/sl-gates-{jsoo,rust}.json` + `sl-branches.json`.
+Mesures : step jsoo **PI=34 (WIDTH-1 !)** vs rust PI=67 (width-2 forcé) ;
+histogrammes très différents (jsoo step 1923 Generic/2541 Poseidon vs rust
+2672/2596 ; wrap jsoo 1540 VarBaseMul vs rust 2417) ; branche rust : pv=1,
+**aux=4478** (le `proof.verify(vk)` de DynamicProof a été ENREGISTRÉ comme
+contraintes d'app par le recorder — double machinerie au lieu d'un gadget
+side-loaded natif), `previous_state_slots=[]` (le chemin SmartContract ne
+passe pas par le collecteur de zkprogram.ts).
+**Trois volets à exécuter, dans cet ordre :**
+1. **WIDTH-1 pour les programmes max-pv=1** : OCaml compile à la largeur du
+   programme (width-1 : statement 34 = 17+15+2, wrap étroit 2^14, masques 1
+   accumulateur). Le pipeline recorded force width-2 partout (72 usages de
+   RECORDED_N2_*). Les primitives width-1 EXISTENT (RecursiveStepCircuit
+   legacy, width1_step_statement_len, prepare width-1) — paramétrer
+   compile_with_debug_stage/steps/wrap par max_pv. Valider incrémentalement
+   contre sl-gates-jsoo.json (PI d'abord, puis histogrammes, puis diff
+   positionnel). ⚠️ garder add/bench (width-2) byte-identiques.
+2. **Gadget side-loaded NATIF dans le step** : ne PAS enregistrer le verify
+   de DynamicProof comme app (o1js TS : détecter side-loaded au recording,
+   l'exclure de l'app, le déclarer en méta de branche avec la position de
+   l'arg vk) ; côté rust, per-proof input en saveur side-loaded : VK
+   witnessée depuis l'ARG (liée, pas re-witnessée), digest+feature flags
+   comme OCaml side_loaded.ml, enfant maxPV=0 → wrap 2^13 dans les domaines
+   finalize. La machinerie witness-vk existe déjà (les steps traitent déjà
+   la wrap VK en witness) — c'est le câblage arg→witness + masques flags.
+3. **Slots SmartContract** : le collecteur previous_state_slots est branché
+   dans rustPicklesOutputFieldsForMethod (zkprogram) ; les méthodes de
+   SmartContract passent par un autre chemin (zkapp.ts) — y brancher le même
+   declareRecordedPreviousState (DynamicProof statement fields).
+Cibles de validation : PI 34/34, histogrammes égaux, diff positionnel 0,
+VK == 2268640726…0736392 (jsoo stock+branche), VkParity 2/2 et recorded
+22/22 + decode 28/28 inchangés.
+
 ### GATE ZKAPP-RUST (2026-07-19) : ZkPrograms 4/4 ✓ ; side-loaded ✗ (tâche #13)
 `zkapp-rust/contracts` : `test:vk-parity` **2/2** — square (width-0) et add
 (récursif) donnent le MÊME hash de VK sur les 4 backends (jsoo-wasm,
