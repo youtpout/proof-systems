@@ -3141,7 +3141,6 @@ impl RecordedCompiledProgram {
             "wrap final compile",
             crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
         );
-        let final_wrap_vk = crate::api::wrap_verification_key_points(&wrap_indexes.1);
 
         // Guard the single-pass premise: swapping branch VK values must not
         // move any structural field the alignments consume. A violation here
@@ -3167,16 +3166,13 @@ impl RecordedCompiledProgram {
             );
         }
 
-        // The stored template pads unfilled proof slots at prove time, so it
-        // must be consistent with the final wrap key.
-        let template = phase!(
-            "final template prove",
-            crate::api::prove_base_case::<RecordedProgramTemplateApp, 16, 40>(
-                RecordedProgramTemplateApp,
-                (),
-                final_wrap_vk.clone(),
-            )
-        );
+        // The stored template pads unfilled proof slots at prove time. Its
+        // values are witness-only there — dummy slots are masked and their
+        // messages travel inside each proof — so the embedded/bootstrap
+        // template serves as well as one re-proved against the final wrap
+        // key. OCaml pads with the same fixed `Pickles.Dummy` values for
+        // every program and never proves at compile time.
+        let template = phase!("final template prove", template);
 
         Ok(Self {
             branches,
