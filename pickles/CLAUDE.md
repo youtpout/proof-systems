@@ -20,13 +20,33 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
-**Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
-Wrap frais : **0 coeff** / **20 wires** (1re @4021), soit 20 lignes full-diff
-sur 16384. **VK 22/28** : tous les coefficients et sélecteurs matchent ; il
-reste uniquement **σ[0..5]** (wires du wrap). Les anciennes divergences de
-valeurs step-VK @138 ont convergé avec les steps, puis le bloc coefficients
-@4741 a été résolu par l'ordre des paires Lagrange ci-dessous.
+## REPRISE (état exact 2026-07-18 — OBJECTIF CIRCUITS/VK ATTEINT)
+**Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓ ; wrap
+**0/0** ✓✓. Le dump wrap frais contient 16384 lignes et `full-diff.mjs`
+retourne **0 differing rows** (types, coefficients et wires).
+
+`decode_and_diff_add_vk_against_jsoo` retourne **28/28 commitments** :
+`sigma[0..6]`, `coefficient[0..14]` et les six sélecteurs matchent tous.
+Suites finales : recorded **21/21**, lib **112/112**.
+
+### JALON FINAL : WRAP 20→0 wires, VK 22/28→28/28
+Les 20 derniers wires appartenaient à trois manifestations d'une même règle
+OCaml droite-à-gauche :
+- les hashes `prev_msgs_wrap` sont émis du dernier unfinalized au premier,
+  puis le vecteur logique est restauré avant de threader les deux digests dans
+  le statement ;
+- `old_bp_chals` est lui aussi witnessé droite-à-gauche. Il faut réutiliser
+  chaque vecteur logique pour son propre hash : cela produit les mêmes cvars
+  croisés observés dans les cycles jsoo sans jamais échanger les valeurs ;
+- le vecteur hôte `sg_olds` est stocké en ordre physique inversé, les aliases
+  `prev_step_acc` sont croisés, puis le vérificateur remet le vecteur dans
+  l'ordre logique. Le miroir hors-circuit continue de calculer le witness dans
+  l'ordre logique, donc N1/N2 restent satisfaisables.
+
+Deux derniers détails complètent les six lignes résiduelles : les composantes
+`y` puis `x` des deux `Field.if_` de `combine_commitments`, et la constante de
+digest dummy programme recalculée avec son type physique normalisé `[2]`.
+Le slot width-1 initial n'est plus le placeholder zéro : il porte `d.stmt[11]`.
 
 ### JALON : WRAP = 0 coeff, VK 22/28 — paires Lagrange droite-à-gauche
 La frontière @4741 était le premier `statement_terms` à domaine sélectionné.
@@ -51,21 +71,19 @@ accumulateurs @4021/@4046/@4228/@4241. `mkpts` émet désormais en reverse puis
 reverse son résultat. Coeffs wrap toujours 0 ; recorded **21/21**, lib
 **112/112**.
 
-### Wires wrap : 81→20, frontière 304→4021 — partage croisé old_bp
+### Wires wrap : 81→20, frontière 304→4021 — diagnostic old_bp
 Les deux blocs de 15 divergences de finalisation et les 35 lignes des hashes
 étaient une seule famille. Les cycles jsoo montrent que le premier bloc
 `finalize` @304..485 partage ses challenges avec le **second** accumulator
 hash @4034..4215, et inversement pour le second bloc @2134..2315.
 
-Le partage est donc croisé au niveau extérieur des deux `unfinalized` (padding
-H-list vs ordre physique de `Vector.map2 prev_step_accs old_bp_chals`), sans
-inverser les deux vecteurs internes ni leurs 15 challenges. Le circuit réutilise
-les cvars de l'entrée opposée. Important : la première sonde ne croisait que
-les cvars et faisait échouer
-`recorded_program_compiles_n0_n1_n2_with_one_wrap_key` en
-`DisconnectedWires`; `prepare_program_recursive_wrap` croise maintenant aussi
-les VALEURS `hash_old_bulletproof_challenges` après le front-padding. Test
-ciblé repassé, puis recorded **21/21**, lib **112/112**. Coefficients wrap 0.
+La première implémentation croisait les cvars puis les valeurs au niveau
+extérieur des deux `unfinalized`. Elle atteignait 20 wires et passait les tests
+tant que les digests recalculés n'étaient pas directement threadés, mais elle
+était sémantiquement fausse pour N2. Le correctif final alloue simplement les
+deux `old_bp_chals` droite-à-gauche puis reverse le résultat logique : chaque
+hash réutilise son propre vecteur. Les indices de cvars sont identiques à la
+sonde croisée, les valeurs ne le sont jamais. Voir le jalon final ci-dessus.
 
 ### Wires wrap : 181→81, frontière 174→304 — threader prev_proof_state
 Rust retémoignait presque tout `w.step_statement` avant `x_hat`, alors que le

@@ -941,8 +941,9 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // both as `~sg_old` for the verifier and as the per-proof accumulator
         // in the previous-accumulator hashes (:425-431). The physical sg_olds
         // and the per-unfinalized prev_step_acc carry the same values in the
-        // same order (both front-padded with the canonical dummy), so a second
-        // witness would add on-curve rows jsoo does not have.
+        // same logical values. The stored sg vector is in OCaml's physical
+        // witness order, so the alias index is crossed below; a second witness
+        // would add on-curve rows jsoo does not have.
         let sg_olds = mkpts(sys, &w.sg_olds)?;
         if !w.unfinalized.is_empty() {
             assert_eq!(
@@ -951,16 +952,17 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 "one physical sg_old per unfinalized proof"
             );
             for (k, u) in w.unfinalized.iter().enumerate() {
+                let sg_index = w.sg_olds.len() - 1 - k;
                 assert_eq!(
-                    u.prev_step_acc, w.sg_olds[k],
-                    "prev_step_acc must alias sg_olds[{k}]"
+                    u.prev_step_acc, w.sg_olds[sg_index],
+                    "prev_step_acc must alias sg_olds[{sg_index}]"
                 );
             }
         }
         // `old_bp_chals` (wrap_main.ml:306): the old bulletproof challenge
         // vectors (both the finalize copy and the accumulator-hash copy).
         let mut finalize_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
-        for u in &w.unfinalized {
+        for u in w.unfinalized.iter().rev() {
             let old_bulletproof_challenges = u
                 .old_bulletproof_challenges
                 .iter()
@@ -968,6 +970,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 .collect::<SnarkyResult<Vec<_>>>()?;
             finalize_old_bp_chals.push(old_bulletproof_challenges);
         }
+        finalize_old_bp_chals.reverse();
         let cross_shared = w.unfinalized.len() == 2
             && w.unfinalized.iter().enumerate().all(|(i, u)| {
                 u.hash_dummy_challenges.is_empty()
@@ -976,7 +979,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             });
         let mut unf_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
         for (i, u) in w.unfinalized.iter().enumerate() {
-            let hash_old_bulletproof_challenges = if cross_shared {
+            let hash_old_bulletproof_challenges = if u.hash_old_bulletproof_challenges
+                == u.old_bulletproof_challenges
+            {
+                finalize_old_bp_chals[i].clone()
+            } else if cross_shared {
                 finalize_old_bp_chals[1 - i].clone()
             } else {
                 u.hash_old_bulletproof_challenges
@@ -1070,7 +1077,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sponge_digest_before_evaluations: deferred.sponge_digest_before_evaluations,
                 should_finalize: deferred.should_finalize,
                 old_bulletproof_challenges: old_bp,
-                prev_step_acc: sg_olds[unfinalized.len()].clone(),
+                prev_step_acc: sg_olds[sg_olds.len() - 1 - unfinalized.len()].clone(),
                 hash_dummy_challenges: u.hash_dummy_challenges.clone(),
                 hash_old_bulletproof_challenges: hash_old_bp,
             });

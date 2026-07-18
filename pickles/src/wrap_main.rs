@@ -253,7 +253,7 @@ where
     }
     // OCaml computes the previous accumulator digests in a SECOND pass over
     // the unfinalized proofs (wrap_main.ml:423-427), after every finalize.
-    for u in unfinalized {
+    for u in unfinalized.iter().rev() {
         prev_msgs_wrap.push(sys.with_label(
             Some(Cow::Borrowed("wrap_main: previous accumulator hash")),
             |sys| {
@@ -267,6 +267,7 @@ where
             },
         ));
     }
+    prev_msgs_wrap.reverse();
 
     // OCaml `exists openings_proof` (:440) then `exists messages` (:470):
     // witnessed here, after finalize/hash-prev, before the verifier.
@@ -283,7 +284,10 @@ where
     // that second assert.
     let mut expanded_elements: Vec<StepStatementElement<F>> =
         Vec::with_capacity(step_statement_elements.len() * 2);
-    for element in step_statement_elements {
+    let previous_wrap_digest_start = step_statement_elements.len() - prev_msgs_wrap.len();
+    for (index, element) in step_statement_elements.iter().enumerate() {
+        let computed_wrap_digest = (index >= previous_wrap_digest_start)
+            .then(|| prev_msgs_wrap[index - previous_wrap_digest_start].clone());
         match element {
             StepStatementElement::Split(x) => {
                 let (y, odd) = crate::plonk_curve_ops::split_field(sys, loc.clone(), x)?;
@@ -295,7 +299,7 @@ where
             }
             StepStatementElement::Packed { value, num_bits } => {
                 expanded_elements.push(StepStatementElement::Packed {
-                    value: value.clone(),
+                    value: computed_wrap_digest.unwrap_or_else(|| value.clone()),
                     num_bits: *num_bits,
                 });
             }
@@ -318,6 +322,7 @@ where
         "one mask bit per physical sg_old"
     );
     let sg_old_mask: Vec<Boolean<F>> = actual_proofs_verified_mask.iter().rev().cloned().collect();
+    let verifier_sg_olds: Vec<Point<F>> = sg_olds.iter().rev().cloned().collect();
     let verify_loc = Cow::Borrowed("wrap_main: verify step proof");
     let success = verify::<F, C>(
         sys,
@@ -325,7 +330,7 @@ where
         IndexDigest::ComputeFromVk,
         true,
         vk,
-        sg_olds,
+        &verifier_sg_olds,
         &sg_old_mask,
         XHatInput::Statement {
             elements: &expanded_elements,

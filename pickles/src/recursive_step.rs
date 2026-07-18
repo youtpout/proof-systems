@@ -471,24 +471,24 @@ pub fn align_program_recursive_wrap_finalize_index<
 
 /// The canonical `messages_for_next_wrap` digest of a DUMMY program slot:
 /// what the shared wrap recomputes for an inactive slot
-/// (`hash(Wrap_hack padding, dummy challenges, dummy sg)`), embedded into the
-/// step statement's Fp. One protocol constant, shared by the statement
-/// builders and the wrap binding.
+/// (`hash([], fixed-width old challenges, dummy sg)`), embedded into the step
+/// statement's Fp. One protocol constant, shared by the statement builders
+/// and the normalized wrap witness.
 pub fn program_dummy_wrap_messages_digest() -> Fp {
     static DIGEST: std::sync::OnceLock<Fp> = std::sync::OnceLock::new();
     *DIGEST.get_or_init(|| {
-        let dummy_wrap_raw_chals: Vec<Vec<Fq>> = vec![
+        let fixed_old_challenges: Vec<Vec<Fq>> = vec![
             crate::dummy::pasta_ipa_wrap_and_step()
                 .0
-                .prechallenges
+                .challenges_computed
                 .clone();
             crate::common::MAX_PROOFS_VERIFIED
         ];
         let sg = crate::dummy::pasta_dummy_step_sg();
         let digest = crate::hash_messages::hash_messages_for_next_wrap_proof_ref(
             Pallas::sponge_params(),
-            &dummy_wrap_raw_chals,
             &[],
+            &fixed_old_challenges,
             (sg.x, sg.y),
         );
         embed_fq_to_fp(digest)
@@ -2098,7 +2098,7 @@ fn prepare_recursive_step_from_parts<
         &sw,
         xi2_raw,
         new_digest,
-        Fp::from(0u64),
+        data.stmt[11],
         true,
     );
 
@@ -2344,7 +2344,8 @@ pub fn prepare_recursive_step_n1<
     statement.extend(dummy_statement);
     statement.extend_from_slice(&real.statement[..per_proof]);
     statement.push(combined_digest);
-    // Slot order: dummy first, real second (N1 mask [F, T]).
+    // Logical slot order stays dummy then real; wrap_main witnesses the two
+    // hashes right-to-left and restores this order before threading them.
     statement.push(program_dummy_wrap_messages_digest());
     statement.push(real.statement[WIDTH1_INPUT_LEN - 1]);
 
@@ -3089,7 +3090,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         sg: co(&step_proof.proof.sg),
         z1_repr: embed_fp_to_fq(ww.z1_repr),
         z2_repr: embed_fp_to_fq(ww.z2_repr),
-        sg_olds: sg_olds.iter().map(co).collect(),
+        sg_olds: sg_olds.iter().rev().map(co).collect(),
         unfinalized,
         step_statement,
         step_statement_lagranges: vec![step_statement_lagranges],
@@ -3322,18 +3323,6 @@ pub fn prepare_program_recursive_wrap<
                 fixed_dummy_challenges.clone(),
             ),
         );
-    }
-    // The H-list of unfinalized proof states is front-padded, while
-    // `Vector.map2 prev_step_accs old_bp_chals` consumes the physical
-    // accumulator slots in the opposite order. Keep the host values in the
-    // same crossed layout as the cvars used by the Wrap circuit.
-    let finalize_old_challenges: Vec<_> = real_unfinalized
-        .iter()
-        .map(|u| u.old_bulletproof_challenges.clone())
-        .collect();
-    for (i, u) in real_unfinalized.iter_mut().enumerate() {
-        u.hash_old_bulletproof_challenges =
-            finalize_old_challenges[crate::common::MAX_PROOFS_VERIFIED - 1 - i].clone();
     }
     let sg_olds: Vec<Vesta> = step
         .proof

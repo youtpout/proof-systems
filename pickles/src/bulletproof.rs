@@ -83,11 +83,11 @@ pub fn combine_commitments<F: PrimeField>(
                     &scaled,
                 )?;
                 // base = if acc.non_zero then p + xi·acc else p
-                let base_x = sys.if_(loc.clone(), a.non_zero.clone(), added.x, p.x.clone())?;
                 let base_y = sys.if_(loc.clone(), a.non_zero.clone(), added.y, p.y.clone())?;
+                let base_x = sys.if_(loc.clone(), a.non_zero.clone(), added.x, p.x.clone())?;
                 // point = if keep then base else acc.point
-                let point_x = sys.if_(loc.clone(), keep.clone(), base_x, a.point.x.clone())?;
                 let point_y = sys.if_(loc.clone(), keep.clone(), base_y, a.point.y.clone())?;
+                let point_x = sys.if_(loc.clone(), keep.clone(), base_x, a.point.x.clone())?;
                 let non_zero = keep.or(&a.non_zero, loc.clone(), sys);
                 CurveOpt {
                     non_zero,
