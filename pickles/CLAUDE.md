@@ -5350,3 +5350,33 @@ sites doivent trancher par la largeur du PROGRAMME du statement hashé).
 Gates de cohérence : two_field e2e (prepare⇄circuit), tmp-w1 harness
 (jsoo), bench W2 0-diff. Restant après ça : +15 Generic wrap, +~514−témoins
 Generic step (boucle labels).
+
+## ✅✅✅ WIDTH-1 BYTE-IDENTIQUE (volet 1 TERMINÉ au niveau gates)
+
+Trois fixes (après le Wrap_hack prev-accumulator) ont amené le programme
+W1 à **0 diff sur les trois circuits** (init 512, update 16384, wrap
+16384 — dump local vs `/tmp/claude-1000/w1-gates-jsoo.json`) :
+
+1. **Step — largeur des vecteurs per-proof** (`recursive_per_proof_input`
+   prend `active`) : sur le chemin programme, les entrées du hash
+   d'accumulateur (points + on-curve checks), les `prev_challenges`
+   témoins et le masque (`Vector.trim_front`, step_main.ml:63) passent aux
+   DERNIERS `active` éléments ; la liste sg_old IPA reste à 2, préfixe =
+   point dummy CONSTANT (`Wrap_hack.Checked.pad_commitments`,
+   step_verifier.ml:547). Vecteurs témoins = `Per_proof_witness.typ
+   max_proofs_verified` (largeur du programme). → update : 0 diff.
+2. **Wrap — partage suffixe** (api.rs) : le hash d'accumulateur réutilise
+   les cvars du finalize quand `hash_old` est un SUFFIXE de `old` (le
+   préfixe étant passé en constantes pré-absorbées).
+3. **Wrap — pad du finalize en CONSTANTES** : nouveau champ
+   `WrapUnfinalizedWitnessData.constant_pad_challenges` (posé par
+   `normalize_program_unfinalized` = MAX−active) : les vecteurs de pad
+   restent DANS le finalize (évalués ET absorbés — l'élaguer coûtait
+   −55G/−77P) mais entrent en `FieldVar::constant` → leurs facteurs
+   `1 + c·pow` se replient (−15 Generic, exactement l'écart).
+
+Neutralité re-prouvée : bench W2 0 diff (dump local), recorded 22/22
+(dont two_field e2e W1). Reste pour le VK parity complet : volet 2
+(gadget side-loaded natif — `tmp-sideloaded-gates-diff`) et volet 3
+(slots `declareRecordedPreviousState` dans zkapp.ts), puis re-validation
+o1js (rebuild kimchi_napi + addon + wasm) et zkapp-rust VkParity.

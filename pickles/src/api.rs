@@ -308,6 +308,11 @@ pub struct WrapUnfinalizedWitnessData {
     pub prev_step_acc: (Fq, Fq),
     pub hash_dummy_challenges: Vec<Vec<Fq>>,
     pub hash_old_bulletproof_challenges: Vec<Vec<Fq>>,
+    /// How many LEADING `old_bulletproof_challenges` vectors are the
+    /// protocol dummy pad, entered as circuit CONSTANTS
+    /// (`Wrap_hack.Checked.pad_challenges`) rather than witnessed. Zero for
+    /// width-2 programs and every legacy path.
+    pub constant_pad_challenges: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -966,7 +971,16 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             let old_bulletproof_challenges = u
                 .old_bulletproof_challenges
                 .iter()
-                .map(|chals| wvec(sys, chals))
+                .enumerate()
+                .map(|(j, chals)| {
+                    if j < u.constant_pad_challenges {
+                        // Dummy pad below the program width: circuit
+                        // constants (`Wrap_hack.Checked.pad_challenges`).
+                        Ok(chals.iter().map(|&c| FieldVar::constant(c)).collect())
+                    } else {
+                        wvec(sys, chals)
+                    }
+                })
                 .collect::<SnarkyResult<Vec<_>>>()?;
             finalize_old_bp_chals.push(old_bulletproof_challenges);
         }
@@ -983,6 +997,17 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 == u.old_bulletproof_challenges
             {
                 finalize_old_bp_chals[i].clone()
+            } else if u
+                .old_bulletproof_challenges
+                .ends_with(&u.hash_old_bulletproof_challenges)
+            {
+                // Width-1 program: the accumulator hash absorbs the SAME
+                // cvars as the finalize's real (trailing) vectors — the
+                // constant dummy prefix was moved to `hash_dummy_challenges`
+                // (`Wrap_hack.Checked`), so only the suffix is shared.
+                finalize_old_bp_chals[i][u.old_bulletproof_challenges.len()
+                    - u.hash_old_bulletproof_challenges.len()..]
+                    .to_vec()
             } else if cross_shared {
                 finalize_old_bp_chals[1 - i].clone()
             } else {

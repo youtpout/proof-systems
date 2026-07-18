@@ -208,6 +208,7 @@ fn canonical_dummy_deferred_values() -> (WrapUnfinalizedWitnessData, [Fq; 2]) {
         prev_step_acc: (dummy_step_sg.x, dummy_step_sg.y),
         hash_dummy_challenges: vec![],
         hash_old_bulletproof_challenges: fixed_old_challenges,
+        constant_pad_challenges: 0,
     };
     (data, [shifted[2], shifted[3]])
 }
@@ -291,6 +292,11 @@ pub fn normalize_program_unfinalized(
     data.prev_step_acc = prev_step_acc;
     data.hash_dummy_challenges = old_bulletproof_challenges[..pad].to_vec();
     data.hash_old_bulletproof_challenges = old_bulletproof_challenges[pad..].to_vec();
+    // Below the program width the pad vectors stay in the finalize as
+    // CONSTANTS (`Wrap_hack.Checked.pad_challenges`): both challenge
+    // polynomials are still evaluated and absorbed, but the pad's
+    // `1 + c·pow` factors fold into lincoms.
+    data.constant_pad_challenges = pad;
     data
 }
 
@@ -892,6 +898,7 @@ fn wrap_unfinalized_from_parts(
         prev_step_acc,
         hash_dummy_challenges,
         hash_old_bulletproof_challenges,
+        constant_pad_challenges: 0,
     }
 }
 
@@ -4571,6 +4578,13 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     m4nwrap_digest: Option<&FieldVar<Fp>>,
     mds: &'a [Vec<Fp>],
     dummy_slot: bool,
+    // The program's physical width: previous-statement vectors (accumulator
+    // hash inputs, old challenge vectors, trimmed prefix mask) are witnessed
+    // at this width (OCaml `Per_proof_witness.typ max_proofs_verified` +
+    // `Vector.trim_front` in step_main); the IPA sg_old list stays at the
+    // protocol maximum, front-padded with the CONSTANT dummy commitment
+    // (`Wrap_hack.Checked.pad_commitments`).
+    active: usize,
     shared_dlog_index: Option<
         &crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
     >,
@@ -4741,12 +4755,28 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // commitments on-curve] [shifted-value forbidden blocks…].
     delta_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
     sg_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
+    let cpc_pad = if d.fixed_width_branch_data.is_some() {
+        d.prev_challenge_polynomial_commitments.len() - active
+    } else {
+        0
+    };
     let prev_cpcs: Vec<Point<Fp>> = d
         .prev_challenge_polynomial_commitments
         .iter()
-        .map(|&p| {
+        .enumerate()
+        .map(|(i, &p)| {
             if d.fixed_width_branch_data.is_some() {
-                mkpt_unchecked(sys, p)
+                if i < cpc_pad {
+                    // Front pad below the program width: the CONSTANT dummy
+                    // commitment, never witnessed (OCaml pads inside
+                    // `incrementally_verify_proof`).
+                    Ok(Point {
+                        x: FieldVar::constant(p.0),
+                        y: FieldVar::constant(p.1),
+                    })
+                } else {
+                    mkpt_unchecked(sys, p)
+                }
             } else {
                 mkpt(sys, p)
             }
@@ -4807,10 +4837,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             d.messages_for_next_step_accumulators,
             d.prev_challenge_polynomial_commitments
         );
-        for point in &prev_cpcs {
+        for point in &prev_cpcs[cpc_pad..] {
             point.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
         }
-        prev_cpcs.clone()
+        prev_cpcs[cpc_pad..].to_vec()
     } else {
         d.messages_for_next_step_accumulators
             .iter()
@@ -4912,7 +4942,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // (OCaml `branch_data.proofs_verified_mask`, used directly by
     // `step_main.ml:63`). Physical order matches the front-padded proof
     // vector: [b0 = pv≥2, b1 = pv≥1] ⇒ N0=[F,F], N1=[F,T], N2=[T,T].
-    let proofs_verified_mask = branch_mask;
+    // `Vector.trim_front` (step_main.ml:63): the accumulator-hash /
+    // finalize mask keeps the LAST `active` prefix-mask bits.
+    let proofs_verified_mask =
+        branch_mask.map(|mask| mask[mask.len() - active..].to_vec());
 
     // `prev_proof_evals` follows the wrap proof and proof state in
     // `Per_proof_witness.typ`.  These allocations emit no constraints, but
@@ -4951,13 +4984,20 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         evals,
     };
 
-    let prev_challenges = d
-        .prev_challenges
+    let chal_pad = if d.fixed_width_branch_data.is_some() {
+        d.prev_challenges.len() - active
+    } else {
+        0
+    };
+    let prev_challenges = d.prev_challenges[chal_pad..]
         .iter()
         .map(|chals| wvec(sys, chals))
         .collect::<SnarkyResult<Vec<_>>>()?;
     let finalize_prev_challenges = if d.fixed_width_branch_data.is_some() {
-        debug_assert_eq!(d.finalize_prev_challenges, d.prev_challenges);
+        debug_assert_eq!(
+            d.finalize_prev_challenges[d.finalize_prev_challenges.len() - active..],
+            d.prev_challenges[chal_pad..]
+        );
         prev_challenges.clone()
     } else {
         d.finalize_prev_challenges
@@ -5136,6 +5176,7 @@ impl<
                         .then(|| &statement[ACTIVE_PROOFS * per_proof + 1 + i]),
                     &mds,
                     dummy_slots[i],
+                    ACTIVE_PROOFS,
                     shared_index.as_ref(),
                     prealloc_prev_app_states[i].take(),
                 )?;
