@@ -78,6 +78,30 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### CAMPAGNE #13 — JALON 1 FAIT (00741f1b14) ; CARTE DU JALON 2
+✓ Jalon 1 : le main de RecursiveStepWidth2Circuit est paramétré par
+ACTIVE_PROOFS (boucles 0..A, layout A*32+1+A → 67|34, assert d'entrée).
+Neutre à A=2 : bench byte-identique, 22/22, 112/112.
+**Jalon 2 — instancier le pipeline à A=1 (max_pv≤1, hors all-N0)** :
+- Dispatch dans compile_with_debug_stage sur max_pv (déjà calculé pour le
+  donor). RECORDED_N1_STEP_STMT_LEN=34 existe déjà (width1_step_statement_len).
+- Circuit : RecursiveStepWidth2Circuit<16, 15, 34, **34**, **1**> (le
+  PUBLIC_INPUT_LEN devient 34 ; WIDTH1_INPUT_LEN inchangé 34).
+- Préparation : les arrays [RecursiveStepData; 2]/[bool; 2] restent
+  physiques (le circuit ne lit que 0..A) ; écrire les assembleurs de
+  statement 34 : n0→[dummy(32), m4nstep, m4nwrap_dummy], n1→[real(32),
+  m4nstep, m4nwrap_real] (PAS de slot dummy prépendé contrairement au
+  prepare_n1 width-2). Réutiliser program_dummy_step_statement_segment.
+- Probe/steps/wrap : instancier domain_log2/compile/steps single-pass et
+  les aligns à <.., 34, 1> ; le WRAP garde STMT_LEN=40 (mesuré jsoo=40) —
+  son WrapWitnessData reçoit des step_statements de 34 (Vec, data-driven) +
+  masques 1 accumulateur ; vérifier les absorb (l'ordre m4nwrap 1 digest).
+- Provers : prove_n0/prove_n1 du RecordedCompiledProgram en variante A=1
+  (prove_prepared_recursive_step_width2_arity<..,1> existe déjà).
+- Validation : PI 34 vs sl-gates-jsoo.json, histogrammes, flat-emit, diff 0 ;
+  et régression bench/add intacte. PUIS volets 2 (gadget side-loaded natif)
+  et 3 (slots zkapp.ts) du plan ci-dessous.
+
 ### CAMPAGNE SIDE-LOADED (tâche #13) — SCOPING MESURÉ (2026-07-19)
 Harnais : o1js `src/tests/tmp-sideloaded-gates-diff.ts` (MODE=jsoo|rust),
 dumps `/tmp/claude-1000/sl-gates-{jsoo,rust}.json` + `sl-branches.json`.
