@@ -78,6 +78,40 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### SOIRÉE 2026-07-18 — PERF COMPILE (3 fixes majeurs landés) + CAUSE VK UNIVERSELLE
+**Perf compile** (bench tmp-bench-wasm.ts, 32 cœurs, mesures du soir) :
+natif **12,2 → 7,9 s** ; wasm **30,7 → 18,7 s** (jsoo même run 18,2 s ; son
+meilleur observé 16,6 s) — VK inchangée (28/28) et cross-verify jsoo⇄rust
+true après CHAQUE fix. Commits : 50049b1739 (dummies embarqués), 2627c3c24d
+(final template prove supprimé), ab76811aa0 (donor synthétique).
+1. **Dummies embarqués** (template_dummy.rs, blob 44,6 KB include_bytes!,
+   parité OCaml Pickles.Dummy) : le compile ne PROUVE plus jamais. Générateur
+   `generate_template_dummy_blob` (ignored) + garde `template_dummy_blob_is_fresh`
+   (digests compile-only). Les valeurs ne touchent aucune constante de circuit.
+2. **`final template prove` supprimé** : le template stocké ne sert qu'à
+   padder les slots dummy au prove (masqués, messages transportés dans la
+   preuve) — le template embarqué (clé bootstrap) suffit. −4,2 s wasm.
+3. **Donor wrap synthétique** : les steps ne consomment que la STRUCTURE du
+   donor (domaine→lagranges x_hat via SRS partagé, shifts, 28 slots dont les
+   VALEURS sont du witness). Le domaine naturel dépend des tailles de
+   statement (frontière 2^14/2^15 — la table wrap_domain_log2 ne suffit PAS,
+   3 tests l'ont prouvé) → sondé par `SnarkyCircuit::domain_log2` (cs-only).
+Anatomie wasm restante (bisect seedé) : structure index 1,9 s (synthèse du
+probe + expr_linearization) ; probe domaines 4,0 s (**pv1 prepare 2,86 s vs
+pv2 0,17 s — ANOMALIE à creuser**) ; steps 5,6 s ; wrap final 1,3 s ; + SRS
+~1,3 s + pool init. Pour battre le meilleur jsoo (16,6) : élucider pv1
+prepare, puis 32x9.
+
+**CAUSE de la VK non-universelle (BenchNativeProgram 24/28)** : le corps
+applicatif est REJOUÉ via le snarky rust (RecordedApp/EmbeddedAppMain) et
+l'ordre d'émission/packing des demi-gates y diverge de jsoo pour certains
+motifs (Equal sur somme, constantes). Mesuré (tmp-bench-gates-diff.ts,
+dumps bench-gates-*.json) : init 0 diff ; update 419 lignes (287 coeffs,
+1re coeff @78 : half1 jsoo=ADD vs rust=MUL, même multiset) ; merge 738 ;
+wrap 34 (constantes step-VK). Histogrammes identiques → pur REORDER, même
+famille droite-à-gauche que la nuit. Prochain pas : dump labellisé sur
+bench-branches.json + boucle rodée. (Tâche #11.)
+
 ### VALIDATION BOUT-EN-BOUT o1js (2026-07-18, addon rebuildé au pin d86a9430)
 mina-rust `pickle-rs` bumpé → dfbb4075 (lock = proof-systems d86a9430) ;
 `npm run build:rust-backend` (PAS yarn — erreur workspace) installe
