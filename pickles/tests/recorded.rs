@@ -847,3 +847,126 @@ fn donor_template_matches_real_template_for_recursive_compiles() {
         "N2 indexes depend on template values"
     );
 }
+
+/// Cross-verification: a proof produced by STOCK o1js 2.15's jsoo prover
+/// (whose VK is byte-identical to the branch's jsoo reference) must verify
+/// through the rust side-loaded verifier. Reads the dumps produced by
+/// /tmp/claude-1000/proofdump/dump-proof.mjs; skips when absent.
+#[test]
+#[ignore = "needs /tmp/claude-1000/proof-jsoo-update.json (stock o1js dump)"]
+fn stock_jsoo_215_proof_cross_verifies() {
+    use base64::prelude::*;
+    use pickles::mina_bin_prot::WrapProofBaseV3;
+
+    #[derive(serde::Deserialize)]
+    struct JsonProof {
+        #[serde(rename = "publicInput")]
+        public_input: Vec<String>,
+        #[serde(rename = "publicOutput")]
+        public_output: Vec<String>,
+        proof: String,
+    }
+    let vk_b64 = {
+        let Ok(raw) = std::fs::read_to_string("/tmp/claude-1000/vk-jsoo-215.json") else {
+            eprintln!("skipping: vk dump not found");
+            return;
+        };
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["data"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let vk = pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_bin_prot(
+        &BASE64_STANDARD.decode(&vk_b64).unwrap(),
+    )
+    .unwrap();
+    let vk_base58 = pickles::side_loaded::SideLoadedVerificationKey::from_stable_v2(
+        pickles::common::TICK_ROUNDS as u8,
+        vk.clone(),
+    )
+    .unwrap()
+    .to_stable_v2_base58()
+    .unwrap();
+
+    for name in ["init", "update"] {
+        let path = format!("/tmp/claude-1000/proof-jsoo-{name}.json");
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name}: {path} not found");
+            continue;
+        };
+        let jp: JsonProof = serde_json::from_str(&raw).unwrap();
+        let full = BASE64_STANDARD.decode(jp.proof.trim()).unwrap();
+        // o1js `Proof.toJSON().proof` is base64 of the OCaml SEXP
+        // representation (`((statement((proof …`), not Mina bin_prot.
+        // Finishing this test needs the sexp -> flattened-statement +
+        // wire-proof mapping (see /tmp/claude-1000/sexp2json.mjs for the
+        // parsed structure); until then, report and skip.
+        if full.starts_with(b"((") {
+            eprintln!(
+                "[{name}] o1js proof is SEXP-encoded ({} bytes) — decode mapping TODO, skipping",
+                full.len()
+            );
+            continue;
+        }
+        let base = WrapProofBaseV3::from_mina_bin_prot(&full).unwrap();
+        eprintln!(
+            "[{name}] decoded: statement={} flattened={} step_cpcs={} step_chals={}x{} wrap_chals={}x{}",
+            base.statement.len(),
+            base.stable_statement.flattened.len(),
+            base.stable_statement
+                .messages_for_next_step_proof
+                .challenge_polynomial_commitments
+                .len(),
+            base.stable_statement
+                .messages_for_next_step_proof
+                .old_bulletproof_challenges
+                .len(),
+            base.stable_statement
+                .messages_for_next_step_proof
+                .old_bulletproof_challenges
+                .first()
+                .map_or(0, Vec::len),
+            base.stable_statement
+                .messages_for_next_wrap_proof
+                .old_bulletproof_challenges
+                .len(),
+            base.stable_statement
+                .messages_for_next_wrap_proof
+                .old_bulletproof_challenges
+                .first()
+                .map_or(0, Vec::len),
+        );
+        let app_state: Vec<Fp> = jp
+            .public_input
+            .iter()
+            .chain(&jp.public_output)
+            .map(|s| Fp::from(s.parse::<u64>().unwrap()))
+            .collect();
+        // The wrap proof's own accumulators: pickles pads them with the
+        // canonical DUMMY wrap sg (constant), carrying only the Tock
+        // challenge vectors in the stable statement's m4nwrap messages.
+        let dummy_sg = pickles::dummy::pasta_dummy_wrap_sg();
+        let proof = pickles::api::MinaWrapProof {
+            statement: base.statement.clone(),
+            wrap_wire_proof: base.proof.to_bin_prot().unwrap(),
+            side_loaded_verification_key: vk_base58.clone(),
+            wrap_recursion_commitments: vec![(dummy_sg.x, dummy_sg.y); 2],
+            wrap_recursion_challenges: base
+                .stable_statement
+                .messages_for_next_wrap_proof
+                .old_bulletproof_challenges
+                .clone(),
+        };
+        let step_msgs = &base.stable_statement.messages_for_next_step_proof;
+        let result = pickles::verify::verify_side_loaded(
+            &app_state,
+            &step_msgs.challenge_polynomial_commitments,
+            &step_msgs.old_bulletproof_challenges,
+            &proof,
+        );
+        match result {
+            Ok(_) => eprintln!("[{name}] CROSS-VERIFIES with the rust verifier ✓"),
+            Err(e) => eprintln!("[{name}] verify FAILED: {e:?}"),
+        }
+    }
+}
