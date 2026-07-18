@@ -2326,7 +2326,8 @@ pub fn prepare_recursive_step_n1<
     use poly_commitment::commitment::PolyComm;
 
     assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+    let active = (PUBLIC_INPUT_LEN - 1) / (18 + WRAP_ROUNDS);
+    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(active, WRAP_ROUNDS));
     let real = normalize_program_recursive_step(real);
 
     let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
@@ -2341,12 +2342,18 @@ pub fn prepare_recursive_step_n1<
     let per_proof = 17 + WRAP_ROUNDS;
     let dummy_statement = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
     let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
-    statement.extend(dummy_statement);
+    // Width 2 front-pads the single real proof with a dummy slot; width 1
+    // has exactly the real slot.
+    for _ in 0..active - 1 {
+        statement.extend_from_slice(&dummy_statement);
+    }
     statement.extend_from_slice(&real.statement[..per_proof]);
     statement.push(combined_digest);
-    // Logical slot order stays dummy then real; wrap_main witnesses the two
+    // Logical slot order stays dummy then real; wrap_main witnesses the
     // hashes right-to-left and restores this order before threading them.
-    statement.push(program_dummy_wrap_messages_digest());
+    for _ in 0..active - 1 {
+        statement.push(program_dummy_wrap_messages_digest());
+    }
     statement.push(real.statement[WIDTH1_INPUT_LEN - 1]);
 
     // `Dummy.Ipa.Step.sg` is a protocol constant: use the cached commitment
@@ -2369,12 +2376,20 @@ pub fn prepare_recursive_step_n1<
     };
 
     let messages_for_next_step_vk_pts = real.messages_for_next_step_vk_pts.clone();
+    // Width 2 front-pads the dummy slot ([dummy, real]); at width 1 the
+    // single active slot is the real proof (the second physical slot is
+    // never read by the circuit and stays masked for the prover).
+    let (dummy_slots, recursions) = if active == 2 {
+        ([true, false], [dummy_recursion, real.recursion])
+    } else {
+        ([false, true], [real.recursion, dummy_recursion])
+    };
     PreparedRecursiveStepWidth2 {
         proofs: [real.data.clone(), real.data],
-        dummy_slots: [true, false],
+        dummy_slots,
         app_state,
         statement: statement.try_into().unwrap_or_else(|_| unreachable!()),
-        recursions: [dummy_recursion, real.recursion],
+        recursions,
         messages_for_next_step_vk_pts,
         messages_for_next_step_proof,
     }
@@ -2394,7 +2409,10 @@ pub fn prepare_recursive_step_n0<
     use poly_commitment::commitment::PolyComm;
 
     assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+    // The program's max width: A slots of (17 + WRAP_ROUNDS), the combined
+    // m4nstep digest, then A m4nwrap digests (A*33 + 1 slots total).
+    let active = (PUBLIC_INPUT_LEN - 1) / (18 + WRAP_ROUNDS);
+    assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(active, WRAP_ROUNDS));
     let template = normalize_program_recursive_step(template);
     let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
     let dummy_challenges = dummy_step.challenges_computed.clone();
@@ -2408,11 +2426,13 @@ pub fn prepare_recursive_step_n0<
 
     let dummy_statement = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
     let mut statement = Vec::with_capacity(PUBLIC_INPUT_LEN);
-    statement.extend_from_slice(&dummy_statement);
-    statement.extend_from_slice(&dummy_statement);
+    for _ in 0..active {
+        statement.extend_from_slice(&dummy_statement);
+    }
     statement.push(combined_digest);
-    statement.push(program_dummy_wrap_messages_digest());
-    statement.push(program_dummy_wrap_messages_digest());
+    for _ in 0..active {
+        statement.push(program_dummy_wrap_messages_digest());
+    }
 
     // `Dummy.Ipa.Step.sg` is a protocol constant — cached commitment, no
     // per-call 2^16 MSM.
