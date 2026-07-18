@@ -20,16 +20,11 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact 2026-07-18 après le fix mv merge)
+## REPRISE (état exact 2026-07-18 après le fix fold mv merge)
 **Scores** : init 0/0 ✓✓ ; update **0 coeff** / 221 wires (1re @252) ;
-merge 8091 coeff (1re @11314) / 7324 wires (1re @42) ; wrap 284 coeff
-(1re @90, valeurs step-VK embarquées)
+merge **0 coeff** / 450 wires (1re @252) ; wrap 240 coeff
+(1re @134, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
-
-Le nombre total de lignes diff merge monte parce que la grande queue après
-11314 est maintenant décalée autrement ; la métrique utile de causalité est
-la frontière coeff, qui a avancé de **529 à 11314** (les lignes 529..11313
-sont désormais byte-identiques en coefficients).
 
 ### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
 - ⚠️ zkapp-rust/contracts/node_modules/o1js = SYMLINK vers ~/Projects/o1js (la
@@ -118,9 +113,22 @@ diffs à partir de 11072).
 
 Effet : frontière merge coeff **529→11314**, frontière wire **10→42** ;
 update inchangé 0 coeff / 221 wires. recorded **21/21**, lib **112/112**.
-Prochaine cible merge : @11314, jsoo `EndoMulScalar` vs rust `Generic`
-(`step proof finalized ++ wrap proof verified`), puis rust a son
-`EndoMulScalar` @11330 : décalage local de 16 lignes à cartographier.
+
+### RÉSOLU : Merge @11314 — conserver la constante de règle pour le fold
+@11314, rust avait un Generic `step proof finalized ++ wrap proof verified`
+en trop, puis ses 16 `EndoMulScalar` étaient décalés d'une ligne. Cause : le
+fix précédent remplaçait `p.must_verify = true` par la cvar témoignée ; le
+fold final `verified && finalized || !p.must_verify` ne pouvait donc plus
+replier le OR. OCaml distingue implicitement la cvar passée à `verify_one`
+de la valeur constante issue de la règle. Ajout de `result_must_verify` dans
+`PerProofInput` : la première reste témoignée pour le binding `sf==mv`, la
+seconde reste constante true pour le fold.
+
+Effet : merge **0 coeff-diff sur 32768/32768**, et comme les deux steps réels
+ont maintenant 0 coeff-diff, leurs wires ont la même frontière @252 : update
+221 lignes diff, merge 450. Le point fixe wrap avance 284→240 coeff-diffs,
+frontière 90→134 ; VK encore 18/28. `decode_and_diff` confirmé frais ;
+recorded **21/21**, lib **112/112**.
 
 Sonde rejetée update @252 : inverser `z2_h` et `z1_g_plus_b_u` dans
 `bulletproof.rs` avance la première wire 252→277, mais aggrave 221→226 et

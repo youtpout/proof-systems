@@ -1094,6 +1094,7 @@ mod tests {
                 xi,
                 claimed,
                 should_finalize: fals.clone(),
+                result_must_verify: fals.clone(),
                 must_verify: fals,
                 is_base_case: tru,
                 witness_must_verify: false,

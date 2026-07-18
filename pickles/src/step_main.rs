@@ -78,13 +78,17 @@ pub struct PerProofInput<'a, F: PrimeField> {
     pub claimed: Claimed<F>,
     // control
     pub should_finalize: Boolean<F>,
+    /// Rule-level value used by `verified && finalized || !must_verify`.
+    /// This remains the constant `true` on program paths even when the
+    /// statement typ supplies a witnessed copy to `verify_one`.
+    pub result_must_verify: Boolean<F>,
     pub must_verify: Boolean<F>,
     pub is_base_case: Boolean<F>,
     /// Program path: re-witness `must_verify` at `verify_one` entry (the
     /// o1js rule's shouldVerify Bool is an `exists Boolean.typ`, emitting one
     /// booleanity gate there); the `should_finalize == must_verify` assert
-    /// then merges wires with no gate, and `||| not must_verify` is a real
-    /// or-gate. Legacy/recorded paths keep the constant (false here).
+    /// then merges wires with no gate. `result_must_verify` retains the rule
+    /// constant so the final `||| not must_verify` still folds away.
     pub witness_must_verify: bool,
 }
 
@@ -181,7 +185,7 @@ where
         // constant true there, so use the constant for the fold even when
         // the verify_one entry witnessed its own copy.
         let ok = verified_and_finalized.or(
-            &p.must_verify.not(),
+            &p.result_must_verify.not(),
             Cow::Borrowed("step proof finalized"),
             sys,
         );
