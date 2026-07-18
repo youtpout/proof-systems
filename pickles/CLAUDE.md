@@ -21,7 +21,7 @@ dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact fin de nuit 2026-07-18)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 450 wires ; merge 5481 coeff
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 444 wires ; merge 5481 coeff
 (1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
@@ -42,19 +42,23 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
   (constante), challenges = m4nwrap.old_bp ; args verify_side_loaded =
   m4nstep {cpcs, old_bp} + app_state = publicInput++publicOutput.
 
-### Fix PARKÉ (validé parité, conflit interne) : threading du digest m4nwrap
+### Fix m4nwrap RELANDÉ (2026-07-18) : threading du digest public
 La famille wire PI66 : rust témoigne une COPIE du digest m4nwrap (sv[11]) et ne
 câble jamais le slot PI (self-loop) ; jsoo threade LA VAR DU STATEMENT dans le
 wrap-statement (classe {PI66, usages multiscale}). Fix testé : param
 `m4nwrap_digest: Option<&FieldVar>` dans recursive_per_proof_input, call-site
 `Some(&statement[len*per_proof + 1 + i])` gated `fixed_width_branch_data.is_some()`
-→ **wire 66-family résolue (446→444, frontière 66→135), coeffs 0, N2 legacy OK**
-MAIS casse 2 tests programme : `recorded_program_compiles_n0_n1_n2_with_one_wrap_key`
-et `recorded_program_two_field_state_proves_n0_then_n1` (invariant clé partagée +
-proving) → REVERTÉ pour garder l'arbre vert. À reprendre : comprendre pourquoi le
-threading casse la clé partagée n0/n1/n2 (les valeurs d.stmt[11] vs slot PI
-divergent-elles dans ces fixtures ? l'index slot est-il bon pour width1 ?) puis
-re-landing. Le diff du patch est trivial à refaire (3 hunks, cf ce paragraphe).
+→ **wire 66-family résolue (446→444, frontière 66→135), coeffs 0, N2 legacy OK**.
+
+La cause des deux régressions du premier essai est résolue : le builder legacy
+mettait volontairement `0` dans le slot public terminal m4nwrap et les chemins
+programme N1/N2 le recopiaient sans le remplacer, tandis que `d.stmt[11]`
+contenait le digest réel. Le threading reliait donc la bonne cvar à une valeur
+publique stale, d'où `verify: sponge digest`. `normalize_program_recursive_step`
+synchronise maintenant le slot terminal AVANT son early-return fixed-width et
+`prepare_recursive_step_width2` prend les deux valeurs dans `data.stmt[11]`.
+Les deux tests anciennement rouges passent ciblés ; dump frais : init 0,
+update 444 wires (première @135), merge full-diff 6902 (première @10).
 
 ### Wires update (444 après mv-pin, 446 avant) — familles identifiées
 1. RÉSOLU : binding des slots SV forward (commit) — cycle(32.0) aligné.

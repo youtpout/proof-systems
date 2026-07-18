@@ -292,6 +292,13 @@ pub fn normalize_program_unfinalized(
 pub fn normalize_program_recursive_step<const PUBLIC_INPUT_LEN: usize>(
     mut prepared: PreparedRecursiveStep<PUBLIC_INPUT_LEN>,
 ) -> PreparedRecursiveStep<PUBLIC_INPUT_LEN> {
+    // `Step.Statement.spec` carries one `messages_for_next_wrap` digest
+    // after the per-proof payload.  The legacy width-one preparation uses a
+    // zero placeholder there, but the fixed-width program circuit threads
+    // the wrap statement's actual digest cvar (`stmt[11]`) into this public
+    // slot.  Keep the public value in sync even when the preparation already
+    // entered through the fixed-width path.
+    prepared.statement[PUBLIC_INPUT_LEN - 1] = prepared.data.stmt[11];
     if prepared.data.fixed_width_branch_data.is_some() {
         return prepared;
     }
@@ -2287,8 +2294,8 @@ pub fn prepare_recursive_step_width2<
     statement.extend_from_slice(&second.statement[..per_proof]);
     statement.push(combined_digest);
     // One messages_for_next_wrap digest per slot (OCaml Step.Statement.spec).
-    statement.push(first.statement[WIDTH1_INPUT_LEN - 1]);
-    statement.push(second.statement[WIDTH1_INPUT_LEN - 1]);
+    statement.push(first.data.stmt[11]);
+    statement.push(second.data.stmt[11]);
 
     PreparedRecursiveStepWidth2 {
         proofs: [first.data, second.data],
@@ -4402,9 +4409,12 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     sys: &mut RunState<Fp>,
     d: &'a RecursiveStepData,
     statement: &[FieldVar<Fp>],
+    m4nwrap_digest: Option<&FieldVar<Fp>>,
     mds: &'a [Vec<Fp>],
     dummy_slot: bool,
-    shared_dlog_index: Option<&crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>>,
+    shared_dlog_index: Option<
+        &crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
+    >,
 ) -> SnarkyResult<(
     PerProofInput<'a, Fp>,
     crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
@@ -4447,7 +4457,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
      -> SnarkyResult<ShiftedScalar<Fp>> {
         Ok(ShiftedScalar::Type2(half, Boolean::create_unsafe(odd)))
     };
-
     let (_, endo_p) = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos();
     // (The finalize params are assembled after the statement witnessing: the
     // pseudo-domain selection is driven by the witnessed `domain_log2`, and
@@ -4677,7 +4686,9 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         zeta: sv[8].clone(),
         xi: sv[9].clone(),
         sponge_digest_before_evaluations: sv[10].clone(),
-        messages_for_next_wrap_proof_digest: sv[11].clone(),
+        messages_for_next_wrap_proof_digest: m4nwrap_digest
+            .cloned()
+            .unwrap_or_else(|| sv[11].clone()),
         bulletproof_challenges: sv[13..13 + PREV_ROUNDS].to_vec(),
         branch_data: branch_data_var,
         // o1js programs use `Plonk_types.Features.none` — the statement's
@@ -4899,6 +4910,10 @@ impl<
                     sys,
                     &proof_data[i],
                     segment,
+                    proof_data[i]
+                        .fixed_width_branch_data
+                        .is_some()
+                        .then(|| &statement[2 * per_proof + 1 + i]),
                     &mds,
                     dummy_slots[i],
                     shared_index.as_ref(),
