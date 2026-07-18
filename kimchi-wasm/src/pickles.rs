@@ -449,31 +449,37 @@ pub fn rust_pickles_recorded_base_vk_envelope(
 /// is then recomputed on demand — never trusted blindly for size).
 #[wasm_bindgen]
 pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: &[u8]) -> bool {
+    // v2 raw bytes decode unvalidated and in parallel; v1 rmp bytes (older
+    // cache files) still decode through serde as a fallback.
+    fn decode<G>(
+        bytes: &[u8],
+        domain_size: usize,
+    ) -> Option<Vec<poly_commitment::commitment::PolyComm<G>>>
+    where
+        G: ark_ec::AffineRepr,
+    {
+        if let Some(basis) = pickles::common::decode_lagrange_basis_raw::<G>(bytes, domain_size) {
+            return Some(basis);
+        }
+        let basis = rmp_serde::from_slice::<Vec<poly_commitment::commitment::PolyComm<G>>>(bytes)
+            .ok()?;
+        (basis.len() == domain_size).then_some(basis)
+    }
     let domain_size = 1usize << domain_log2;
     match curve.as_str() {
         "vesta" => {
-            let Ok(basis) = rmp_serde::from_slice::<
-                Vec<poly_commitment::commitment::PolyComm<mina_curves::pasta::Vesta>>,
-            >(bytes) else {
+            let Some(basis) = decode::<mina_curves::pasta::Vesta>(bytes, domain_size) else {
                 return false;
             };
-            if basis.len() != domain_size {
-                return false;
-            }
             pickles::common::tick_srs(1 << pickles::common::TICK_ROUNDS)
                 .lagrange_bases()
                 .set_once(domain_size, basis);
             true
         }
         "pallas" => {
-            let Ok(basis) = rmp_serde::from_slice::<
-                Vec<poly_commitment::commitment::PolyComm<mina_curves::pasta::Pallas>>,
-            >(bytes) else {
+            let Some(basis) = decode::<mina_curves::pasta::Pallas>(bytes, domain_size) else {
                 return false;
             };
-            if basis.len() != domain_size {
-                return false;
-            }
             pickles::common::tock_srs(1 << pickles::common::TOCK_ROUNDS)
                 .lagrange_bases()
                 .set_once(domain_size, basis);

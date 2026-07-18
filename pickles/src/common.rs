@@ -27,17 +27,27 @@ pub const TOCK_ROUNDS: usize = 15;
 /// circuit), so it must not be used as the SRS size or asserted to equal it.
 pub fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
     static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
-    TICK_SRS
-        .get_or_init(|| Arc::new(SRS::<Vesta>::create(1 << TICK_ROUNDS)))
-        .clone()
+    // wasm32: the ~1<<16 serial group maps dominate the first compile, and the
+    // one compile call sits alone in the worker pool, so parallel creation is
+    // a pure win. Native keeps the serial create: many tests hit this
+    // `OnceLock` from inside rayon pools concurrently, and a parallel
+    // initializer behind a blocking `get_or_init` starves the pool.
+    #[cfg(target_arch = "wasm32")]
+    let create = || Arc::new(SRS::<Vesta>::create_parallel(1 << TICK_ROUNDS));
+    #[cfg(not(target_arch = "wasm32"))]
+    let create = || Arc::new(SRS::<Vesta>::create(1 << TICK_ROUNDS));
+    TICK_SRS.get_or_init(create).clone()
 }
 
 /// Returns Mina's full Tock SRS independently of the circuit domain size.
 pub fn tock_srs(_domain_size: usize) -> Arc<SRS<Pallas>> {
     static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
-    TOCK_SRS
-        .get_or_init(|| Arc::new(SRS::<Pallas>::create(1 << TOCK_ROUNDS)))
-        .clone()
+    // See `tick_srs` for the wasm32/native split rationale.
+    #[cfg(target_arch = "wasm32")]
+    let create = || Arc::new(SRS::<Pallas>::create_parallel(1 << TOCK_ROUNDS));
+    #[cfg(not(target_arch = "wasm32"))]
+    let create = || Arc::new(SRS::<Pallas>::create(1 << TOCK_ROUNDS));
+    TOCK_SRS.get_or_init(create).clone()
 }
 
 /// The Poseidon full-rounds constant shared with the snarky crate.
@@ -137,7 +147,72 @@ pub fn warm_recursion_caches(recursive: bool) {
     );
 }
 
-/// Extension for exporting a cached Lagrange basis as rmp bytes (the wasm
+/// Magic prefix of the raw (v2) Lagrange-basis cache format.
+pub const LAGRANGE_RAW_MAGIC: [u8; 4] = *b"LGB2";
+
+/// Encodes a Lagrange basis in the raw v2 cache format: `LGB2` magic, u64-LE
+/// commitment count, then one uncompressed point per single-chunk commitment.
+/// The serde (v1) format stores compressed validated points, which spends a
+/// square root per point at load time; raw bytes make seeding IO-bound. The
+/// cache directory is trusted local state, exactly like the v1 files.
+/// Returns `None` for chunked commitments (not a Lagrange basis shape).
+pub fn encode_lagrange_basis_raw<G>(
+    basis: &[poly_commitment::commitment::PolyComm<G>],
+) -> Option<Vec<u8>>
+where
+    G: ark_serialize::CanonicalSerialize,
+{
+    let first = basis.first()?;
+    if first.chunks.len() != 1 {
+        return None;
+    }
+    let point_size = first.chunks[0].uncompressed_size();
+    let mut out = Vec::with_capacity(12 + basis.len() * point_size);
+    out.extend_from_slice(&LAGRANGE_RAW_MAGIC);
+    out.extend_from_slice(&(basis.len() as u64).to_le_bytes());
+    for comm in basis {
+        if comm.chunks.len() != 1 {
+            return None;
+        }
+        comm.chunks[0].serialize_uncompressed(&mut out).ok()?;
+    }
+    Some(out)
+}
+
+/// Decodes the raw v2 Lagrange-basis cache format (see
+/// [`encode_lagrange_basis_raw`]), deserializing the points unvalidated and in
+/// parallel. Returns `None` on any shape mismatch.
+pub fn decode_lagrange_basis_raw<G>(
+    bytes: &[u8],
+    expected_len: usize,
+) -> Option<Vec<poly_commitment::commitment::PolyComm<G>>>
+where
+    G: ark_serialize::CanonicalDeserialize + Send + Sync,
+{
+    use rayon::prelude::*;
+    let rest = bytes.strip_prefix(&LAGRANGE_RAW_MAGIC)?;
+    let (count_bytes, points) = rest.split_at_checked(8)?;
+    let count = u64::from_le_bytes(count_bytes.try_into().ok()?) as usize;
+    if count != expected_len || count == 0 || points.len() % count != 0 {
+        return None;
+    }
+    let point_size = points.len() / count;
+    if point_size == 0 {
+        return None;
+    }
+    points
+        .par_chunks_exact(point_size)
+        .map(|chunk| {
+            G::deserialize_uncompressed_unchecked(chunk)
+                .ok()
+                .map(|point| poly_commitment::commitment::PolyComm {
+                    chunks: vec![point],
+                })
+        })
+        .collect()
+}
+
+/// Extension for exporting a cached Lagrange basis as raw v2 bytes (the wasm
 /// host persists them since wasm itself has no filesystem).
 pub trait LagrangeBasisExport {
     fn cached_lagrange_basis_bytes(&self, domain_size: usize) -> Vec<u8>;
@@ -155,7 +230,7 @@ where
         let basis = self
             .lagrange_bases()
             .get_or_generate(domain_size, || unreachable!("checked contains_key"));
-        rmp_serde::to_vec(&*basis).unwrap_or_default()
+        encode_lagrange_basis_raw(&basis).unwrap_or_default()
     }
 }
 
@@ -187,19 +262,15 @@ where
     let domain_size = 1usize << domain_log2;
     let path = cache_dir().map(|dir| {
         dir.join(format!(
-            "lagrange-{curve}-srs{}-d{domain_log2}.bin",
+            "lagrange-{curve}-srs{}-d{domain_log2}.v2.bin",
             srs.g.len()
         ))
     });
     if let Some(path) = &path {
         if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(basis) =
-                rmp_serde::from_slice::<Vec<poly_commitment::commitment::PolyComm<G>>>(&bytes)
-            {
-                if basis.len() == domain_size {
-                    srs.lagrange_bases().set_once(domain_size, basis);
-                    return;
-                }
+            if let Some(basis) = decode_lagrange_basis_raw::<G>(&bytes, domain_size) {
+                srs.lagrange_bases().set_once(domain_size, basis);
+                return;
             }
         }
     }
@@ -208,7 +279,7 @@ where
     let basis: Vec<poly_commitment::commitment::PolyComm<G>> =
         srs.get_lagrange_basis(domain).clone();
     if let Some(path) = &path {
-        if let Ok(bytes) = rmp_serde::to_vec(&basis) {
+        if let Some(bytes) = encode_lagrange_basis_raw(&basis) {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
