@@ -2327,9 +2327,6 @@ type RecordedProgramStepIndexesShaped<const STEP_PI: usize, const ACTIVE: usize>
         STEP_PI,
         ACTIVE,
     >;
-type RecordedProgramStepIndexes =
-    RecordedProgramStepIndexesShaped<RECORDED_N2_STEP_STMT_LEN, 2>;
-
 fn compile_recorded_program_steps<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
@@ -2760,9 +2757,9 @@ fn take_probe_timings() -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn recorded_program_wrap_branches(
+fn recorded_program_wrap_branches<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
-    indexes: &[Option<RecordedProgramStepIndexes>],
+    indexes: &[Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>],
 ) -> Vec<crate::api::WrapBranchData> {
     branches
         .iter()
@@ -3008,9 +3005,16 @@ pub fn template_blob_digests() -> Option<(mina_curves::pasta::Fq, Fp)> {
     ))
 }
 
-/// A fixed-width recorded Pickles program. Every method owns its Step index,
-/// while every arity uses one shared maximal Wrap index and verification key.
-pub struct RecordedCompiledProgram {
+/// A recorded Pickles program compiled at one physical width. Every method
+/// owns its Step index, while every arity uses one shared maximal Wrap index
+/// and verification key.
+///
+/// `STEP_PI` is the step public-input length and `ACTIVE` the physical proof
+/// width (`ACTIVE = (STEP_PI - 1) / (18 + WRAP_ROUNDS)`); the two supported
+/// shapes are `<RECORDED_N2_STEP_STMT_LEN, 2>` (width-2 programs) and
+/// `<RECORDED_N1_STEP_STMT_LEN, 1>` (width-1 programs, OCaml compiles a
+/// program whose branches all have `proofs_verified <= 1` at width 1).
+pub struct RecordedCompiledProgramShaped<const STEP_PI: usize, const ACTIVE: usize> {
     branches: Vec<RecordedProgramBranch>,
     wrap_branches: Vec<crate::api::WrapBranchData>,
     /// Per-branch x_hat Lagrange constants of the shared wrap — must be
@@ -3026,7 +3030,7 @@ pub struct RecordedCompiledProgram {
     /// selects over — must be re-injected into every prove-time prepared
     /// step.
     finalize_domain_log2s: Vec<u32>,
-    step_indexes: Vec<Option<RecordedProgramStepIndexes>>,
+    step_indexes: Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>>,
     wrap_indexes: Option<
         crate::recursive_step::RecursiveWrapIndexes<
             RECORDED_N2_STEP_ROUNDS,
@@ -3036,7 +3040,120 @@ pub struct RecordedCompiledProgram {
     template: crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
 }
 
+/// The public program handle: one compiled program at either supported
+/// physical width. All prove/verify entry points dispatch on the shape.
+pub enum RecordedCompiledProgram {
+    W2(RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2>),
+    W1(RecordedCompiledProgramShaped<RECORDED_N1_STEP_STMT_LEN, 1>),
+}
+
+macro_rules! with_program_shape {
+    ($self:expr, $p:ident => $body:expr) => {
+        match $self {
+            RecordedCompiledProgram::W2($p) => $body,
+            RecordedCompiledProgram::W1($p) => $body,
+        }
+    };
+}
+
 impl RecordedCompiledProgram {
+    /// Compiles a program in a single fixpoint-free pass.
+    pub fn compile(branches: Vec<RecordedProgramBranch>) -> Result<Self, RecordedProveError> {
+        RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::compile(branches)
+            .map(Self::W2)
+    }
+
+    /// See [`RecordedCompiledProgramShaped::debug_compile_stage`].
+    #[doc(hidden)]
+    pub fn debug_compile_stage(
+        branches: Vec<RecordedProgramBranch>,
+        stage: usize,
+    ) -> Result<String, RecordedProveError> {
+        RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::debug_compile_stage(
+            branches, stage,
+        )
+    }
+
+    /// See [`RecordedCompiledProgramShaped::compile_multipass_reference`].
+    #[doc(hidden)]
+    pub fn compile_multipass_reference(
+        branches: Vec<RecordedProgramBranch>,
+    ) -> Result<Self, RecordedProveError> {
+        RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::compile_multipass_reference(
+            branches,
+        )
+        .map(Self::W2)
+    }
+
+    #[doc(hidden)]
+    pub fn wrap_branches_for_tests(&self) -> &[crate::api::WrapBranchData] {
+        with_program_shape!(self, p => p.wrap_branches_for_tests())
+    }
+
+    #[doc(hidden)]
+    pub fn wrap_gate_labels_for_tests(&self, from: usize, to: usize) -> Vec<(usize, String)> {
+        with_program_shape!(self, p => p.wrap_gate_labels_for_tests(from, to))
+    }
+
+    pub fn wrap_verification_key_points(&self) -> Vec<(Fp, Fp)> {
+        with_program_shape!(self, p => p.wrap_verification_key_points())
+    }
+
+    pub fn verification_key_envelope(&self) -> Result<(String, String), RecordedProveError> {
+        with_program_shape!(self, p => p.verification_key_envelope())
+    }
+
+    pub fn branch_count(&self) -> usize {
+        with_program_shape!(self, p => p.branch_count())
+    }
+
+    /// The declared `proofs_verified` of a branch.
+    pub fn branch_proofs_verified(&self, branch_index: usize) -> Option<u8> {
+        with_program_shape!(self, p => p.branch_proofs_verified(branch_index))
+    }
+
+    pub fn prove_n0(
+        &mut self,
+        branch_index: usize,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        with_program_shape!(self, p => p.prove_n0(branch_index, witness))
+    }
+
+    pub fn prove_n1(
+        &mut self,
+        branch_index: usize,
+        previous: &RecordedProofHandle,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        with_program_shape!(self, p => p.prove_n1(branch_index, previous, witness))
+    }
+
+    pub fn prove_n2(
+        &mut self,
+        branch_index: usize,
+        previous: [&RecordedProofHandle; 2],
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        with_program_shape!(self, p => p.prove_n2(branch_index, previous, witness))
+    }
+
+    #[doc(hidden)]
+    pub fn debug_prove_recursive_stage(
+        &mut self,
+        branch_index: usize,
+        previous: &[&RecordedProofHandle],
+        witness: Vec<Fp>,
+        stage: usize,
+    ) -> Result<String, RecordedProveError> {
+        with_program_shape!(
+            self,
+            p => p.debug_prove_recursive_stage(branch_index, previous, witness, stage)
+        )
+    }
+}
+
+impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
     /// Compiles a program in a single fixpoint-free pass.
     ///
     /// The step and wrap circuits only exchange VALUES (verification-key
@@ -3396,7 +3513,7 @@ impl RecordedCompiledProgram {
 
         let step_indexes = phase!(
             "steps pass #1",
-            compile_recorded_program_steps(
+            compile_recorded_program_steps::<RECORDED_N2_STEP_STMT_LEN, 2>(
                 &branches,
                 &template,
                 &bootstrap_vk,
@@ -3463,7 +3580,7 @@ impl RecordedCompiledProgram {
         );
         let second_step_indexes = phase!(
             "steps pass #2",
-            compile_recorded_program_steps(
+            compile_recorded_program_steps::<RECORDED_N2_STEP_STMT_LEN, 2>(
                 &branches,
                 &first_template,
                 &first_wrap_vk,
@@ -3507,7 +3624,7 @@ impl RecordedCompiledProgram {
             .map(|indexes| &indexes.1.index);
         let step_indexes = phase!(
             "steps pass #3",
-            compile_recorded_program_steps(
+            compile_recorded_program_steps::<RECORDED_N2_STEP_STMT_LEN, 2>(
                 &branches,
                 &template,
                 &final_wrap_vk,
@@ -3569,7 +3686,7 @@ impl RecordedCompiledProgram {
             .map(|indexes| &indexes.1.index);
         let stable_step_indexes = phase!(
             "steps pass #4",
-            compile_recorded_program_steps(
+            compile_recorded_program_steps::<RECORDED_N2_STEP_STMT_LEN, 2>(
                 &branches,
                 &template,
                 &final_wrap_vk,
@@ -3595,6 +3712,13 @@ impl RecordedCompiledProgram {
         })
     }
 
+}
+
+#[allow(private_bounds)]
+impl<const STEP_PI: usize, const ACTIVE: usize> RecordedCompiledProgramShaped<STEP_PI, ACTIVE>
+where
+    RecordedProgramCycleShaped<STEP_PI, ACTIVE>: ProgramCycleSlot,
+{
     /// The per-branch step verification key data embedded in the shared
     /// wrap. Exposed for the single-pass/multi-pass equivalence test.
     #[doc(hidden)]
@@ -3726,7 +3850,7 @@ impl RecordedCompiledProgram {
         let prepared = crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
         >(prepared, app_state.clone());
         let carried_accumulators = prepared
             .messages_for_next_step_proof
@@ -3767,22 +3891,23 @@ impl RecordedCompiledProgram {
         let indexes = self.step_indexes[branch_index]
             .take()
             .expect("compiled program Step indexes");
-        let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
+        let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2_arity(
             prepared,
             Some(main),
             Some(indexes),
         );
         self.step_indexes[branch_index] = Some(indexes);
-        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0::<
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0_arity::<
             RecordedProgramTemplateApp,
             16,
             40,
             RECORDED_N1_STEP_ROUNDS,
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
+            ACTIVE,
         >(&self.template, &step);
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
@@ -3810,7 +3935,7 @@ impl RecordedCompiledProgram {
         Ok(RecordedProofHandle {
             app_state,
             proof,
-            inner: RecordedProofInner::Program(RecordedProgramCycle {
+            inner: RecordedProgramCycleShaped {
                 step,
                 wrap,
                 carried_accumulators,
@@ -3818,7 +3943,8 @@ impl RecordedCompiledProgram {
                 physical_accumulators,
                 physical_challenges,
                 proofs_verified: 0,
-            }),
+            }
+            .into_inner(),
         })
     }
 
@@ -3910,7 +4036,11 @@ impl RecordedCompiledProgram {
         let shared_wrap_vk = self.wrap_verification_key_points();
         let mut previous_cycles = Vec::with_capacity(previous.len());
         for proof in previous {
-            let RecordedProofInner::Program(cycle) = &proof.inner else {
+            let Some(cycle) =
+                <RecordedProgramCycleShaped<STEP_PI, ACTIVE> as ProgramCycleSlot>::from_inner(
+                    &proof.inner,
+                )
+            else {
                 return Err(RecordedProveError::Program(
                     "program branches require proofs from a compiled program".into(),
                 ));
@@ -3950,9 +4080,10 @@ impl RecordedCompiledProgram {
                     RECORDED_N1_STEP_ROUNDS,
                     RECORDED_BASE_WRAP_ROUNDS,
                     RECORDED_N1_STEP_STMT_LEN,
-                    RECORDED_N2_STEP_STMT_LEN,
+                    STEP_PI,
                     RECORDED_N2_WRAP_STMT_LEN,
                     RECORDED_N1_STEP_STMT_LEN,
+                    ACTIVE,
                 >(
                     &cycle.step,
                     &cycle.wrap,
@@ -3978,12 +4109,12 @@ impl RecordedCompiledProgram {
             1 => crate::recursive_step::prepare_recursive_step_n1::<
                 RECORDED_BASE_WRAP_ROUNDS,
                 RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N2_STEP_STMT_LEN,
+                STEP_PI,
             >(prepared_previous.next().unwrap(), app_state.clone()),
             2 => crate::recursive_step::prepare_recursive_step_width2::<
                 RECORDED_BASE_WRAP_ROUNDS,
                 RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N2_STEP_STMT_LEN,
+                STEP_PI,
             >(
                 prepared_previous.next().unwrap(),
                 prepared_previous.next().unwrap(),
@@ -4036,11 +4167,12 @@ impl RecordedCompiledProgram {
             // Witness-synthesis-only probe of the step (no kimchi prove).
             self.step_indexes[branch_index] = Some(indexes);
             let t = snarky::wasm_instant::Instant::now();
-            let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+            let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2_arity::<
                 RECORDED_N1_STEP_ROUNDS,
                 RECORDED_BASE_WRAP_ROUNDS,
                 RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N2_STEP_STMT_LEN,
+                STEP_PI,
+                ACTIVE,
             >(&prepared, Some(main));
             return Err(RecordedProveError::Program(format!(
                 "DEBUG-STAGE 30 OK — witness synthesis {:.2?} -> 2^{log2} | {}",
@@ -4058,7 +4190,7 @@ impl RecordedCompiledProgram {
         } else {
             prepared
         };
-        let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2(
+        let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2_arity(
             prepared,
             Some(main),
             Some(indexes),
@@ -4082,9 +4214,10 @@ impl RecordedCompiledProgram {
             RECORDED_N1_STEP_ROUNDS,
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
+            ACTIVE,
         >(&step, real_unfinalized);
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
@@ -4113,7 +4246,7 @@ impl RecordedCompiledProgram {
         Ok(RecordedProofHandle {
             app_state,
             proof,
-            inner: RecordedProofInner::Program(RecordedProgramCycle {
+            inner: RecordedProgramCycleShaped {
                 step,
                 wrap,
                 carried_accumulators,
@@ -4121,7 +4254,8 @@ impl RecordedCompiledProgram {
                 physical_accumulators,
                 physical_challenges,
                 proofs_verified: branch.proofs_verified,
-            }),
+            }
+            .into_inner(),
         })
     }
 }
@@ -4153,14 +4287,19 @@ impl RecordedProofHandle {
     pub fn program_verification_messages(
         &self,
     ) -> Option<(Vec<(Fp, Fp)>, Vec<Vec<Fp>>, Vec<(Fp, Fp)>)> {
-        let RecordedProofInner::Program(cycle) = &self.inner else {
-            return None;
-        };
-        Some((
-            cycle.carried_accumulators.clone(),
-            cycle.carried_challenges.clone(),
-            cycle.step.messages_for_next_step_vk_pts.clone(),
-        ))
+        match &self.inner {
+            RecordedProofInner::Program(cycle) => Some((
+                cycle.carried_accumulators.clone(),
+                cycle.carried_challenges.clone(),
+                cycle.step.messages_for_next_step_vk_pts.clone(),
+            )),
+            RecordedProofInner::ProgramW1(cycle) => Some((
+                cycle.carried_accumulators.clone(),
+                cycle.carried_challenges.clone(),
+                cycle.step.messages_for_next_step_vk_pts.clone(),
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -4173,12 +4312,13 @@ type RecordedRecursiveCycle = crate::recursive_step::RecursiveCycleProof<
 >;
 
 #[allow(dead_code)]
-struct RecordedProgramCycle {
+struct RecordedProgramCycleShaped<const STEP_PI: usize, const ACTIVE: usize> {
     step: crate::recursive_step::RecursiveStepWidth2Proof<
         RECORDED_N1_STEP_ROUNDS,
         RECORDED_BASE_WRAP_ROUNDS,
         RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
     >,
     wrap: crate::recursive_step::RecursiveWrapProof<
         RECORDED_N2_STEP_ROUNDS,
@@ -4191,12 +4331,45 @@ struct RecordedProgramCycle {
     proofs_verified: u8,
 }
 
+/// Maps a program cycle shape onto its [`RecordedProofInner`] variant, so the
+/// shape-generic prove paths can store and recover previous proofs. Only the
+/// two compiled shapes implement it.
+trait ProgramCycleSlot: Sized {
+    fn into_inner(self) -> RecordedProofInner;
+    fn from_inner(inner: &RecordedProofInner) -> Option<&Self>;
+}
+
+impl ProgramCycleSlot for RecordedProgramCycleShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
+    fn into_inner(self) -> RecordedProofInner {
+        RecordedProofInner::Program(self)
+    }
+    fn from_inner(inner: &RecordedProofInner) -> Option<&Self> {
+        match inner {
+            RecordedProofInner::Program(cycle) => Some(cycle),
+            _ => None,
+        }
+    }
+}
+
+impl ProgramCycleSlot for RecordedProgramCycleShaped<RECORDED_N1_STEP_STMT_LEN, 1> {
+    fn into_inner(self) -> RecordedProofInner {
+        RecordedProofInner::ProgramW1(self)
+    }
+    fn from_inner(inner: &RecordedProofInner) -> Option<&Self> {
+        match inner {
+            RecordedProofInner::ProgramW1(cycle) => Some(cycle),
+            _ => None,
+        }
+    }
+}
+
 enum RecordedProofInner {
     /// Proofs are always made over the full Tick SRS: 16 IPA rounds,
     /// 40-slot OCaml wrap statement.
     R16(crate::api::BaseCaseProof<RecordedApp, 16, 40>),
     Recursive(RecordedRecursiveCycle),
-    Program(RecordedProgramCycle),
+    Program(RecordedProgramCycleShaped<RECORDED_N2_STEP_STMT_LEN, 2>),
+    ProgramW1(RecordedProgramCycleShaped<RECORDED_N1_STEP_STMT_LEN, 1>),
 }
 
 macro_rules! prove_base_keep_at_rounds {
@@ -4321,9 +4494,11 @@ macro_rules! prove_n1_over_keep_at_rounds {
                     inner: RecordedProofInner::Recursive(cycle),
                 })
             }
-            RecordedProofInner::Program(_) => Err(RecordedProveError::Program(
-                "program proofs must be extended by their compiled program".into(),
-            )),
+            RecordedProofInner::Program(_) | RecordedProofInner::ProgramW1(_) => {
+                Err(RecordedProveError::Program(
+                    "program proofs must be extended by their compiled program".into(),
+                ))
+            }
         }
     };
 }
@@ -4493,27 +4668,35 @@ pub fn dump_recorded_program_circuits(
         steps: Vec<StepCircuitDump>,
         wrap: WrapCircuitDump,
     }
+    fn dump_shaped<const STEP_PI: usize, const ACTIVE: usize>(
+        program: &RecordedCompiledProgramShaped<STEP_PI, ACTIVE>,
+    ) -> ProgramDump {
+        let steps = program
+            .step_indexes
+            .iter()
+            .map(|indexes| {
+                let prover = &indexes.as_ref().expect("compiled branch step").0;
+                StepCircuitDump {
+                    public_input_size: prover.index.cs.public,
+                    gates: prover.index.cs.gates.to_vec(),
+                    labels: prover.gate_labels().to_vec(),
+                }
+            })
+            .collect();
+        let wrap_prover = &program.wrap_indexes.as_ref().expect("compiled wrap").0;
+        ProgramDump {
+            steps,
+            wrap: WrapCircuitDump {
+                public_input_size: wrap_prover.index.cs.public,
+                gates: wrap_prover.index.cs.gates.to_vec(),
+                labels: wrap_prover.gate_labels().to_vec(),
+            },
+        }
+    }
     let program = RecordedCompiledProgram::compile(branches)?;
-    let steps = program
-        .step_indexes
-        .iter()
-        .map(|indexes| {
-            let prover = &indexes.as_ref().expect("compiled branch step").0;
-            StepCircuitDump {
-                public_input_size: prover.index.cs.public,
-                gates: prover.index.cs.gates.to_vec(),
-                labels: prover.gate_labels().to_vec(),
-            }
-        })
-        .collect();
-    let wrap_prover = &program.wrap_indexes.as_ref().expect("compiled wrap").0;
-    let dump = ProgramDump {
-        steps,
-        wrap: WrapCircuitDump {
-            public_input_size: wrap_prover.index.cs.public,
-            gates: wrap_prover.index.cs.gates.to_vec(),
-            labels: wrap_prover.gate_labels().to_vec(),
-        },
+    let dump = match &program {
+        RecordedCompiledProgram::W2(p) => dump_shaped(p),
+        RecordedCompiledProgram::W1(p) => dump_shaped(p),
     };
     serde_json::to_string(&dump)
         .map_err(|err| RecordedProveError::Program(format!("dump encoding failed: {err}")))

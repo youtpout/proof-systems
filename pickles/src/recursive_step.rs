@@ -3378,12 +3378,14 @@ pub fn program_unfinalized_from_previous<
     const WIDTH1_INPUT_LEN: usize,
     const PREVIOUS_STEP_STMT_LEN: usize,
     const PREVIOUS_WRAP_STMT_LEN: usize,
+    const ACTIVE: usize,
 >(
     previous_step: &RecursiveStepWidth2Proof<
         PREVIOUS_STEP_ROUNDS,
         VERIFIED_WRAP_ROUNDS,
         WIDTH1_INPUT_LEN,
         PREVIOUS_STEP_STMT_LEN,
+        ACTIVE,
     >,
     previous_wrap: &RecursiveWrapProof<PREVIOUS_STEP_ROUNDS, PREVIOUS_WRAP_STMT_LEN>,
 ) -> WrapUnfinalizedWitnessData {
@@ -3409,7 +3411,9 @@ pub fn program_unfinalized_from_previous<
 }
 
 /// Wraps an N1 or N2 program Step with one shared maximal Wrap circuit. Real
-/// unfinalized entries are front-padded with the canonical OCaml dummy.
+/// unfinalized entries are front-padded with the canonical OCaml dummy up to
+/// the program's physical width `ACTIVE` (the old-challenge padding stays at
+/// the protocol constant `MAX_PROOFS_VERIFIED`).
 pub fn prepare_program_recursive_wrap<
     const PREV_ROUNDS: usize,
     const VERIFIED_WRAP_ROUNDS: usize,
@@ -3417,17 +3421,19 @@ pub fn prepare_program_recursive_wrap<
     const STEP_STMT_LEN: usize,
     const STEP_PROOF_ROUNDS: usize,
     const WRAP_STMT_LEN: usize,
+    const ACTIVE: usize,
 >(
     step: &RecursiveStepWidth2Proof<
         PREV_ROUNDS,
         VERIFIED_WRAP_ROUNDS,
         WIDTH1_INPUT_LEN,
         STEP_STMT_LEN,
+        ACTIVE,
     >,
     mut real_unfinalized: Vec<WrapUnfinalizedWitnessData>,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     let logical_width = real_unfinalized.len();
-    assert!((1..=crate::common::MAX_PROOFS_VERIFIED).contains(&logical_width));
+    assert!((1..=ACTIVE).contains(&logical_width));
     let prototype = real_unfinalized[0].clone();
     let fixed_dummy_challenges = vec![
         crate::dummy::pasta_ipa_wrap_and_step()
@@ -3437,7 +3443,7 @@ pub fn prepare_program_recursive_wrap<
         crate::common::MAX_PROOFS_VERIFIED
     ];
     let dummy_step_sg = crate::dummy::pasta_dummy_step_sg();
-    while real_unfinalized.len() < crate::common::MAX_PROOFS_VERIFIED {
+    while real_unfinalized.len() < ACTIVE {
         real_unfinalized.insert(
             0,
             normalize_program_unfinalized(
@@ -3462,7 +3468,7 @@ pub fn prepare_program_recursive_wrap<
         &step.verifier.index,
         &step.proof,
         &step.statement,
-        step_statement_slots::<VERIFIED_WRAP_ROUNDS>(&step.statement, 2),
+        step_statement_slots::<VERIFIED_WRAP_ROUNDS>(&step.statement, ACTIVE),
         real_unfinalized,
         sg_olds,
         proofs_verified,
@@ -3796,12 +3802,14 @@ pub fn prepare_program_recursive_step_from_previous<
     const PREVIOUS_STEP_STMT_LEN: usize,
     const PREVIOUS_WRAP_STMT_LEN: usize,
     const PUBLIC_INPUT_LEN: usize,
+    const ACTIVE: usize,
 >(
     previous_step: &RecursiveStepWidth2Proof<
         PREVIOUS_STEP_ROUNDS,
         VERIFIED_WRAP_ROUNDS,
         WIDTH1_INPUT_LEN,
         PREVIOUS_STEP_STMT_LEN,
+        ACTIVE,
     >,
     previous_wrap: &RecursiveWrapProof<PREVIOUS_STEP_ROUNDS, PREVIOUS_WRAP_STMT_LEN>,
     physical_accumulators: Vec<(Fp, Fp)>,
@@ -3819,8 +3827,8 @@ pub fn prepare_program_recursive_step_from_previous<
         crate::common::MAX_PROOFS_VERIFIED
     );
     // A trimmed step proof carries only its real challenge vectors; the
-    // finalize replay works over the program's PHYSICAL width (the mask
-    // decides which ones are absorbed), so front-pad with the canonical
+    // finalize replay works over the program's PHYSICAL width `ACTIVE` (the
+    // mask decides which ones are absorbed), so front-pad with the canonical
     // dummy — the slots the opt-sponge will skip.
     let finalize_prev_challenges: Vec<Vec<Fp>> = {
         let mut chals: Vec<Vec<Fp>> = previous_step
@@ -3830,7 +3838,7 @@ pub fn prepare_program_recursive_step_from_previous<
             .map(|challenge| challenge.chals.clone())
             .collect();
         let (_, dummy_step) = crate::dummy::pasta_ipa_wrap_and_step();
-        while chals.len() < crate::common::MAX_PROOFS_VERIFIED {
+        while chals.len() < ACTIVE {
             chals.insert(0, dummy_step.challenges_computed.clone());
         }
         chals
