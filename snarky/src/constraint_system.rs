@@ -1330,10 +1330,13 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 }
             }
             BasicSnarkyConstraint::Equal(v1, v2) => {
-                let ((s1, x1), (s2, x2)) = (
-                    self.reduce_lincom(labels, loc, v1),
-                    self.reduce_lincom(labels, loc, v2),
-                );
+                // OCaml `Equal (v1, v2) -> match (red v1, red v2) with ...`
+                // evaluates the TUPLE right-to-left: v2's reduction gates are
+                // emitted before v1's (measured: split_field's
+                // `assert_equals(2y+odd, packed)` — jsoo reduces the packed
+                // lincom first).
+                let (s2, x2) = self.reduce_lincom(labels, loc, v2);
+                let (s1, x1) = self.reduce_lincom(labels, loc, v1);
                 match (x1, x2) {
                     (ConstantOrVar::Var(x1), ConstantOrVar::Var(x2)) => {
                         /* TODO: This logic is wrong, but matches the OCaml side. Fix both. */

@@ -20,6 +20,21 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
+## 🎉 JALON (2026-07-18 ~fin de nuit) : STEP UPDATE = 0 COEFF-DIFF
+**Le circuit step update est BYTE-IDENTIQUE à jsoo en coefficients** (16384
+lignes, 0 différente ; init aussi). Restent : 466 wire-diffs update (permutation
+— classes d'équivalence/ordre des cycles, 1re à la ligne 9), merge 5481
+coeff-diffs (1re @529, le double-boolean p1, cf plus bas), et le wrap (valeurs
+step-VK embarquées → convergeront). Derniers fixes de la série :
+- `Equal` réduit v2 AVANT v1 (tuple OCaml droite-à-gauche) — snarky
+  constraint_system.rs (split_field pack d'abord).
+- `add_fast` scelle y AVANT x par point (paire OCaml droite-à-gauche).
+- Chemin programme : mv témoin à l'entrée verify_one (booleanité+merge sf) MAIS
+  `is_base_case` = CONSTANTE false (les 15 bypass `Field.if_` des bp-challenges
+  se replient → égalité = merge de wires, 0 gate) ET le fold
+  `ok = and ||| not mv` utilise la CONSTANTE (pas de gates or) — les 3
+  coexistent chez jsoo.
+
 ## SESSION 2026-07-18 (nuit) — LA MÉTHODE QUI MARCHE + frontière 236→3752
 
 ### Boucle gagnante (à continuer telle quelle)

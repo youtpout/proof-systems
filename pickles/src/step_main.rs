@@ -120,8 +120,12 @@ where
             let mv: Boolean<F> = sys.compute(loc.clone(), move |env| {
                 env.read_var(&mv_src) == F::one()
             })?;
-            let ibc = mv.not();
-            (mv, ibc)
+            // The program path never verifies a base-case slot (must_verify
+            // is always true), and jsoo's bulletproof-challenge bypass
+            // `Field.if_ is_base_case` FOLDS AWAY there (zero gates, the
+            // challenge equality is a pure wire merge) — so the bypass flag
+            // is the CONSTANT false even though must_verify is witnessed.
+            (mv, Boolean::false_())
         } else {
             (p.must_verify.clone(), p.is_base_case.clone())
         };
@@ -162,8 +166,12 @@ where
         // conjunction is asserted once at the end).
         let verified_and_finalized =
             verified.and(&finalized, sys, Cow::Borrowed("wrap proof verified"));
+        // jsoo's `||| not must_verify` FOLDS AWAY on the program path (no
+        // or-gates after the and) — the rule-level must_verify is the
+        // constant true there, so use the constant for the fold even when
+        // the verify_one entry witnessed its own copy.
         let ok = verified_and_finalized.or(
-            &must_verify.not(),
+            &p.must_verify.not(),
             Cow::Borrowed("step proof finalized"),
             sys,
         );

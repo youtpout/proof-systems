@@ -68,14 +68,19 @@ pub fn add_fast<F: PrimeField>(
     // own variable through `exists + Field.Assert.equal` — gate form
     // `[c,c,0,0,0]` — instead of being reduced inside the gate's own input
     // handling (`reduce_to_v`, form `[c,0,c,0,0]`).
-    let p1 = Point::new(
-        p1.x.seal(sys, loc.clone())?,
-        p1.y.seal(sys, loc.clone())?,
-    );
-    let p2 = Point::new(
-        p2.x.seal(sys, loc.clone())?,
-        p2.y.seal(sys, loc.clone())?,
-    );
+    // Each point seals as an OCaml PAIR — tuple components evaluate
+    // RIGHT-TO-LEFT, so the y-coordinate's seal gates come before the x's
+    // (visible only when both coordinates are lincoms).
+    let p1 = {
+        let y = p1.y.seal(sys, loc.clone())?;
+        let x = p1.x.seal(sys, loc.clone())?;
+        Point::new(x, y)
+    };
+    let p2 = {
+        let y = p2.y.seal(sys, loc.clone())?;
+        let x = p2.x.seal(sys, loc.clone())?;
+        Point::new(x, y)
+    };
     add_complete(sys, loc, &p1, &p2)
 }
 
