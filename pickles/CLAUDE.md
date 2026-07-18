@@ -5188,3 +5188,68 @@ OUTILS : `SNARKY_KEEP_LABELS=1 cargo test -p pickles --release --test
 recorded dump_labeled_wrap_for_b_actual_probe -- --ignored` (dump wrap
 labellisé, ~12 s, sans napi ; lit WRAP_BRANCHES_JSON) + scripts
 /tmp/claude-1000/{sep-diff,diff-dist,coeff-inspect,full-diff}.mjs.
+
+## ★ CAMPAGNE WIDTH-1 (#13 volet 1) — 2b-part2 LANDÉ, init pv0 BYTE-IDENTIQUE
+
+Deux commits (35d1517823 piece i, 0ff0602491 piece ii) terminent le
+volet « shape » :
+
+- **Stockage/dispatch** : `RecordedCompiledProgram` = enum
+  `{ W2(Shaped<67,2>), W1(Shaped<34,1>) }` sur
+  `RecordedCompiledProgramShaped<STEP_PI, ACTIVE>` (API publique
+  inchangée, macro `with_program_shape!`). Cycles shapés
+  (`RecordedProofInner::ProgramW1`), trait privé `ProgramCycleSlot`
+  (pack/unpack des previous), prove n0/recursive génériques (`_arity`
+  partout). `prepare_program_recursive_wrap` /
+  `_step_from_previous` / `program_unfinalized_from_previous` prennent
+  `ACTIVE` (padding « physique » à ACTIVE, padding old-challenges
+  protocole à MAX=2).
+- **Compile générique** : phase template-dummies via trait
+  `ProgramTemplateDummies` — W2 = blob embarqué ; W1 = template du blob
+  + bootstrap width-1 prouvé LIVE (`manufacture_bootstrap_step::<34,1>`,
+  extension du blob à faire). `compile()` dispatch : max-pv ≤ 1 → W1
+  (parité OCaml). Garde-fou : pv d'une branche > ACTIVE = erreur.
+- **Wrap_hack porté côté PREVIOUS** : le wrap W1 émet UN vecteur
+  old-challenges (largeur programme) ; `program_unfinalized_from_previous`
+  le front-pad à MAX avec les dummy wrap challenges canoniques.
+- recorded 22/22 — le test pv0/pv1 (`two_field_state`) exerce désormais
+  le cycle width-1 N0→N1 complet avec vérif digest side-loaded ✅.
+
+### ⚠⚠ PIÈGE MAJEUR résolu : TROIS binaires rust côté o1js
+La régression bench semblait DIVERGER (419/738/34 = signature pré-#11) à
+TOUT pin — cause : le dump gates des harnais
+(`native.rust_pickles_recorded_program_circuits_json`) vient de
+**`@o1js/native-linux-x64` (kimchi_napi.node)**, un TROISIÈME binaire
+rebâti UNIQUEMENT par `PROOF_SYSTEMS_ROOT=~/Projects/proof-systems npm
+run build:native` — il était rassis (pré-3c060e49). Les trois artefacts
+à resynchroniser après tout changement pickles :
+1. `npm run build:rust-backend` → mina_runtime.node (backend napi ;
+   nécessite pin mina-rust à jour : `cargo update -p pickles` dans
+   o1js/src/mina-rust, commit+push du lock) ;
+2. `PROOF_SYSTEMS_ROOT=… npm run build:native` → kimchi_napi.node
+   (dumps de circuits des harnais gates-diff !) ;
+3. `PROOF_SYSTEMS_ROOT=… npm run build:wasm:node:rust` + copie des 4
+   kimchi_wasm* → backend wasm.
+Triage rapide sans rebuild : `cargo run -p pickles --release --example
+profile_compile dump <branches.json> <out.json>` (nouveau mode) — dump
+LOCAL, puis diff python vs la référence jsoo.
+
+### ÉTAT (iii) après resync des 3 binaires
+- Bench W2 (init/update/merge/wrap) : **FULL MATCH** (neutralité re-prouvée).
+- W1 harness (`MODE=rust ./run src/tests/tmp-w1-gates-diff.ts`, réf
+  `/tmp/claude-1000/w1-gates-jsoo.json`) :
+  - **init pv0 : FULL MATCH** (512 gates, PI=34) ✅
+  - update pv1 : PI=34 ✓, 16384 ✓, mais rust +514 Generic +187 Poseidon
+    −701 Zero ; 1re divergence STRUCTURELLE : run « Generic 92→94 » puis
+    « Generic 81→145 » (+64 = +2 rows ~ 32 témoins ?) avant le 1er bloc
+    Poseidon ; +187 Poseidon = +17 permutations.
+  - wrap : +21 Generic +77 Poseidon (−98 Zero) = +7 permutations.
+- **HYPOTHÈSE PRINCIPALE (à vérifier dans wrap_hack.ml / step_main)** :
+  pour un programme width-1, OCaml absorbe le PAD (dummy challenges,
+  commitments) du hash `messages_for_next_wrap_proof` HORS circuit —
+  état de sponge précalculé (`Wrap_hack.Checked.pad_and_hash` — les
+  constantes n'émettent pas de rows) puis absorbe seulement les données
+  width-1 réelles ; notre port absorbe la largeur paddée EN circuit
+  (17 permutations step + 7 wrap en trop + les rows Generic des témoins
+  de pad). Chantier : hash_messages / step-side m4nwrap replay et wrap
+  côté sortie — démarrer par la boucle flat-emit rodée avec labels.

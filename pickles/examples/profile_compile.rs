@@ -17,6 +17,37 @@ fn tiny_circuit() -> pickles::recorded::RecordedCircuit {
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "program".into());
 
+    if mode == "dump" {
+        // Dump the program circuits for an o1js branches JSON — the napi
+        // `rust_pickles_recorded_program_circuits_json` path, but against
+        // the LOCAL crate (gate-parity triage without an addon rebuild).
+        let path = std::env::args().nth(2).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let json =
+            pickles::recorded::dump_recorded_program_circuits(branches).expect("dump circuits");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/claude-1000/local-gates-rust.json".into());
+        std::fs::write(&out, json).expect("write dump");
+        eprintln!("dumped to {out}");
+        return;
+    }
+
     if mode == "wrap-labels" {
         let branches = vec![
             pickles::recorded::RecordedProgramBranch {
