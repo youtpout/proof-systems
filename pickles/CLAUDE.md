@@ -5327,3 +5327,26 @@ VALEURS ; si oui le circuit reçoit peut-être déjà des vecteurs len 1 et
 c'est le CÂBLAGE [;2] du circuit main qui force 2). Le +15 Generic wrap
 restant et le +514 Generic step : témoins/checks du pad à élaguer — passer
 à la boucle labels/flat-emit pour être chirurgical.
+
+## AFFINAGE STEP W1 — deux RÔLES pour les accumulateurs précédents
+
+Le `debug_assert_eq!(messages_for_next_step_accumulators,
+prev_challenge_polynomial_commitments)` (recursive_step.rs:4806) n'est un
+invariant QUE pour W2, où les deux largeurs coïncident (2) :
+- **sg_olds IPA** (`prev_challenge_polynomial_commitments`, masque all-true
+  step_verifier.rs:466) : restent à 2 MÊME en W1 — le wrap OCaml PADDE son
+  accumulateur (`Wrap_hack.pad_accumulator`, wrap.ml) avec le dummy sg
+  VALIDE ; notre prepare fait pareil (recursions padded à MAX,
+  recursive_step.rs:3047).
+- **old digest** (`hash_messages_for_next_step_proof_opt`,
+  step_verifier.rs:439) : absorbe la m4nSTEP du statement PRÉCÉDENT à sa
+  largeur RÉELLE = ACTIVE (1 acc + 1 vecteur chals en W1) — SANS pad.
+Fix step : passer au digest les DERNIERS `ACTIVE` éléments (convention
+front-pad) de messages_accumulators / prev_challenges (+ mask), en gardant
+sg_olds/b_poly à 2 ; ET mettre à jour EN LOCKSTEP les digests hors circuit
+(`hash_messages_for_next_step_proof_ref` : recursive_step.rs 1292/1315/
+1705/1760/2092, api.rs 1618/1918, verify.rs 245, side_loaded.rs 501 — ces
+sites doivent trancher par la largeur du PROGRAMME du statement hashé).
+Gates de cohérence : two_field e2e (prepare⇄circuit), tmp-w1 harness
+(jsoo), bench W2 0-diff. Restant après ça : +15 Generic wrap, +~514−témoins
+Generic step (boucle labels).
