@@ -112,9 +112,10 @@ where
     let mut chalss: Vec<Vec<FieldVar<F>>> = Vec::with_capacity(proofs.len());
     let mut oks: Vec<Boolean<F>> = Vec::with_capacity(proofs.len());
     for p in proofs {
-        // Program path: the o1js rule's shouldVerify Bool is witnessed HERE
-        // (verify_one entry) — one booleanity gate, queued before the
-        // finalize's endo conversions like jsoo's.
+        // Legacy and single-proof program callers witness shouldVerify here.
+        // The two-proof program circuit witnesses it as part of
+        // `Previous_proof_statement.typ`, before entering `step_main`, and
+        // therefore takes the other branch.
         let (must_verify, is_base_case) = if p.witness_must_verify {
             let mv_src = p.must_verify.to_field_var();
             let mv: Boolean<F> = sys.compute(loc.clone(), move |env| {

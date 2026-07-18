@@ -20,10 +20,16 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact fin de nuit 2026-07-18)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 221 wires ; merge 5481 coeff
-(1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
+## REPRISE (état exact 2026-07-18 après le fix mv merge)
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 221 wires (1re @252) ;
+merge 8091 coeff (1re @11314) / 7324 wires (1re @42) ; wrap 284 coeff
+(1re @90, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
+
+Le nombre total de lignes diff merge monte parce que la grande queue après
+11314 est maintenant décalée autrement ; la métrique utile de causalité est
+la frontière coeff, qui a avancé de **529 à 11314** (les lignes 529..11313
+sont désormais byte-identiques en coefficients).
 
 ### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
 - ⚠️ zkapp-rust/contracts/node_modules/o1js = SYMLINK vers ~/Projects/o1js (la
@@ -98,12 +104,27 @@ vecteurs indépendants (parfois 2 commitments mais 0 challenges). Sans le gate,
 5 tests N2 échouaient dans `hash_messages_for_next_step_proof`; avec le gate,
 recorded **21/21** et lib **112/112**.
 
-### Merge @529 (5481 coeff) — le double-boolean
-jsoo émet 2 booleanités adjacentes à la frontière groupe-p2/groupe-p1 des
-checks SV. Peut-être le mv-witness du 2e proof émis LÀ (pas à verify_one) —
-mais update contredit une règle uniforme. Sonder : positions des DEUX mv de
-merge dans jsoo (chercher les booleanités [-1,0,0,1,0] non appariées dans les
-5481 diffs, avec leurs classes de wires).
+### RÉSOLU : Merge @529 — placement des `proof_must_verify` du H-list N2
+Le flatten/LCS a isolé exactement deux demi-gates boolean manquants côté rust :
+jsoo @529A et @619A ; les deux booleanités rust correspondantes étaient
+tardives @635B et @11330B, créées à l'entrée de chaque `verify_one`.
+`step_main.ml` confirme que `proof_must_verify` est un champ du
+`Previous_proof_statement.typ` : pour le H-list de deux proofs, ses checks
+s'intercalent après chaque groupe Type2. Rust les témoigne maintenant à cet
+endroit, les pin à un, puis `step_main` réutilise ces cvars sans re-witness.
+Le chemin update à un proof reste volontairement au placement `verify_one`
+(il était déjà à 0 coeff ; appliquer uniformément le déplacement crée 515
+diffs à partir de 11072).
+
+Effet : frontière merge coeff **529→11314**, frontière wire **10→42** ;
+update inchangé 0 coeff / 221 wires. recorded **21/21**, lib **112/112**.
+Prochaine cible merge : @11314, jsoo `EndoMulScalar` vs rust `Generic`
+(`step proof finalized ++ wrap proof verified`), puis rust a son
+`EndoMulScalar` @11330 : décalage local de 16 lignes à cartographier.
+
+Sonde rejetée update @252 : inverser `z2_h` et `z1_g_plus_b_u` dans
+`bulletproof.rs` avance la première wire 252→277, mais aggrave 221→226 et
+introduit 2 coeff-diffs @10954/@11060 ; patch revert, ne pas le retenter seul.
 
 ## 🎉 JALON (2026-07-18 ~fin de nuit) : STEP UPDATE = 0 COEFF-DIFF
 **Le circuit step update est BYTE-IDENTIQUE à jsoo en coefficients** (16384

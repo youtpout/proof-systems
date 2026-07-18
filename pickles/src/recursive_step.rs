@@ -4953,8 +4953,24 @@ impl<
         // OCaml `exists` the step statement once, AFTER every per-proof
         // witness: the unfinalized Type2 slot checks of every real proof
         // come back to back here.
-        for segment in real_segments {
+        let witness_must_verify_in_statement_typ = proofs.len() == 2;
+        for (segment, proof) in real_segments.into_iter().zip(proofs.iter_mut()) {
             statement_type2_forbidden_checks(sys, segment)?;
+            // `proof_must_verify` is the trailing Boolean of OCaml's
+            // `Previous_proof_statement.typ`.  Its check is therefore
+            // emitted here, between consecutive statement typ checks (and
+            // after the final one), rather than at `verify_one` entry.
+            // The single-proof update circuit was already byte-aligned with
+            // the witness at `verify_one`; this interleaving is specific to
+            // the two-proof H-list/Typ traversal used by merge.
+            if witness_must_verify_in_statement_typ {
+                let mv: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
+                mv.to_field_var()
+                    .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
+                proof.must_verify = mv;
+                proof.is_base_case = Boolean::false_();
+                proof.witness_must_verify = false;
+            }
         }
         let next_dlog_index = match reused_next_dlog_index {
             Some(index) => index,
