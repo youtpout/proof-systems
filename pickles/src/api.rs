@@ -1193,7 +1193,11 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let hetero =
             lagrange_sets.len() > 1 && lagrange_sets.iter().any(|set| set != &lagrange_sets[0]);
         let prepared: Vec<(Point<Fq>, Point<Fq>)>;
-        let lagranges: crate::public_input::StatementLagranges<'_, Fq> = if !hetero {
+        let lagranges: crate::public_input::StatementLagranges<'_, Fq> = if branches.is_empty()
+            || lagrange_sets.len() != branch_count
+        {
+            // Branchless legacy wraps and structural donor passes (a single
+            // placeholder set for many branches): plain constants.
             prepared = lagrange_sets[0]
                 .iter()
                 .map(|&(l, c)| (cpt(l), cpt(c)))
@@ -1205,9 +1209,12 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 branch_count,
                 "one Lagrange set per branch"
             );
+            // jsoo's all-equal shortcut only folds the CORRECTED pairs; the
+            // plain `lagrange` terms always mask through which_branch.
             crate::public_input::StatementLagranges::OneHot {
                 sets: lagrange_sets,
                 branches: &branches,
+                corrected_constant: !hetero,
             }
         };
 

@@ -5056,6 +5056,7 @@ mod wrap_wdata_independence_tests {
     #[test]
     fn wrap_index_is_wdata_value_independent() {
         let circuit = RecordedCircuit {
+            previous_proof_widths: vec![],
             aux_count: 2,
             output: vec![LinComb::var(1)],
             constraints: vec![RecordedConstraint::Square {

@@ -63,6 +63,12 @@ pub enum StatementLagranges<'a, F: PrimeField> {
     OneHot {
         sets: &'a [Vec<((F, F), (F, F))>],
         branches: &'a [Boolean<F>],
+        /// jsoo's ALL-EQUAL branch-domain shortcut applies ONLY to
+        /// `lagrange_with_correction` (wrap_verifier.ml:427): corrected
+        /// (Packed) terms take the plain constants, while the UNCORRECTED
+        /// `lagrange` (wrap_verifier.ml:334, the Cond/Bool terms) always
+        /// masks through the which_branch one-hot — even for one branch.
+        corrected_constant: bool,
     },
 }
 
@@ -94,7 +100,22 @@ pub fn statement_terms<F: PrimeField>(
                 let (lag, corr) = l[index].clone();
                 (lag, want_correction.then_some(corr))
             }
-            StatementLagranges::OneHot { sets, branches } => {
+            StatementLagranges::OneHot {
+                sets,
+                branches,
+                corrected_constant,
+            } => {
+                if *corrected_constant && want_correction {
+                    // All-equal shortcut: the corrected pair is a constant.
+                    let (lag, corr) = sets[0][index];
+                    return Ok((
+                        Point::new(FieldVar::constant(lag.0), FieldVar::constant(lag.1)),
+                        Some(Point::new(
+                            FieldVar::constant(corr.0),
+                            FieldVar::constant(corr.1),
+                        )),
+                    ));
+                }
                 let mut select =
                     |pick: &dyn Fn(&((F, F), (F, F))) -> (F, F),
                      sys: &mut RunState<F>,

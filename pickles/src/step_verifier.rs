@@ -1131,6 +1131,7 @@ mod tests {
             let params = groupmap::BWParameters::<PallasParameters>::setup();
             let next_step_accumulator = openings.challenge_polynomial_commitment.clone();
             let proof_input = crate::step_main::PerProofInput {
+                side_loaded_x_hat: None,
                 finalize_params,
                 finalize_evals,
                 stmt,
