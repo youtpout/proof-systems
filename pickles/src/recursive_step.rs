@@ -18,7 +18,6 @@ use mina_poseidon::{
 use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
 use snarky::{
     api::SnarkyCircuit, gadgets::curve::Point, loc, Boolean, FieldVar, RunState, SnarkyResult,
-    SnarkyType,
 };
 
 use crate::{

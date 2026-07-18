@@ -20,6 +20,55 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
+## SESSION 2026-07-18 (nuit) — LA MÉTHODE QUI MARCHE + frontière 236→3752
+
+### Boucle gagnante (à continuer telle quelle)
+1. `SNARKY_KEEP_LABELS=1 cargo test -p pickles --release --test recorded
+   dump_labeled_wrap_for_b_actual_probe -- --ignored` (dump ~11s)
+2. mesurer : 1re ligne coeff-divergente (script inline node, cf transcript)
+3. `flat-emit.mjs` (/tmp/claude-1000) : flatten des demi-gates en ORDRE
+   D'ÉMISSION (B avant A dans une ligne double !) + labels rust par moitié
+4. lire le motif → trouver la règle OCaml (presque toujours : évaluation
+   DROITE-À-GAUCHE d'un tuple/liste/args, ou un gadget rust en trop/en moins)
+5. fix minimal → redump → frontière avance → commit par lots verts.
+
+### Frontière update (1re ligne coeff-diff) : 236→241→277→287→393→539→1935
+→1942→2347→2679→**3752**. merge bloqué à **529** (cf ci-dessous). init = 0 ✓.
+
+### Fixes landés cette nuit (commit 0fe030096a + suivants)
+- dup `odd.check` wt2 (compute::<Boolean> check déjà) ; paires prev_cpcs/
+  msg_acc SANS dédup autour de branch_data ; suppression r1cs booleanité
+  should_finalize précoce ; `witness_must_verify` (mv témoin à l'ENTRÉE de
+  verify_one, assert sf==mv = merge de wires) ; opt-sponge or/and inversés ;
+  ft_numden term2(zeta−1) avant term1 ; `div_snarky` (inv+mul, 2 gates — la
+  division snarky OCaml) aux 2 sites source (frac ft_eval0, 1/gen scalars_env)
+  [PolishToken garde div_var 1-gate !] ; cip masked : fold ZETAW d'abord
+  (`a + r*b` droite-à-gauche) ; suppression de la boucle per-check
+  `or(not mv).assert_equals(1)` post-finalize (OCaml n'a QUE le fold ok de
+  step_main ; le Boolean.all du finalize = somme + equal(somme,4), déjà OK).
+
+### Blocage courant #1 : update @3752 — 2 ADD rust avant le Poseidon
+Après le squeeze `old digest opt` (cond_permute_if ok), rust émet 2 seals
+`[1,1,-1,0,0]` (label extérieur `verify wrap proof` = le squeeze du
+sponge_after_index, incrementally_verify) PUIS son Poseidon ; jsoo enchaîne
+DIRECTEMENT un Poseidon (état déjà var/scellé). Hypothèses : ordre index-squeeze
+vs old-digest inversé, ou gestion d'état de sponge (seal à l'absorb vs au
+permute). À sonder via les positions des Poseidon (compter les blocs Poseidon
+entre les deux côtés sur 3700-3800).
+
+### Blocage courant #2 : merge @529 — la variable partagée v2
+jsoo (merge) : 2 booleanités adjacentes ligne 529 [B=v2, A=odd-bool p1-bloc1].
+v2 = classe {PI31, PI63 (les 2 slots should_finalize !), 2 gates par bloc SV du
+2e groupe (`[0,0,0,1,0]` l=v2 et `[-1,0,-1,0,1]` l=v2), 619.0/619.1, région wt2
+witness 255-428}. Donc les DEUX sf sont FUSIONNÉS avec UNE variable témoin
+partagée (le shouldVerify o1js unique ?) et les asserts des blocs SV du 2e
+groupe passent par v2 (forme différente du 1er groupe !). update n'a PAS ce
+motif (1 seul unfinalized). Piste : o1js témoigne UN Bool par règle (pas par
+preuve) ; l'allocation (booleanité) tombe entre les 2 groupes ; les asserts
+`not any = true` du 2e groupe utilisent v2 (`Boolean.Assert.is_true` avec la
+var true partagée ?) — lire comment o1js/pickles passe shouldVerify et comment
+`Boolean.Assert.is_true`/`all` se compile quand le RHS est une VAR.
+
 ## SESSION 2026-07-17 — percée diagnostic VK + fix ordre pseudo-domaine
 
 ### Méthode : empreinte multiset invariante au packing

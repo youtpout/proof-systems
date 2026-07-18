@@ -235,7 +235,7 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             let generator = sel.generator_var();
             let one = FieldVar::constant(F::one());
             let omega_to_minus_1 =
-                crate::plonk_curve_ops::div_var(sys, loc.clone(), &one, &generator)?;
+                crate::plonk_curve_ops::div_snarky(sys, loc.clone(), &one, &generator)?;
             // OCaml: `omega_to_minus_2 = square omega_to_minus_1`
             // (plonk_checks.ml:250) with `square x = x * x` — a MUL gadget.
             let omega_to_zk_plus_1 =
@@ -428,18 +428,21 @@ pub fn ft_eval0_prefix_circuit<F: PrimeField>(
     let zeta_minus_1 = zeta - &one;
     let a1 = env.alpha_pow(PERM_ALPHA0 + 1);
     let a2 = env.alpha_pow(PERM_ALPHA0 + 2);
-    let term1 =
-        zeta1m1
-            .mul(&a1, None, nd.clone(), sys)?
-            .mul(&zeta_minus_omzk, None, nd.clone(), sys)?;
+    // OCaml `nominator = (t1 + t2) * (1 - e0 z)` (plonk_checks.ml:390s): the
+    // `+`'s operands evaluate RIGHT-TO-LEFT, so the (zeta - 1) term's gates
+    // are emitted before the (zeta - omega^{-zk}) term's.
     let term2 =
         zeta1m1
             .mul(&a2, None, nd.clone(), sys)?
             .mul(&zeta_minus_1, None, nd.clone(), sys)?;
+    let term1 =
+        zeta1m1
+            .mul(&a1, None, nd.clone(), sys)?
+            .mul(&zeta_minus_omzk, None, nd.clone(), sys)?;
     let one_minus_z0 = &one - &e.z.0;
     let numerator = (&term1 + &term2).mul(&one_minus_z0, None, nd.clone(), sys)?;
     let denominator = zeta_minus_omzk.mul(&zeta_minus_1, None, nd.clone(), sys)?;
-    let frac = crate::plonk_curve_ops::div_var(sys, loc, &numerator, &denominator)?;
+    let frac = crate::plonk_curve_ops::div_snarky(sys, loc, &numerator, &denominator)?;
     ft = &ft + &frac;
 
     Ok(ft)

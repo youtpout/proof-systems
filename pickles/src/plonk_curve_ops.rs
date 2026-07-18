@@ -30,6 +30,31 @@ pub fn div_var<F: PrimeField>(
     Ok(q)
 }
 
+/// OCaml snarky `Field.( / )`: `inv b` (one r1cs `b_inv·b = 1`) then
+/// `mul a b_inv` — TWO gates for a general numerator (the mul folds away when
+/// `a` is a constant). The PolishToken evaluator keeps the single-r1cs
+/// [`div_var`] form; source-level OCaml divisions (plonk_checks.ml) use this.
+pub fn div_snarky<F: PrimeField>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    a: &FieldVar<F>,
+    b: &FieldVar<F>,
+) -> SnarkyResult<FieldVar<F>> {
+    use snarky::runner::WitnessGeneration;
+    let b2 = b.clone();
+    let b_inv: FieldVar<F> = sys.compute(loc.clone(), move |env: &dyn WitnessGeneration<F>| {
+        env.read_var(&b2).inverse().unwrap_or_else(F::zero)
+    })?;
+    sys.assert_r1cs(
+        Some("div_snarky inv".into()),
+        loc.clone(),
+        b_inv.clone(),
+        b.clone(),
+        FieldVar::constant(F::one()),
+    )?;
+    a.mul(&b_inv, None, loc, sys)
+}
+
 /// Complete addition (one `CompleteAdd` row); pickles' `add_fast`.
 pub fn add_fast<F: PrimeField>(
     sys: &mut RunState<F>,

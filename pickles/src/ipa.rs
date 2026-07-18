@@ -415,9 +415,12 @@ pub fn combined_inner_product_circuit_masked<F: ark_ff::PrimeField>(
         .map(|(b, _, zetaw)| (Some(b.clone()), zetaw.clone()))
         .chain(entries.iter().map(|(_, zetaw)| (None, zetaw.clone())))
         .collect();
-    let at_zeta = combined_evaluation(sys, loc.clone(), xi, &zeta_values)?;
+    // OCaml `combine(zeta) + r * combine(zetaw)` (step_verifier.ml:1107-1112):
+    // the `+`'s operands evaluate RIGHT-TO-LEFT, so the ZETAW fold's gates are
+    // emitted before the ZETA fold's.
     let at_zetaw = combined_evaluation(sys, loc.clone(), xi, &zetaw_values)?;
     let r_at_zetaw = r.mul(&at_zetaw, None, loc.clone(), sys)?;
+    let at_zeta = combined_evaluation(sys, loc.clone(), xi, &zeta_values)?;
     Ok(&at_zeta + &r_at_zetaw)
 }
 

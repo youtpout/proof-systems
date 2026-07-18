@@ -417,17 +417,13 @@ where
         finalize_params,
         &witness,
     )?;
-    for (label, check) in [
-        ("finalize: xi", &fin.xi_correct),
-        ("finalize: cip", &fin.cip_correct),
-        ("finalize: b", &fin.b_correct),
-        ("finalize: perm", &fin.perm_correct),
-    ] {
-        check
-            .or(&must_verify.not(), Cow::Borrowed(label), sys)
-            .to_field_var()
-            .assert_equals(sys, Cow::Borrowed(label), &FieldVar::constant(F::one()))?;
-    }
+    // No per-check assert here: OCaml's finalize returns the single
+    // `Boolean.all [xi; cip; b; perm]` (already emitted inside
+    // `finalize_deferred` as the sum + equal(sum, 4) gadget) and the ONLY
+    // per-proof pin is step_main's `verified &&& finalized ||| not
+    // must_verify` fold plus the final `Boolean.Assert.all`. A per-check
+    // `or(not mv) + assert_equals(1)` loop emitted 12 extra halves before
+    // the index sponge and diverged from jsoo.
 
     // OCaml (step_main.ml:45): the wrap-VK index sponge is (re)emitted here,
     // per proof, AFTER finalize — `hash_messages_for_next_step_proof_opt
