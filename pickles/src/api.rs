@@ -737,7 +737,14 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             );
         }
         let mut elements = Vec::with_capacity(w.step_statement.len());
-        let mut bool_slot = 0usize;
+        // `prev_statement.proof_state` is not witnessed a second time before
+        // `pack_statement`: thread every cvar already present in the
+        // unfinalized proof state into its corresponding x_hat slot.
+        let per_proof_slots = w
+            .unfinalized
+            .first()
+            .map(|u| 12 + u.bulletproof_challenges.len())
+            .unwrap_or(0);
         // The `messages_for_next_step` digest is BOTH a wrap public input
         // (slot 12) and a step-statement element fed to `x_hat`. OCaml threads
         // the same cvar into both instead of witnessing an equal private var,
@@ -749,7 +756,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let digest_flat_pos =
             crate::recursive_step::step_statement_digest_slot(expanded_step_statement_len);
         let mut flat_pos = 0usize;
-        for slot in w.step_statement.iter() {
+        for (slot_index, slot) in w.step_statement.iter().enumerate() {
             let this_flat = flat_pos;
             flat_pos += match slot {
                 WrapStepStatementSlot::Field(_) => 2,
@@ -757,14 +764,41 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             };
             match *slot {
                 WrapStepStatementSlot::Field(value) => {
-                    let var = sys.compute(loc!(), move |_| value)?;
+                    let prior = (per_proof_slots != 0
+                        && slot_index < w.unfinalized.len() * per_proof_slots)
+                        .then(|| {
+                            let proof = slot_index / per_proof_slots;
+                            let local = slot_index % per_proof_slots;
+                            (&unf_deferred[proof], local)
+                        });
+                    let var = match prior {
+                        Some((u, 0)) => u.cip_repr.clone(),
+                        Some((u, 1)) => u.b_repr.clone(),
+                        Some((u, 4)) => u.perm_repr.clone(),
+                        _ => sys.compute(loc!(), move |_| value)?,
+                    };
                     elements.push(StepStatementElement::Split(var));
                 }
                 WrapStepStatementSlot::Packed { value, num_bits } => {
-                    let var = if this_flat == digest_flat_pos {
-                        stmt[12].clone()
-                    } else {
-                        sys.compute(loc!(), move |_| value)?
+                    let prior = (per_proof_slots != 0
+                        && slot_index < w.unfinalized.len() * per_proof_slots)
+                        .then(|| {
+                            let proof = slot_index / per_proof_slots;
+                            let local = slot_index % per_proof_slots;
+                            (&unf_deferred[proof], local)
+                        });
+                    let var = match prior {
+                        Some((u, 5)) => u.sponge_digest_before_evaluations.clone(),
+                        Some((u, 6)) => u.beta.clone(),
+                        Some((u, 7)) => u.gamma.clone(),
+                        Some((u, 8)) => u.alpha.clone(),
+                        Some((u, 9)) => u.zeta.clone(),
+                        Some((u, 10)) => u.xi.clone(),
+                        Some((u, local)) if local >= 11 && local < per_proof_slots - 1 => {
+                            u.bulletproof_challenges[local - 11].clone()
+                        }
+                        _ if this_flat == digest_flat_pos => stmt[12].clone(),
+                        _ => sys.compute(loc!(), move |_| value)?,
                     };
                     elements.push(StepStatementElement::Packed {
                         value: var,
@@ -777,17 +811,13 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                     // Bool slots ARE the should_finalize booleans witnessed
                     // above — re-witnessing one here would emit a second
                     // boolean check jsoo does not have.
-                    let bit = unf_deferred[bool_slot].should_finalize.clone();
-                    bool_slot += 1;
+                    let proof = slot_index / per_proof_slots;
+                    debug_assert_eq!(slot_index % per_proof_slots, per_proof_slots - 1);
+                    let bit = unf_deferred[proof].should_finalize.clone();
                     elements.push(StepStatementElement::Bool(bit));
                 }
             }
         }
-        assert_eq!(
-            bool_slot,
-            unf_deferred.len(),
-            "one statement Bool slot per unfinalized proof"
-        );
         // OCaml `wrap_main` selects the step VK with `choose_key which_branch`
         // over CONSTANT keys (`Inner_curve.constant`): each coordinate is
         // `sum_i which_branch_i · key_i` — for a single branch, `branch0 · c`,

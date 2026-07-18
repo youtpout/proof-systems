@@ -184,16 +184,19 @@ where
     let mut prev_msgs_wrap = Vec::with_capacity(unfinalized.len());
     for (u, selected) in unfinalized.iter().zip(selected_domains) {
         let finalize_loc = Cow::Borrowed("wrap_main: finalize unfinalized");
-        let alpha_f = scalar_to_field(
-            sys,
-            Cow::Borrowed("wrap_main: finalize | alpha to_field"),
-            &u.alpha,
-            u.finalize_params.endo_r,
-        )?;
+        // `Finalize` builds the checked challenge record right-to-left: zeta
+        // is converted before alpha, while the record keeps its logical
+        // field names.
         let zeta_f = scalar_to_field(
             sys,
             Cow::Borrowed("wrap_main: finalize | zeta to_field"),
             &u.zeta,
+            u.finalize_params.endo_r,
+        )?;
+        let alpha_f = scalar_to_field(
+            sys,
+            Cow::Borrowed("wrap_main: finalize | alpha to_field"),
+            &u.alpha,
             u.finalize_params.endo_r,
         )?;
         let witness = FinalizeWitness {

@@ -22,7 +22,7 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
-Wrap frais : **0 coeff** / **181 wires** (1re @174), soit 181 lignes full-diff
+Wrap frais : **0 coeff** / **81 wires** (1re @304), soit 81 lignes full-diff
 sur 16384. **VK 22/28** : tous les coefficients et sélecteurs matchent ; il
 reste uniquement **σ[0..5]** (wires du wrap). Les anciennes divergences de
 valeurs step-VK @138 ont convergé avec les steps, puis le bloc coefficients
@@ -49,6 +49,22 @@ allouait les deux points en avant. Cela croisait exactement les cycles des
 quatre coordonnées entre les checks on-curve @147..150 et les hashes des
 accumulateurs @4021/@4046/@4228/@4241. `mkpts` émet désormais en reverse puis
 reverse son résultat. Coeffs wrap toujours 0 ; recorded **21/21**, lib
+**112/112**.
+
+### Wires wrap : 181→81, frontière 174→304 — threader prev_proof_state
+Rust retémoignait presque tout `w.step_statement` avant `x_hat`, alors que le
+`prev_statement` OCaml réutilise directement les cvars de
+`prev_proof_state`. Le mapping par preuve est maintenant explicite : `cip`,
+`b`, `perm`, sponge digest, β/γ/α/ζ/ξ, les 15 bulletproof challenges et
+`should_finalize` réutilisent les champs de `unf_deferred`. Seuls les deux
+zeta powers, non conservés comme cvars dans cette structure, restent témoins.
+Effet direct : **181→93 wires**.
+
+La famille encore en tête @174/@182 révélait ensuite que les deux
+`scalar_to_field` avaient des coefficients identiques mais les identités α/ζ
+croisées. Le record checked OCaml est évalué droite-à-gauche : convertir ζ
+avant α puis assembler les champs logiques donne **93→81 wires** et avance la
+frontière @304. Coefficients wrap toujours 0 ; recorded **21/21**, lib
 **112/112**.
 
 ### JALON : threading direct et dynamique de l'état applicatif — steps 0/0
