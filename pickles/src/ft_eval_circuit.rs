@@ -79,12 +79,17 @@ impl<F: PrimeField> SideLoadedDomain<F> {
             value = value.and(&eq.not(), sys, loc.clone());
             mask.push(value.clone());
         }
-        // of_index: b_j = (j == log2_size), then Assert.any = assert_non_zero
-        // of the boolean sum (utils.ml:361 — inverse witness + one r1cs).
-        let mut which = Vec::with_capacity(max + 1);
-        for j in 0..=max {
-            which.push(FieldVar::constant(F::from(j as u64)).equal(sys, loc.clone(), log2_size)?);
+        // of_index: b_j = (j == log2_size) — `Vector.init` evaluates from the
+        // LAST index to the FIRST (right-to-left, like Vector.map), with the
+        // constant as the LEFT operand. Then Assert.any = assert_non_zero of
+        // the boolean sum (utils.ml:361 — inverse witness + one r1cs).
+        let mut which: Vec<Option<Boolean<F>>> = (0..=max).map(|_| None).collect();
+        for j in (0..=max).rev() {
+            which[j] = Some(
+                FieldVar::constant(F::from(j as u64)).equal(sys, loc.clone(), log2_size)?,
+            );
         }
+        let which: Vec<Boolean<F>> = which.into_iter().map(|b| b.expect("all set")).collect();
         let fields: Vec<FieldVar<F>> = which.iter().map(|b| b.to_field_var()).collect();
         let sum = FieldVar::sum(&fields.iter().collect::<Vec<_>>());
         let sum_for_witness = sum.clone();

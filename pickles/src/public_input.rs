@@ -348,6 +348,9 @@ where
     F: PrimeField,
     C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
 {
+    // `select_curve_points` (step_verifier.ml:380-400): the one-hot lincoms
+    // are rowless; the seals emit per `Double.map`, Y before X (right-to-
+    // left, like every OCaml tuple/vector traversal here).
     let select = |sys: &mut RunState<F>,
                   loc: Cow<'static, str>,
                   points: Vec<(F, F)>|
@@ -359,7 +362,9 @@ where
             x = &x + &bit.to_field_var().scale(px);
             y = &y + &bit.to_field_var().scale(py);
         }
-        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc)?))
+        let y = y.seal(sys, loc.clone())?;
+        let x = x.seal(sys, loc)?;
+        Ok(Point::new(x, y))
     };
 
     enum Prepared<F: PrimeField> {
@@ -402,15 +407,18 @@ where
                 ));
             }
             value => {
-                let g = select(
-                    sys,
-                    loc.clone(),
-                    term.lagranges.iter().map(|&(l, _)| l).collect(),
-                )?;
+                // `lagrange_with_correction` returns `[g; corr]`;
+                // `select_curve_points`'s `Vector.map` evaluates RIGHT-TO-
+                // LEFT, so the correction's seals emit first.
                 let corr = select(
                     sys,
                     loc.clone(),
                     term.lagranges.iter().map(|&(_, c)| c).collect(),
+                )?;
+                let g = select(
+                    sys,
+                    loc.clone(),
+                    term.lagranges.iter().map(|&(l, _)| l).collect(),
                 )?;
                 corrections.push(corr);
                 prepared.push(Prepared::WithCorrection(value.clone(), term.num_bits, g));

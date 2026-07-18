@@ -5604,3 +5604,20 @@ snarky typ : exists = alloc puis check TOUS ensemble — mais
 one-hot/on-curve devraient peut-être s'émettre APRÈS la P-chain du hash
 (l'ordre exists(typ) : alloc sans rows, hash sur les vars alloués,
 checks typ à la FIN ?) — tester en déplaçant les checks. Reprendre ici.
+
+## ★★★ STEP SIDE-LOADED BYTE-IDENTIQUE — wrap à 16 rows
+
+Fixes finaux du step (0 diff / 16384 vs jsoo) :
+- of_index du domaine side-loaded émis en DESCENDANT (Vector.init
+  droite-à-gauche), constante à GAUCHE ; ones_vector : témoin à gauche.
+- `select_curve_points` : seals Y avant X, et pour
+  `lagrange_with_correction` la CORRECTION se sélectionne AVANT g
+  (Vector.map droite-à-gauche).
+- volet 3 : zkapp.ts déclare `previous_state_slots` (union app↔machinerie
+  du statement enfant) — commit o1js b32dce93f.
+Guards : bench W2 = 0, w1 = 0 (dumps locaux).
+RESTE : wrap side-loaded 16 rows (5 clusters « x_hat commitment |
+public_input conditional add » rows 2606-3070 + 105 + 4394) —
+différences de CONSTANTES dans les cond-adds du x_hat wrap (les 5
+clusters ≈ les 5 odd-bits Type2 ? valeurs lagrange ≠). À élucider :
+d'où viennent les constantes jsoo ('0262d2e23722…') vs les nôtres.
