@@ -4888,7 +4888,7 @@ impl<
         private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
         assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-        assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(2, WRAP_ROUNDS));
+        assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(ACTIVE_PROOFS, WRAP_ROUNDS));
         // o1js prepends `dummy_constraints ()` to every rule's main
         // (pickles_bindings.ml) so each step circuit uses every EC gate type.
         crate::api::o1js_dummy_constraints(sys)?;
@@ -4940,7 +4940,7 @@ impl<
         // hand the same vars to the per-proof witnesses for reuse.
         let mut prealloc_prev_app_states: [Option<Vec<FieldVar<Fp>>>; 2] = [None, None];
         let mut previous_app_states: Vec<FieldVar<Fp>> = Vec::new();
-        for i in 0..2 {
+        for i in 0..ACTIVE_PROOFS {
             if dummy_slots[i] {
                 continue;
             }
@@ -4959,7 +4959,7 @@ impl<
                 .map(|&value| sys.compute(loc!(), move |_| value))
                 .collect::<SnarkyResult<Vec<_>>>()?,
         };
-        for i in 0..2 {
+        for i in 0..ACTIVE_PROOFS {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
                 for (actual, expected) in statement[i * per_proof..(i + 1) * per_proof]
@@ -4983,7 +4983,7 @@ impl<
                     proof_data[i]
                         .fixed_width_branch_data
                         .is_some()
-                        .then(|| &statement[2 * per_proof + 1 + i]),
+                        .then(|| &statement[ACTIVE_PROOFS * per_proof + 1 + i]),
                     &mds,
                     dummy_slots[i],
                     shared_index.as_ref(),
@@ -5071,7 +5071,7 @@ impl<
             <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1,
             255,
         )?;
-        digest.assert_equals(sys, loc!(), &statement[2 * (17 + WRAP_ROUNDS)])?;
+        digest.assert_equals(sys, loc!(), &statement[ACTIVE_PROOFS * (17 + WRAP_ROUNDS)])?;
         // The dummy unfinalized statement segments are pinned to the
         // canonical constants LAST, constant-first (`Equal(Constant, Var)` →
         // r-slot rows), matching jsoo's trailing generic block.
