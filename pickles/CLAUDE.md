@@ -25,6 +25,23 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 (1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
+### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
+- ⚠️ zkapp-rust/contracts/node_modules/o1js = SYMLINK vers ~/Projects/o1js (la
+  branche !) — pour du vrai 2.15 : `/tmp/claude-1000/proofdump` (npm i
+  o1js@2.15.0) + `dump-proof.mjs` (compile 19s, init 6.5s, update 8s ✓).
+- 🎯 **La VK du 2.15 stock est BYTE-IDENTIQUE à notre référence branche**
+  (1796/1796) → les preuves 2.15 ciblent exactement la VK qu'on aligne ; la
+  cross-vérif (preuve 2.15 → verifier rust) = LE test de fin.
+- ⚠️ Le prover jsoo de NOTRE branche crashe (`rest of division by vanishing
+  polynomial`) — régression de branche, compile-only OK (dumps valides).
+- `Proof.toJSON().proof` o1js = base64 de SEXP OCaml (`((statement((proof…`),
+  PAS bin_prot. Reste à faire : mapping sexp → statement aplati + WrapWire
+  ProofV1 (parser: /tmp/claude-1000/sexp2json.mjs ; test squelette :
+  `stock_jsoo_215_proof_cross_verifies` dans recorded.rs, skip gracieux).
+  Assemblage MinaWrapProof : wrap_recursion_commitments = 2× dummy wrap sg
+  (constante), challenges = m4nwrap.old_bp ; args verify_side_loaded =
+  m4nstep {cpcs, old_bp} + app_state = publicInput++publicOutput.
+
 ### Fix PARKÉ (validé parité, conflit interne) : threading du digest m4nwrap
 La famille wire PI66 : rust témoigne une COPIE du digest m4nwrap (sv[11]) et ne
 câble jamais le slot PI (self-loop) ; jsoo threade LA VAR DU STATEMENT dans le
