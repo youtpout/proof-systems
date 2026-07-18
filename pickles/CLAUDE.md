@@ -29,6 +29,34 @@ retourne **0 differing rows** (types, coefficients et wires).
 `sigma[0..6]`, `coefficient[0..14]` et les six sélecteurs matchent tous.
 Suites finales : recorded **21/21**, lib **112/112**.
 
+### VALIDATION BOUT-EN-BOUT o1js (2026-07-18, addon rebuildé au pin d86a9430)
+mina-rust `pickle-rs` bumpé → dfbb4075 (lock = proof-systems d86a9430) ;
+`npm run build:rust-backend` (PAS yarn — erreur workspace) installe
+`mina_runtime.node` frais aux 2 emplacements. Résultats (32 cœurs) :
+- **VK AddProgram IDENTIQUE aux 3 sources** : backend rust == jsoo branche ==
+  o1js **2.15 stock npm** — hash
+  `10959392966233509715748678308838967246207769407061667940269890557862386195723`,
+  data 2396 chars byte-identiques (`tmp-vk-dump-add.ts`).
+- **Vérification croisée DANS LES DEUX SENS = true** (`tmp-cross-verify.ts`) :
+  preuve update produite par rust → `verify` sous backend jsoo : **true** ;
+  preuve update authentique de o1js 2.15 stock (`proof-jsoo-update.json`) →
+  `verify` sous backend rust : **true**. Critère réseau atteint.
+- **Bench `tmp-bench-native.ts`** (compile Cache.None + N0/N1/N2 + verify) :
+  rust 12.0s/1.94s/3.60s/3.35s/0.03s (total 22.9s) vs jsoo
+  17.5s/5.01s/6.61s/8.55s/0.26s (total 42.4s) → rust ~1.9× global,
+  2.6× init, 2.55× merge, ~9× verify. Le prover jsoo branche REFONCTIONNE
+  (le crash vanishing-polynomial d'avant n'apparaît plus sur ce flux).
+- ⚠️ Résidu 1 : programme au corps applicatif différent
+  (`BenchNativeProgram` : init fait `publicInput.assertEquals(0)` etc.) →
+  VK **24/28** (σ[6], coeff[0,4,5] divergent, 1er octet 451). L'alignement est
+  complet pour AddProgram mais une règle d'émission côté corps app/snarky
+  diverge encore. Repro : `tmp-vk-dump.ts` + diff par commitment.
+- ⚠️ Résidu 2 : `--test recursion` = 10/13 ; en plus des 2 rouges
+  pré-existants, **`pickles_recursive_step_width2` est un NOUVEAU rouge**
+  (UnsatisfiedEqualConstraint @2948 « verify: sponge digest »,
+  recursive_step.rs:2746) — chemin legacy fixed-arity, witness hors-circuit
+  du digest à réaligner sur le nouveau schedule de sponge.
+
 ### JALON FINAL : WRAP 20→0 wires, VK 22/28→28/28
 Les 20 derniers wires appartenaient à trois manifestations d'une même règle
 OCaml droite-à-gauche :
