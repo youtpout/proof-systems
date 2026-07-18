@@ -20,6 +20,32 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
+## REPRISE (état exact fin de nuit 2026-07-18)
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 450 wires ; merge 5481 coeff
+(1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
+/ 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
+
+### Wires update (450) — familles identifiées
+1. RÉSOLU : binding des slots SV forward (commit) — cycle(32.0) aligné.
+2. Classe {9,255..376,11071,1,3,5,7} vs {63,393.3,393.4} : rust a DEUX classes,
+   jsoo UNE — il manque l'union du sf du slot DUMMY (PI63, update est width-2 :
+   1 réel + 1 dummy) et de la paire booleanité-393 avec la grande classe.
+   Piste : OCaml assert `sf==mv` pour TOUS les slots (y compris dummy,
+   mv=false const → union via cached_constants[0]??) — vérifier la valeur des
+   odd-bits du proof enregistré (probablement 0 → classe du zéro !).
+3. Familles ~135+ (rs:4425, per-proof witness) : un var témoin dont le 1er
+   usage diffère — jsoo l'utilise dans `absorb w_comm` (5986), rust dans le
+   `combine` (8742) → un seal/copie d'un côté. Buckets: {0:182, 1000:40,
+   2000:59, 3000:41, ...} — ~5-6 familles à traiter une par une (méthode :
+   cycle-walk + labels).
+
+### Merge @529 (5481 coeff) — le double-boolean
+jsoo émet 2 booleanités adjacentes à la frontière groupe-p2/groupe-p1 des
+checks SV. Peut-être le mv-witness du 2e proof émis LÀ (pas à verify_one) —
+mais update contredit une règle uniforme. Sonder : positions des DEUX mv de
+merge dans jsoo (chercher les booleanités [-1,0,0,1,0] non appariées dans les
+5481 diffs, avec leurs classes de wires).
+
 ## 🎉 JALON (2026-07-18 ~fin de nuit) : STEP UPDATE = 0 COEFF-DIFF
 **Le circuit step update est BYTE-IDENTIQUE à jsoo en coefficients** (16384
 lignes, 0 différente ; init aussi). Restent : 466 wire-diffs update (permutation
