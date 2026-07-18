@@ -5421,3 +5421,51 @@ C. **Step gadget side-loaded** (le gros) :
    - old-digest à largeur enfant (0) — via A.
 D. Re-validation : sideloaded harness 0-diff, bench W2 + w1 FULL MATCH,
    recorded 22/22, puis zkapp-rust (VkParity + side-loaded key test).
+
+## ★ GADGET SIDE-LOADED STEP — plan d'exécution détaillé (C1..C4)
+
+Wrap sideloaded : histogramme EXACT, 44 rows résiduelles = CONSTANTES
+cuites (les valeurs de la VK du step, qui changeront avec le gadget) — se
+résoudront SEULES quand le step sera identique. Step restant vs jsoo :
+jsoo +319 Poseidon, +326 Generic, +29 CompleteAdd (et rust doit perdre
+ses rangées « machinerie standard » là où jsoo utilise le gadget).
+
+Sémantique OCaml (lue au littéral) :
+- La VK est TÉMOIGNÉE DANS L'APP (au point d'appel `proof.verify(vk)`,
+  via `Side_loaded.in_circuit` → `exists Side_loaded_verification_key
+  .typ` : 28 points wrap_index avec check on-curve, + one-hots
+  `max_proofs_verified` (3 bools) et `actual_wrap_domain_size` (3 bools)).
+- La machinerie per-proof (types_map.For_step.of_side_loaded) :
+  `wrap_key` = les points témoins, `wrap_domain = Side_loaded which`
+  (one-hot), `step_domains = Side_loaded`.
+- verify : index-sponge sur les points TÉMOINS (pas de partage),
+  x_hat = `public_input_commitment_dynamic` (step_verifier.ml:373-437 :
+  par élément du statement, `select_curve_points` = one-hot × constantes
+  lagrange des 3 domaines wrap [13,14,15] (wrap_domains pv∈[0,1,2]),
+  puis seal ; version `lagrange_with_correction` (2 points) pour les
+  Packed ; les domaines 13≠14≠15 ⇒ le raccourci all-equal (l.387) NE
+  s'applique PAS → chemins one-hot).
+- finalize du wrap enfant : domaine Side_loaded = sélection one-hot sur
+  [13,14,15] (notre infra Pseudo/SelectFrom du finalize step, à brancher
+  sur le one-hot du vk témoin).
+
+### Incréments
+C1. Nouveau constraint kind enregistré `side_loaded_vk { proof: u32,
+    commitments: Vec<u32> (indices aux des 56 coords), max_pv one-hot?,
+    domain one-hot? }` — o1js l'émet au point verify(vk) (le vk arg
+    fournit les valeurs) ; le replay rust étend : witness des 28 points
+    DEPUIS ces aux (les cvars des coords = les cvars de l'app — wire
+    union), on-curve 2 rows/pt, one-hots (3+3 bools + asserts) ; stocke
+    l'index témoin par slot dans un RefCell côté main pour la machinerie.
+C2. Machinerie : si slot side-loaded → dlog_index = index témoin,
+    PAS de share_index_sponge (sponge_after_index sur les témoins).
+C3. x_hat dynamique (le plus gros) : `public_input_commitment_dynamic`
+    — one-hot × constantes lagrange des 3 domaines (SRS tock 2^13/14/15),
+    lagrange_with_correction, seal. Emplacement : XHatInput nouveau
+    variant dans verify (step_verifier.rs).
+C4. finalize domaine enfant : FinalizeDomain::SelectFrom sur [13,14,15]
+    avec le one-hot du vk (au lieu du Fixed(2^15 wrap program)).
+Validation à chaque incrément : sideloaded harness (dump local kimchi_napi
+: PROOF_SYSTEMS_ROOT=… npm run build:native), garde-fous bench W2 + w1
+FULL MATCH + recorded 22/22. Les VALEURS de prove side-loaded viendront
+après la parité gates (nouveau chemin prove avec DynamicProof envelope).
