@@ -22,10 +22,24 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
-Wrap frais : **227 coeff** (1re @4741) / **548 wires** (1re @147),
-555 lignes full-diff sur 16384. **VK 18/28** (restent σ[0..5] = wires du
-wrap + coeff[0,1,5,6]). Les anciennes divergences de valeurs step-VK @138 ont
-donc convergé ; la prochaine vraie frontière coefficients du wrap est @4741.
+Wrap frais : **0 coeff** / **185 wires** (1re @147), soit 185 lignes full-diff
+sur 16384. **VK 22/28** : tous les coefficients et sélecteurs matchent ; il
+reste uniquement **σ[0..5]** (wires du wrap). Les anciennes divergences de
+valeurs step-VK @138 ont convergé avec les steps, puis le bloc coefficients
+@4741 a été résolu par l'ordre des paires Lagrange ci-dessous.
+
+### JALON : WRAP = 0 coeff, VK 22/28 — paires Lagrange droite-à-gauche
+La frontière @4741 était le premier `statement_terms` à domaine sélectionné.
+Le multiset des coefficients était déjà identique, mais organisé par groupes
+inversés. Deux paires OCaml imbriquées expliquaient exactement la permutation :
+- le point `(x,y)` sélectionné scelle **y avant x** ;
+- `lagrange_with_correction` produit `(lagrange, correction)`, donc sélectionne
+  et scelle la **correction avant le lagrange**.
+
+Après les deux réordonnancements gate-neutres dans `public_input.rs` : wrap
+**227→0 coeff**, wires **548→185**, VK **18→22/28**. Une sonde qui inversait
+les sets de domaines a aggravé 227→257 et a été revert ; l'appariement logique
+branches/domaines était correct. Suites : recorded **21/21**, lib **112/112**.
 
 ### JALON : threading direct et dynamique de l'état applicatif — steps 0/0
 La dernière famille update 3 / merge 5 venait de deux copies distinctes du

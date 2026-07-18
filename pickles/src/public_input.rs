@@ -120,17 +120,23 @@ pub fn statement_terms<F: PrimeField>(
                         // prime`, which re-reduces the lincom on every bit, so
                         // those MUST stay sealed.
                         if do_seal {
-                            Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc.clone())?))
+                            // The selected point is an OCaml pair: its
+                            // components are evaluated right-to-left.
+                            let y = y.seal(sys, loc.clone())?;
+                            let x = x.seal(sys, loc.clone())?;
+                            Ok(Point::new(x, y))
                         } else {
                             Ok(Point::new(x, y))
                         }
                     };
-                let l = select(&|e| e.0, sys, seal_lagrange)?;
+                // `lagrange_with_correction` returns an OCaml pair; build the
+                // correction (right component) before the lagrange.
                 let c = if want_correction {
                     Some(select(&|e| e.1, sys, true)?)
                 } else {
                     None
                 };
+                let l = select(&|e| e.0, sys, seal_lagrange)?;
                 (l, c)
             }
         })
