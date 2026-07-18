@@ -310,6 +310,170 @@ where
     )
 }
 
+/// One input of [`multiscale_dynamic`]: a statement value, its packed bit
+/// width, and the per-domain CONSTANT Lagrange commitments it scales (one
+/// per possible side-loaded wrap domain, in one-hot order).
+pub struct DynamicTerm<F: PrimeField> {
+    pub value: FieldVar<F>,
+    pub num_bits: usize,
+    /// `(lagrange, correction)` coordinates per selectable domain.
+    pub lagranges: Vec<((F, F), (F, F))>,
+}
+
+/// OCaml's SIDE-LOADED public-input commitment
+/// (`Step_verifier.public_input_commitment_dynamic`, step_verifier.ml:373):
+/// every Lagrange commitment is the one-hot combination of the possible
+/// wrap domains' constants (selection = lincoms, then one seal row per
+/// coordinate), and — unlike [`multiscale_known`] — the corrections are
+/// var points folded IN circuit:
+///
+/// 1. per term, in statement order: a 1-bit term asserts booleanity and
+///    keeps `Cond_add(selected lagrange)`; an n-bit term selects and seals
+///    BOTH `[lagrange; correction]` points;
+/// 2. `correction` = left-to-right `add_fast` reduce of all corrections;
+/// 3. `init` = `add_fast` fold of the constant-valued terms' selected
+///    points onto the correction sum;
+/// 4. main fold, per term in order: `Cond_add` → `if b then acc + g else
+///    acc`; corrected → `acc + scale_fast2'(g, x)` (the scale emits INSIDE
+///    the fold).
+///
+/// Returns the UN-negated sum, like [`multiscale_known`].
+pub fn multiscale_dynamic<F, C>(
+    sys: &mut RunState<F>,
+    loc: Cow<'static, str>,
+    terms: &[DynamicTerm<F>],
+    which: &[snarky::Boolean<F>],
+) -> SnarkyResult<Point<F>>
+where
+    F: PrimeField,
+    C: ark_ec::short_weierstrass::SWCurveConfig<BaseField = F>,
+{
+    let select = |sys: &mut RunState<F>,
+                  loc: Cow<'static, str>,
+                  points: Vec<(F, F)>|
+     -> SnarkyResult<Point<F>> {
+        assert_eq!(points.len(), which.len(), "one point per selectable domain");
+        let mut x = FieldVar::constant(F::zero());
+        let mut y = FieldVar::constant(F::zero());
+        for (bit, (px, py)) in which.iter().zip(points) {
+            x = &x + &bit.to_field_var().scale(px);
+            y = &y + &bit.to_field_var().scale(py);
+        }
+        Ok(Point::new(x.seal(sys, loc.clone())?, y.seal(sys, loc)?))
+    };
+
+    enum Prepared<F: PrimeField> {
+        CondAdd(snarky::Boolean<F>, Point<F>),
+        WithCorrection(FieldVar<F>, usize, Point<F>),
+        ConstantOne(Point<F>),
+    }
+    let mut prepared: Vec<Prepared<F>> = Vec::with_capacity(terms.len());
+    let mut corrections: Vec<Point<F>> = Vec::new();
+    for term in terms {
+        match &term.value {
+            FieldVar::Constant(c) => {
+                if c.is_zero() {
+                    continue;
+                }
+                assert!(c.is_one(), "dynamic x_hat: non-0/1 constant unsupported");
+                let g = select(
+                    sys,
+                    loc.clone(),
+                    term.lagranges.iter().map(|&(l, _)| l).collect(),
+                )?;
+                prepared.push(Prepared::ConstantOne(g));
+            }
+            value if term.num_bits == 1 => {
+                sys.add_constraint(
+                    snarky::runner::Constraint::BasicSnarkyConstraint(
+                        snarky::constraint_system::BasicSnarkyConstraint::Boolean(value.clone()),
+                    ),
+                    None,
+                    loc.clone(),
+                )?;
+                let g = select(
+                    sys,
+                    loc.clone(),
+                    term.lagranges.iter().map(|&(l, _)| l).collect(),
+                )?;
+                prepared.push(Prepared::CondAdd(
+                    snarky::Boolean::create_unsafe(value.clone()),
+                    g,
+                ));
+            }
+            value => {
+                let g = select(
+                    sys,
+                    loc.clone(),
+                    term.lagranges.iter().map(|&(l, _)| l).collect(),
+                )?;
+                let corr = select(
+                    sys,
+                    loc.clone(),
+                    term.lagranges.iter().map(|&(_, c)| c).collect(),
+                )?;
+                corrections.push(corr);
+                prepared.push(Prepared::WithCorrection(value.clone(), term.num_bits, g));
+            }
+        }
+    }
+
+    let mut corrections = corrections.into_iter();
+    let mut acc = corrections
+        .next()
+        .expect("multiscale_dynamic: at least one corrected term");
+    for corr in corrections {
+        acc = crate::plonk_curve_ops::add_fast(
+            sys,
+            Cow::Owned(format!("{loc} | dynamic correction reduce")),
+            &acc,
+            &corr,
+        )?;
+    }
+    for term in &prepared {
+        if let Prepared::ConstantOne(g) = term {
+            acc = crate::plonk_curve_ops::add_fast(
+                sys,
+                Cow::Owned(format!("{loc} | dynamic constant add")),
+                &acc,
+                g,
+            )?;
+        }
+    }
+    for term in prepared {
+        match term {
+            Prepared::ConstantOne(_) => {}
+            Prepared::CondAdd(bit, g) => {
+                let added = crate::plonk_curve_ops::add_fast(
+                    sys,
+                    Cow::Owned(format!("{loc} | dynamic cond add")),
+                    &g,
+                    &acc,
+                )?;
+                let x = sys.if_(loc.clone(), bit.clone(), added.x, acc.x)?;
+                let y = sys.if_(loc.clone(), bit.clone(), added.y, acc.y)?;
+                acc = Point::new(x, y);
+            }
+            Prepared::WithCorrection(value, num_bits, g) => {
+                let scaled = crate::plonk_curve_ops::scale_fast2_prime(
+                    sys,
+                    Cow::Owned(format!("{loc} | dynamic scale")),
+                    &g,
+                    &value,
+                    num_bits,
+                )?;
+                acc = crate::plonk_curve_ops::add_fast(
+                    sys,
+                    Cow::Owned(format!("{loc} | dynamic add")),
+                    &acc,
+                    &scaled,
+                )?;
+            }
+        }
+    }
+    Ok(acc)
+}
+
 /// Splitting a field variable into `(x_div_2, x_odd)` — used on the wrap side
 /// where a step statement element lives in the *bigger* Tick field: the halved
 /// value fits the Tock circuit's Lagrange scaling, and the odd bit becomes a
