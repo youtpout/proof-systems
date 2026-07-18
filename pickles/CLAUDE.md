@@ -78,6 +78,28 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### DÉCISIONS PERF (2026-07-18, directives utilisateur — règle ISO-JSOO)
+Règle : on n'intègre une optimisation QUE si jsoo a la fonctionnalité
+équivalente (iso-fonctionnalité ; le gain rust doit venir du parallélisme,
+sans sacrifier sécurité/compatibilité).
+- **32x9 (fork openmina d'arkworks) : PARQUÉ** — o1js stock ne l'a pas.
+  (Note : dans notre repo le MÊME kimchi_wasm sert jsoo et rust-wasm ;
+  l'intégrer accélérerait les deux côtés à la fois.)
+- **Cache SRS disque : LÉGITIME** — jsoo cache son SRS en standard
+  (~/.cache/o1js/srs-fp-65536 + srs-fq-32768, header kind 'srs',
+  désactivé par Cache.None). À faire avec le codec v2.
+- **DÉCOUVERTE MAJEURE — cache des PROVER KEYS** : avec le cache o1js par
+  défaut CHAUD, jsoo compile en **6,0 s** (recharge step-pk/wrap-pk depuis
+  le disque) ; le backend rust IGNORE le cache o1js (chaud == froid :
+  natif 7,9 s, wasm 18,4 s). C'est LE prochain chantier (tâche #12) : le
+  chemin « base » a déjà le motif complet (rust-pickles-recorded.ts:1660-1712,
+  cache_key/from_cache_bytes/cache_bytes, kind 'step-pk') — répliquer pour
+  RecordedCompiledProgram (sérialiser les prover indexes kimchi, serde dispo,
+  réinjection srs/linearization comme template_dummy::fixup_vi).
+Matrice mesurée (compile 3 méthodes) : froid jsoo 16,6-18,2 / natif 7,9 /
+wasm 18,2-18,7 ; chaud jsoo 6,0 / natif 7,9 / wasm 18,4.
+Bench : BENCH_CACHE=default active le cache o1js dans tmp-bench-wasm.ts.
+
 ### SOIRÉE 2026-07-18 — PERF COMPILE (3 fixes majeurs landés) + CAUSE VK UNIVERSELLE
 **Perf compile** (bench tmp-bench-wasm.ts, 32 cœurs, mesures du soir) :
 natif **12,2 → 7,9 s** ; wasm **30,7 → 18,7 s** (jsoo même run 18,2 s ; son
