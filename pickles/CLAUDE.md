@@ -78,6 +78,17 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### GATE ZKAPP-RUST (2026-07-19) : ZkPrograms 4/4 ✓ ; side-loaded ✗ (tâche #13)
+`zkapp-rust/contracts` : `test:vk-parity` **2/2** — square (width-0) et add
+(récursif) donnent le MÊME hash de VK sur les 4 backends (jsoo-wasm,
+jsoo-natif [o1js 2.15 STOCK npm], rust-wasm, rust-natif). `npm test` 2/2
+(settlement du proof sur le smart contract Add). MAIS le check side-loaded
+(`SideLoadedVkParityChild.js`, SmartContract vérifiant une DynamicProof
+contre une VK side-loaded) DIVERGE : jsoo 2268640726…0736392 vs rust
+1672172702…3223857 (chacun cohérent wasm/natif). Isolation : branche-jsoo ==
+stock-2.15 → pas de dérive TS, c'est le GADGET SIDE-LOADED rust en circuit
+qui n'est pas aligné. Repro + méthode dans la tâche #13.
+
 ### NUIT 2026-07-18/19 — VK UNIVERSELLE ✓ + WASM SOUS JSOO ✓ (commit 3c060e490d)
 **VK universelle atteinte** : BenchNativeProgram (corps app arbitraire :
 add(var), assertEquals(0), delta privé) = **byte-identique rust==jsoo sur
