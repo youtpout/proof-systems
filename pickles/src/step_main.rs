@@ -125,6 +125,15 @@ where
             // `Field.if_ is_base_case` FOLDS AWAY there (zero gates, the
             // challenge equality is a pure wire merge) — so the bypass flag
             // is the CONSTANT false even though must_verify is witnessed.
+            //
+            // jsoo also pins the witnessed bool to the constant one — by this
+            // point the `cached_constants[1]` var already exists (the
+            // statement forbidden-check asserts ran), so the pin is a PURE
+            // WIRE UNION with the shared one-class (no gate; measured: jsoo's
+            // {sf, mv} pair sits in the same equivalence class as the
+            // one-pinned block outputs).
+            mv.to_field_var()
+                .assert_equals(sys, loc.clone(), &FieldVar::constant(F::one()))?;
             (mv, Boolean::false_())
         } else {
             (p.must_verify.clone(), p.is_base_case.clone())
