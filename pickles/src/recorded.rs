@@ -2319,14 +2319,18 @@ pub struct RecordedProgramBranch {
     pub proofs_verified: u8,
 }
 
-type RecordedProgramStepIndexes = crate::recursive_step::RecursiveStepWidth2Indexes<
-    RECORDED_N1_STEP_ROUNDS,
-    RECORDED_BASE_WRAP_ROUNDS,
-    RECORDED_N1_STEP_STMT_LEN,
-    RECORDED_N2_STEP_STMT_LEN,
->;
+type RecordedProgramStepIndexesShaped<const STEP_PI: usize, const ACTIVE: usize> =
+    crate::recursive_step::RecursiveStepWidth2Indexes<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
+    >;
+type RecordedProgramStepIndexes =
+    RecordedProgramStepIndexesShaped<RECORDED_N2_STEP_STMT_LEN, 2>;
 
-fn compile_recorded_program_steps(
+fn compile_recorded_program_steps<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2343,11 +2347,11 @@ fn compile_recorded_program_steps(
         >,
     >,
     finalize_domain_log2s: &[u32],
-) -> Vec<Option<RecordedProgramStepIndexes>> {
+) -> Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>> {
     branches
         .iter()
         .map(|branch| {
-            Some(compile_recorded_program_step_branch(
+            Some(compile_recorded_program_step_branch::<STEP_PI, ACTIVE>(
                 branch,
                 template,
                 wrap_vk,
@@ -2363,7 +2367,7 @@ fn compile_recorded_program_steps(
 /// branch first (its index is the program's shared finalize index; aligning
 /// it to itself is a no-op), then every other branch — in parallel — aligned
 /// to it.
-fn compile_recorded_program_steps_single_pass(
+fn compile_recorded_program_steps_single_pass<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2373,11 +2377,11 @@ fn compile_recorded_program_steps_single_pass(
         poly_commitment::ipa::SRS<Pallas>,
     >,
     finalize_domain_log2s: &[u32],
-) -> Vec<Option<RecordedProgramStepIndexes>> {
+) -> Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>> {
     use rayon::prelude::*;
     let first_n0 = branches.iter().position(|b| b.proofs_verified == 0);
     let n0_indexes = first_n0.map(|i| {
-        compile_recorded_program_step_branch(
+        compile_recorded_program_step_branch::<STEP_PI, ACTIVE>(
             &branches[i],
             template,
             wrap_vk,
@@ -2390,12 +2394,12 @@ fn compile_recorded_program_steps_single_pass(
     let rest: Vec<usize> = (0..branches.len())
         .filter(|&i| Some(i) != first_n0)
         .collect();
-    let compiled: Vec<(usize, RecordedProgramStepIndexes)> = rest
+    let compiled: Vec<(usize, RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>)> = rest
         .into_par_iter()
         .map(|i| {
             (
                 i,
-                compile_recorded_program_step_branch(
+                compile_recorded_program_step_branch::<STEP_PI, ACTIVE>(
                     &branches[i],
                     template,
                     wrap_vk,
@@ -2406,7 +2410,7 @@ fn compile_recorded_program_steps_single_pass(
             )
         })
         .collect();
-    let mut out: Vec<Option<RecordedProgramStepIndexes>> =
+    let mut out: Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>> =
         (0..branches.len()).map(|_| None).collect();
     for (i, indexes) in compiled {
         out[i] = Some(indexes);
@@ -2429,8 +2433,9 @@ type StepFinalizeIndex = kimchi::verifier_index::VerifierIndex<
 >;
 
 /// The shared prepared-step construction of the program step compiles and
-/// the domain probe.
-fn build_recorded_program_step_prepared(
+/// the domain probe, generic over the program width (`STEP_PI` = the step
+/// statement length, `ACTIVE` = the arity: <67, 2> or <34, 1>).
+fn build_recorded_program_step_prepared<const STEP_PI: usize, const ACTIVE: usize>(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2444,7 +2449,7 @@ fn build_recorded_program_step_prepared(
 ) -> (
     crate::recursive_step::PreparedRecursiveStepWidth2<
         RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
+        STEP_PI,
     >,
     crate::recursive_step::EmbeddedAppMain,
 ) {
@@ -2481,18 +2486,21 @@ fn build_recorded_program_step_prepared(
         0 => crate::recursive_step::prepare_recursive_step_n0::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
         >(prepared, app_state),
         1 => crate::recursive_step::prepare_recursive_step_n1::<
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
         >(prepared, app_state),
-        2 => crate::recursive_step::prepare_recursive_step_width2::<
-            RECORDED_BASE_WRAP_ROUNDS,
-            RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
-        >(prepared.clone(), prepared, app_state),
+        2 => {
+            assert_eq!(ACTIVE, 2, "a width-1 program cannot hold a pv=2 branch");
+            crate::recursive_step::prepare_recursive_step_width2::<
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                STEP_PI,
+            >(prepared.clone(), prepared, app_state)
+        }
         _ => unreachable!(),
     };
     let app = RecordedApp {
@@ -2508,7 +2516,7 @@ fn build_recorded_program_step_prepared(
 
 /// Debug-only: the probe's prepared step WITHOUT the Selected domain list
 /// (historical fixed-finalize path).
-fn build_recorded_program_step_prepared_fixed_for_debug(
+fn build_recorded_program_step_prepared_fixed_for_debug<const STEP_PI: usize, const ACTIVE: usize>(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2577,7 +2585,7 @@ fn build_recorded_program_step_prepared_fixed_for_debug(
     (prepared, main)
 }
 
-fn compile_recorded_program_step_branch(
+fn compile_recorded_program_step_branch<const STEP_PI: usize, const ACTIVE: usize>(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2588,8 +2596,8 @@ fn compile_recorded_program_step_branch(
     >,
     finalize_index: Option<&StepFinalizeIndex>,
     finalize_domain_log2s: &[u32],
-) -> RecordedProgramStepIndexes {
-    let (prepared, main) = build_recorded_program_step_prepared(
+) -> RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE> {
+    let (prepared, main) = build_recorded_program_step_prepared::<STEP_PI, ACTIVE>(
         branch,
         template,
         wrap_vk,
@@ -2597,18 +2605,19 @@ fn compile_recorded_program_step_branch(
         finalize_index,
         finalize_domain_log2s,
     );
-    crate::recursive_step::compile_prepared_recursive_step_width2::<
+    crate::recursive_step::compile_prepared_recursive_step_width2_arity::<
         RECORDED_N1_STEP_ROUNDS,
         RECORDED_BASE_WRAP_ROUNDS,
         RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
     >(&prepared, Some(main))
 }
 
 /// OCaml `Fix_domains.domains`: synthesizes the branch's step constraint
 /// system with the rough placeholder domain list and returns its natural
 /// domain. No SRS or commitment work happens here.
-fn recorded_program_step_branch_domain_log2(
+fn recorded_program_step_branch_domain_log2<const STEP_PI: usize, const ACTIVE: usize>(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -2619,7 +2628,7 @@ fn recorded_program_step_branch_domain_log2(
     >,
 ) -> u32 {
     let t0 = snarky::wasm_instant::Instant::now();
-    let (prepared, main) = build_recorded_program_step_prepared(
+    let (prepared, main) = build_recorded_program_step_prepared::<STEP_PI, ACTIVE>(
         branch,
         template,
         wrap_vk,
@@ -2628,11 +2637,12 @@ fn recorded_program_step_branch_domain_log2(
         &[FIX_DOMAINS_ROUGH_LOG2],
     );
     let t1 = snarky::wasm_instant::Instant::now();
-    let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2::<
+    let log2 = crate::recursive_step::domain_log2_prepared_recursive_step_width2_arity::<
         RECORDED_N1_STEP_ROUNDS,
         RECORDED_BASE_WRAP_ROUNDS,
         RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
     >(&prepared, Some(main));
     crate::recorded::record_probe_timing(format!(
         "pv{} prepare {:.2?} + synth/cs {:.2?} -> 2^{log2}",
@@ -2667,7 +2677,7 @@ pub fn debug_probe_branch(
     let (prepared, main) = if mode == 1 || mode == 3 {
         // FIXED finalize: bypass the domain-list align entirely; mode 3
         // additionally skips the verifier align (share_index_sponge).
-        build_recorded_program_step_prepared_fixed_for_debug(
+        build_recorded_program_step_prepared_fixed_for_debug::<RECORDED_N2_STEP_STMT_LEN, 2>(
             branch,
             &template,
             &bootstrap_vk,
@@ -2675,7 +2685,7 @@ pub fn debug_probe_branch(
             mode == 3,
         )
     } else {
-        build_recorded_program_step_prepared(
+        build_recorded_program_step_prepared::<RECORDED_N2_STEP_STMT_LEN, 2>(
             branch,
             &template,
             &bootstrap_vk,
@@ -3176,7 +3186,7 @@ impl RecordedCompiledProgram {
                 branches
                     .iter()
                     .map(|branch| {
-                        recorded_program_step_branch_domain_log2(
+                        recorded_program_step_branch_domain_log2::<RECORDED_N2_STEP_STMT_LEN, 2>(
                             branch,
                             &template,
                             &structure_vk,
@@ -3189,7 +3199,7 @@ impl RecordedCompiledProgram {
                 branches
                     .par_iter()
                     .map(|branch| {
-                        recorded_program_step_branch_domain_log2(
+                        recorded_program_step_branch_domain_log2::<RECORDED_N2_STEP_STMT_LEN, 2>(
                             branch,
                             &template,
                             &structure_vk,
@@ -3368,7 +3378,7 @@ impl RecordedCompiledProgram {
             branches
                 .par_iter()
                 .map(|branch| {
-                    recorded_program_step_branch_domain_log2(
+                    recorded_program_step_branch_domain_log2::<RECORDED_N2_STEP_STMT_LEN, 2>(
                         branch,
                         &template,
                         &bootstrap_vk,

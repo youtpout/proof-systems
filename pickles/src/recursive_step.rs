@@ -2572,6 +2572,72 @@ pub fn domain_log2_prepared_recursive_step_width2<
     .unwrap()
 }
 
+
+/// [`compile_prepared_recursive_step_width2_with_min_domain`] generic over
+/// the program arity (`ACTIVE_PROOFS` = 2 for width-2 programs, 1 for the
+/// width-1 shape OCaml gives a max-pv-1 program).
+pub fn compile_prepared_recursive_step_width2_arity<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+    const ACTIVE_PROOFS: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+) -> RecursiveStepWidth2Indexes<
+    PREV_ROUNDS,
+    WRAP_ROUNDS,
+    WIDTH1_INPUT_LEN,
+    PUBLIC_INPUT_LEN,
+    ACTIVE_PROOFS,
+> {
+    RecursiveStepWidth2Circuit::<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        PUBLIC_INPUT_LEN,
+        ACTIVE_PROOFS,
+    > {
+        proofs: prepared.proofs.clone(),
+        dummy_slots: prepared.dummy_slots,
+        app_state: prepared.app_state.clone(),
+        app,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+    }
+    .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+    .unwrap()
+}
+
+/// [`domain_log2_prepared_recursive_step_width2`] generic over the arity.
+pub fn domain_log2_prepared_recursive_step_width2_arity<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+    const ACTIVE_PROOFS: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+) -> u32 {
+    use snarky::api::SnarkyCircuit;
+    RecursiveStepWidth2Circuit::<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        PUBLIC_INPUT_LEN,
+        ACTIVE_PROOFS,
+    > {
+        proofs: prepared.proofs.clone(),
+        dummy_slots: prepared.dummy_slots,
+        app_state: prepared.app_state.clone(),
+        app,
+        messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+    }
+    .domain_log2()
+    .unwrap()
+}
+
 pub fn prove_prepared_recursive_step_width2_arity<
     const PREV_ROUNDS: usize,
     const WRAP_ROUNDS: usize,
