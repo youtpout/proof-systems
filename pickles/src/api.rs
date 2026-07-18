@@ -452,9 +452,12 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // the bulletproof zone are exactly lr (15×2), delta and sg.
         let mkpts = |sys: &mut RunState<Fq>, ps: &[(Fq, Fq)]| -> SnarkyResult<Vec<Point<Fq>>> {
             let mut out = vec![];
-            for &p in ps {
+            // `Vector.wrap_typ Inner_curve.typ` witnesses the tail first.
+            // Preserve the logical vector after matching that emission order.
+            for &p in ps.iter().rev() {
                 out.push(mkpt(sys, p)?);
             }
+            out.reverse();
             Ok(out)
         };
         let w1 = |sys: &mut RunState<Fq>, v: Fq| sys.compute(loc!(), move |_| v);

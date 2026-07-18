@@ -22,7 +22,7 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
-Wrap frais : **0 coeff** / **185 wires** (1re @147), soit 185 lignes full-diff
+Wrap frais : **0 coeff** / **181 wires** (1re @174), soit 181 lignes full-diff
 sur 16384. **VK 22/28** : tous les coefficients et sélecteurs matchent ; il
 reste uniquement **σ[0..5]** (wires du wrap). Les anciennes divergences de
 valeurs step-VK @138 ont convergé avec les steps, puis le bloc coefficients
@@ -40,6 +40,16 @@ Après les deux réordonnancements gate-neutres dans `public_input.rs` : wrap
 **227→0 coeff**, wires **548→185**, VK **18→22/28**. Une sonde qui inversait
 les sets de domaines a aggravé 227→257 et a été revert ; l'appariement logique
 branches/domaines était correct. Suites : recorded **21/21**, lib **112/112**.
+
+### Wires wrap : 185→181, frontière 147→174
+`prev_step_accs` est témoigné par OCaml avec
+`Vector.wrap_typ Inner_curve.typ Max_proofs_verified.n` : les points sont créés
+du dernier au premier, puis le vecteur logique est conservé. Rust `mkpts`
+allouait les deux points en avant. Cela croisait exactement les cycles des
+quatre coordonnées entre les checks on-curve @147..150 et les hashes des
+accumulateurs @4021/@4046/@4228/@4241. `mkpts` émet désormais en reverse puis
+reverse son résultat. Coeffs wrap toujours 0 ; recorded **21/21**, lib
+**112/112**.
 
 ### JALON : threading direct et dynamique de l'état applicatif — steps 0/0
 La dernière famille update 3 / merge 5 venait de deux copies distinctes du
