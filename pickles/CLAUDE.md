@@ -5567,3 +5567,22 @@ SNARKY_KEEP_LABELS=1 + première zone divergente vs jsoo).
 Encore à faire ensuite : garde-fous (bench W2, w1, recorded 22/22) puis
 commit ; puis wrap 44 rows (auto) ; puis PROVE side-loaded (chemin
 DynamicProof envelope) + zkapp-rust suite.
+
+### Localisation des 132 Generic (side-loaded step)
+Première divergence typ à la row 446, labels = recorded.rs:590/631/632 =
+le LOWERING DE L'APP ENREGISTRÉE (arms Equal/Poseidon du replay), dans la
+zone poseidon de l'app (les 27 poseidon du zkapp = hash account-update) :
+jsoo [Generic 2, Poseidon 11] vs rust [Generic 3, Poseidon 11], puis
+jsoo Poseidon-4 où rust Poseidon-3 — décalages ±1 par bloc. Le total
+−132 Generic rust est la SOMME de ces écarts dans la région app.
+HYPOTHÈSES : (a) la position/forme de notre marqueur side_loaded_vk
+décale les variables de l'app (allocation aux) vs jsoo qui witness le vk
+APRÈS le corps ; (b) le recorder o1js émet pour ce code zkapp une
+séquence poseidon/generic légèrement ≠ de jsoo natif (à comparer :
+l'app zkapp était iso AVANT le side-loaded — vérifier avec le zkapp
+NON-side-loaded harness (tmp-zkapp/zkapp-gates dumps) que l'app zone est
+toujours iso) ; (c) l'assert digest==vk_hash (Equal) → union de classes
+qui change le packing double-generic autour.
+Boucle : dumper les VALEURS/coeffs des rows 440-475 des deux côtés,
+identifier ce que chaque Generic calcule (les 2 vs 3 avant le 1er bloc
+Poseidon), remonter au code o1js correspondant.
