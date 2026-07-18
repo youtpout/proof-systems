@@ -4782,6 +4782,20 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // vector: [b0 = pv≥2, b1 = pv≥1] ⇒ N0=[F,F], N1=[F,T], N2=[T,T].
     let proofs_verified_mask = branch_mask;
 
+    let prev_challenges = d
+        .prev_challenges
+        .iter()
+        .map(|chals| wvec(sys, chals))
+        .collect::<SnarkyResult<Vec<_>>>()?;
+    let finalize_prev_challenges = if d.fixed_width_branch_data.is_some() {
+        debug_assert_eq!(d.finalize_prev_challenges, d.prev_challenges);
+        prev_challenges.clone()
+    } else {
+        d.finalize_prev_challenges
+            .iter()
+            .map(|chals| wvec(sys, chals))
+            .collect::<SnarkyResult<Vec<_>>>()?
+    };
     let proof = PerProofInput {
         finalize_params,
         finalize_evals,
@@ -4791,16 +4805,8 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         prev_app_state,
         messages_for_next_step_accumulators: messages_accumulators,
         prev_challenge_polynomial_commitments: prev_cpcs,
-        prev_challenges: d
-            .prev_challenges
-            .iter()
-            .map(|chals| wvec(sys, chals))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        finalize_prev_challenges: d
-            .finalize_prev_challenges
-            .iter()
-            .map(|chals| wvec(sys, chals))
-            .collect::<SnarkyResult<Vec<_>>>()?,
+        prev_challenges,
+        finalize_prev_challenges,
         proofs_verified_mask,
         vk,
         packed_lagranges: d

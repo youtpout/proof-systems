@@ -485,7 +485,7 @@ pub fn finalize_deferred<F: PrimeField>(
     let mut sg_at_zeta = Vec::with_capacity(witness.prev_challenges.len());
     let mut sg_at_zetaw = Vec::with_capacity(witness.prev_challenges.len());
     let sg_evals_loc: Cow<'static, str> = Cow::Owned(format!("{loc} | sg_evals"));
-    for old_challenges in &witness.prev_challenges {
+    for old_challenges in witness.prev_challenges.iter().rev() {
         sg_at_zetaw.push(crate::ipa::challenge_polynomial_circuit(
             sys,
             sg_evals_loc.clone(),
@@ -493,7 +493,7 @@ pub fn finalize_deferred<F: PrimeField>(
             &zetaw,
         )?);
     }
-    for old_challenges in &witness.prev_challenges {
+    for old_challenges in witness.prev_challenges.iter().rev() {
         sg_at_zeta.push(crate::ipa::challenge_polynomial_circuit(
             sys,
             sg_evals_loc.clone(),
@@ -501,6 +501,10 @@ pub fn finalize_deferred<F: PrimeField>(
             &witness.zeta,
         )?);
     }
+    // `Vector.map` emits the two old-challenge vectors right-to-left, but
+    // the resulting vectors retain their logical front-padded order.
+    sg_at_zeta.reverse();
+    sg_at_zetaw.reverse();
     let mut masked_cip_entries = Vec::new();
     let mut cip_entries = Vec::with_capacity(witness.prev_challenges.len() + 2);
     for (index, (at_zeta, at_zetaw)) in sg_at_zeta.into_iter().zip(sg_at_zetaw).enumerate() {
@@ -511,11 +515,6 @@ pub fn finalize_deferred<F: PrimeField>(
             cip_entries.push((at_zeta, at_zetaw));
         }
     }
-    // The fixed-width recursion vector is front-padded, while OCaml's
-    // heterogeneous-list conversion presents these optional entries to the
-    // combined-evaluation fold back-to-front.
-    masked_cip_entries.reverse();
-
     // Steps 4-5: reconstruct the fr-sponge, squeeze xi and r, convert.
     let sponge_inputs = FrSpongeInputs {
         digest: witness.digest.clone(),

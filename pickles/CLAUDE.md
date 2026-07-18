@@ -20,11 +20,12 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact 2026-07-18 après le fix fold mv merge)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 196 wires (1re @473) ;
-merge **0 coeff** / 402 wires (1re @716) ; wrap 240 coeff
+## REPRISE (état exact 2026-07-18 après partage des old challenges)
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 98 wires (1re @1280) ;
+merge **0 coeff** / 206 wires (1re @1510) ; wrap 240 coeff
 (1re @134, valeurs step-VK embarquées)
-/ 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
+/ 591 wires (1re @147) ; **VK 18/28** (restent σ[0..5] = wires du wrap +
+coeff[0,1,5,6]).
 
 ### Exemple frontière de capacité o1js 2^16
 `pickles/examples/max_gates.rs` construit le step Pickles complet et cherche
@@ -39,7 +40,7 @@ Mesure actuelle : **130203 demi-gates Generic applicatives** tiennent dans
 réservées par Pickles/Kimchi ; une demi-gate de plus sélectionne `2^17` et
 est donc hors limite o1js. L'exemple assert les deux côtés de la frontière.
 
-### Fix wires step : 221→196, frontière update 252→473
+### Fix wires step : 221→98, frontière update 252→1280
 Quatre permutations d'identité, toutes gate/coeff-neutres, isolées par les
 cycles de permutation :
 - les blocs Type2 d'ouverture étaient attachés `z2,z1` au lieu de `z1,z2`
@@ -48,13 +49,24 @@ cycles de permutation :
   213→207, @277→384 ;
 - le couple `map_plonk_to_field` convertit `zeta` avant `alpha` (opérandes
   OCaml droite-à-gauche) : 207→201, @384→433 ;
-- les entrées optionnelles front-padded `sg_evals` sont présentées au fold
-  CIP dans l'ordre inverse du H-list : 201→196, @433→473.
+- les deux `Vector.map` OCaml qui évaluent les anciens challenge polynomials
+  émettent leurs éléments droite-à-gauche. Rust itère donc les challenges en
+  sens inverse, puis restaure l'ordre logique des deux vecteurs avant le fold :
+  201→162, @433→531. L'ancien `masked_cip_entries.reverse()` devient alors
+  faux et a été supprimé ;
+- le sponge de challenge et `finalize` consomment le même champ OCaml
+  `old_bulletproof_challenges`. Le builder programme témoignait deux copies
+  (`prev_challenges` et `finalize_prev_challenges`) ; il partage désormais les
+  mêmes cvars sur le chemin fixed-width : 162→98, @531→1280. Le chemin legacy
+  conserve ses deux champs indépendants.
 
-Merge suit les mêmes corrections : 450→402 wires, frontière 252→716 ;
-coeffs step toujours 0/0/0. Sonde rejetée : inverser l'ordre d'émission des
-deux `Vector.map` zeta des old challenges aggrave 196→201 et recule @473→410 ;
-revert, ne pas retenter. Wrap inchangé 240 coeff / 663 wires.
+Merge suit les mêmes corrections : 450→206 wires, frontière 252→1510 ;
+coeffs step toujours 0/0/0. Sonde rejetée : n'inverser qu'un seul des deux
+`Vector.map` aggrave 196→201 et recule @473→410 ; les deux doivent être
+inversés ensemble avec restauration de leur ordre logique. Inverser les
+opérandes du fold de permutation `factor * acc` aggrave update 98→105 sans
+faire avancer @1280 ; revert. Dump wrap frais : coefficients inchangés à
+240/@134, wires **663→591** (première @147). VK toujours 18/28.
 recorded **21/21**, lib **112/112**.
 
 ### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
