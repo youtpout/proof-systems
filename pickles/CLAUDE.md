@@ -5469,3 +5469,29 @@ Validation à chaque incrément : sideloaded harness (dump local kimchi_napi
 : PROOF_SYSTEMS_ROOT=… npm run build:native), garde-fous bench W2 + w1
 FULL MATCH + recorded 22/22. Les VALEURS de prove side-loaded viendront
 après la parité gates (nouveau chemin prove avec DynamicProof envelope).
+
+### C1 — layout EXACT du vk témoin (side_loaded_verification_key.ml:349+)
+`typ` (ordre d'allocation) : (1) `max_proofs_verified` One_hot N3 (3
+booléens + check one-hot), (2) `actual_wrap_domain_size` One_hot N3, (3)
+`wrap_index` = Plonk_verification_key_evals de `Inner_curve.typ` (ordre
+standard de notre PlonkVerificationKeyEvals::to_list ; on-curve 2 rows
+par point — notre `mkpt`). `to_input` : one-hot 1 = 3 packeds (b,1),
+one-hot 2 = idem, puis les 56 coords en fields. Hash =
+`Random_oracle.Checked.hash ~init:Hash_prefix_states.side_loaded_vk`
+(vérifier le prefix exact + pack_input) ; o1js assert ensuite
+`digest == vk.hash` (zkprogram.ts:1467-1469, chemin jsoo).
+
+### Architecture rust retenue (C1)
+- Nouveau `RecordedConstraint::SideLoadedVk { proof: u32, vk_hash:
+  LinComb }` (serde kind "side_loaded_vk") émis par o1js à la position
+  exacte du bloc jsoo (FIN du corps de méthode, boucle sur les
+  DynamicProof — zkprogram.ts:1449-1470 ; même bloc côté zkapp.ts).
+- Le replay (`RecordedApp::main_with_previous_app_state`) étend le
+  marqueur avec le gadget fidèle (valeurs compile : points placeholder
+  on-curve (i+1)·G ; prove réel plus tard) et STASH l'index témoin +
+  one-hots par slot dans un `Arc<Mutex<Vec<Option<WitnessedSideLoadedVk>>>>`
+  partagé avec le circuit (champ du RecursiveStepWidth2Circuit) — l'app
+  tourne AVANT la machinerie (app-before-machinery ✓).
+- C2 : per-proof side-loaded → dlog_index = index témoin (pas de
+  share_index_sponge). C3 : x_hat dynamique. C4 : finalize SelectFrom
+  [13,14,15] sur le one-hot domaine.
