@@ -3304,6 +3304,39 @@ pub fn prepare_recursive_wrap_n0<
     template: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
     step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN>,
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
+    prepare_recursive_wrap_n0_arity::<
+        A,
+        BASE_ROUNDS,
+        BASE_STMT_LEN,
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        STEP_STMT_LEN,
+        STEP_PROOF_ROUNDS,
+        WRAP_STMT_LEN,
+        2,
+    >(template, step)
+}
+
+/// [`prepare_recursive_wrap_n0`] generic over the program arity: the wrap
+/// witness carries `ACTIVE` unfinalized slots and decomposes the step
+/// statement at that width (the old-challenge padding stays at the protocol
+/// constant `MAX_PROOFS_VERIFIED`).
+pub fn prepare_recursive_wrap_n0_arity<
+    A: StepApp,
+    const BASE_ROUNDS: usize,
+    const BASE_STMT_LEN: usize,
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const STEP_STMT_LEN: usize,
+    const STEP_PROOF_ROUNDS: usize,
+    const WRAP_STMT_LEN: usize,
+    const ACTIVE: usize,
+>(
+    template: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
+    step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN, ACTIVE>,
+) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     let sg_olds: Vec<Vesta> = step
         .proof
         .prev_challenges
@@ -3328,8 +3361,8 @@ pub fn prepare_recursive_wrap_n0<
         &step.verifier.index,
         &step.proof,
         &step.statement,
-        step_statement_slots::<WRAP_ROUNDS>(&step.statement, 2),
-        vec![dummy.clone(), dummy],
+        step_statement_slots::<WRAP_ROUNDS>(&step.statement, ACTIVE),
+        vec![dummy; ACTIVE],
         sg_olds,
         ProofsVerified::N0,
         step.messages_for_next_step_proof.clone(),
