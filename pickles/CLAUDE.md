@@ -78,6 +78,31 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### CAMPAGNE #13 — JALONS 2a FAIT (7d4837ea26) ; DESIGN 2b PRÉCIS
+✓ 2a : prepare_n0/n1 génériques en arité (A=(PI-1)/(18+WR)) ; à A=1 le slot
+actif 0 = REAL (pas de dummy en tête), dummy_slots [false,true], recursions
+[real, dummy]. Régression verte (22/22).
+**2b — plombage de types (le gros morceau, ~300 lignes)** :
+- Le type WRAP est IDENTIQUE aux deux largeurs (WrapCircuit<16, 40>) ✓ ;
+  template idem ✓ ; SEUL step_indexes change de type.
+- RecordedCompiledProgram.step_indexes → enum { W2(Vec<Option<W2Idx>>),
+  W1(Vec<Option<W1Idx>>) } où W1Idx = RecursiveStepWidth2Indexes<16, 15,
+  34, 34, 1>.
+- Génériser en <const STEP_PI, const ACTIVE> : compile_recorded_program_steps
+  (+single_pass), recorded_program_step_branch_domain_log2,
+  build_recorded_program_step_prepared(+fixed_for_debug), la boucle finale de
+  compile_with_debug_stage, et les prove_n0/n1 du programme (dispatch enum).
+  Les literals RECORDED_N2_STEP_STMT_LEN dans ces fns → STEP_PI ; le
+  which-prepare (n0/n1/width2) : à ACTIVE=1, pv=2 impossible (assert).
+- prepare_recursive_wrap_n0 : reçoit le bootstrap width-2 — pour W1 le
+  witness wrap doit porter un step_statement de 34 → dériver du bootstrap
+  (recomposer [seg0(32), m4nstep(recalculé sur 1 acc), m4nwrap(1)]) OU
+  prouver un bootstrap W1 live (ajouter au blob dummies ensuite).
+- Validation : MODE=rust tmp-w1-gates-diff (o1js) → PI 34 attendu, puis
+  histogrammes, puis flat-emit ; régression bench/add à chaque étape ;
+  w1-gates-jsoo.json = référence (init 2^9 PI34, update 2^14 PI34, wrap 2^14
+  PI40).
+
 ### CAMPAGNE #13 — JALON 1 FAIT (00741f1b14) ; CARTE DU JALON 2
 ✓ Jalon 1 : le main de RecursiveStepWidth2Circuit est paramétré par
 ACTIVE_PROOFS (boucles 0..A, layout A*32+1+A → 67|34, assert d'entrée).
