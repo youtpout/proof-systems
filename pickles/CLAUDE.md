@@ -26,6 +26,19 @@ merge **0 coeff** / 450 wires (1re @252) ; wrap 240 coeff
 (1re @134, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
+### Exemple frontière de capacité o1js 2^16
+`pickles/examples/max_gates.rs` construit le step Pickles complet et cherche
+par dichotomie le nombre maximal de contraintes Generic applicatives qui
+tient dans le SRS Tick/domaine o1js `2^16`. Il inclut donc le PI, les dummy
+selectors EC, le hash accumulateur et les ZK rows (pas seulement le user
+circuit). Commande :
+`cargo run -p pickles --release --example max_gates`.
+
+Mesure actuelle : **130203 demi-gates Generic applicatives** tiennent dans
+65536 lignes (deux Generic par ligne), soit environ **435 lignes-equivalent**
+réservées par Pickles/Kimchi ; une demi-gate de plus sélectionne `2^17` et
+est donc hors limite o1js. L'exemple assert les deux côtés de la frontière.
+
 ### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
 - ⚠️ zkapp-rust/contracts/node_modules/o1js = SYMLINK vers ~/Projects/o1js (la
   branche !) — pour du vrai 2.15 : `/tmp/claude-1000/proofdump` (npm i
