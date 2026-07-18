@@ -951,7 +951,11 @@ pub struct RecursiveStepData {
 /// application state bound by the step statement's
 /// messages-for-next-step digest.
 pub type EmbeddedAppMain =
-    std::sync::Arc<dyn Fn(&mut RunState<Fp>) -> SnarkyResult<Vec<FieldVar<Fp>>> + Send + Sync>;
+    std::sync::Arc<
+        dyn Fn(&mut RunState<Fp>, &[FieldVar<Fp>]) -> SnarkyResult<Vec<FieldVar<Fp>>>
+            + Send
+            + Sync,
+    >;
 
 pub struct RecursiveStepCircuit<
     const PREV_ROUNDS: usize,
@@ -4832,7 +4836,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         is_base_case,
         witness_must_verify: true,
     };
-    let app_state = wvec(sys, &d.prev_app_state)?;
+    // The rule `main` receives the exact application-state cvars already
+    // present in the previous-proof statement. Re-witnessing the same values
+    // here splits the permutation class and diverges from OCaml.
+    let app_state = proof.prev_app_state.clone();
     Ok((proof, dlog_index, app_state))
 }
 
@@ -4913,6 +4920,7 @@ impl<
             PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
         )> = None;
         let mut real_segments: Vec<&[FieldVar<Fp>]> = Vec::new();
+        let mut previous_app_states = Vec::new();
         for i in 0..2 {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
@@ -4929,7 +4937,7 @@ impl<
                 .as_ref()
                 .filter(|(pts, _)| *pts == proof_data[i].wrap_vk_pts)
                 .map(|(_, index)| index.clone());
-            let (proof, index, _previous_app_state) =
+            let (proof, index, previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
                     &proof_data[i],
@@ -4942,6 +4950,7 @@ impl<
                     dummy_slots[i],
                     shared_index.as_ref(),
                 )?;
+            previous_app_states.extend(previous_app_state);
             if shared_tag_index.is_none() {
                 shared_tag_index = Some((proof_data[i].wrap_vk_pts.clone(), index.clone()));
             }
@@ -5013,7 +5022,7 @@ impl<
             }
         };
         let app_state = match app {
-            Some(app_main) => app_main(sys)?,
+            Some(app_main) => app_main(sys, &previous_app_states)?,
             None => app_state
                 .iter()
                 .map(|&value| sys.compute(loc!(), move |_| value))
@@ -5373,7 +5382,7 @@ impl<
 
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         let app_state = match app {
-            Some(app_main) => app_main(sys)?,
+            Some(app_main) => app_main(sys, &per_proof.prev_app_state)?,
             None => wvec(sys, &d.prev_app_state)?,
         };
         let digest = step_main::<Fp, PallasParameters>(

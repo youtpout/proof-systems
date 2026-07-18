@@ -504,9 +504,43 @@ impl StepApp for RecordedApp {
         sys: &mut RunState<Fp>,
         witness: Option<&Self::Witness>,
     ) -> SnarkyResult<Vec<FieldVar<Fp>>> {
+        self.main_with_previous_app_state(sys, witness, &[])
+    }
+
+    fn state(&self, witness: &Self::Witness) -> Vec<Fp> {
+        self.circuit.state(witness)
+    }
+}
+
+impl RecordedApp {
+    fn has_program_previous_state_slots(&self, previous_app_state_len: usize) -> bool {
+        // The o1js Pickles program recorder flattens the Add rule arguments as
+        // one current public input followed by the two-field state of every
+        // previous proof. Legacy RecordedCircuit tests describe standalone
+        // applications instead and must keep allocating all of their vars.
+        self.circuit.output.len() == 2
+            && self.circuit.aux_count as usize == 1 + previous_app_state_len
+    }
+
+    /// Replays an o1js program rule with the previous proofs' application
+    /// states occupying the auxiliary slots immediately after the current
+    /// public input. OCaml passes those cvars directly to `main`; allocating
+    /// fresh witnesses here would preserve values but split their permutation
+    /// classes.
+    fn main_with_previous_app_state(
+        &self,
+        sys: &mut RunState<Fp>,
+        witness: Option<&Vec<Fp>>,
+        previous_app_state: &[FieldVar<Fp>],
+    ) -> SnarkyResult<Vec<FieldVar<Fp>>> {
+        let reuse_previous = self.has_program_previous_state_slots(previous_app_state.len());
         let mut vars = Vec::with_capacity(self.circuit.aux_count as usize);
         for index in 0..self.circuit.aux_count as usize {
-            let var: FieldVar<Fp> = sys.compute(loc!(), |_| witness.unwrap()[index])?;
+            let var = if reuse_previous && index > 0 {
+                previous_app_state[index - 1].clone()
+            } else {
+                sys.compute(loc!(), |_| witness.unwrap()[index])?
+            };
             vars.push(var);
         }
 
@@ -727,9 +761,6 @@ impl StepApp for RecordedApp {
             .collect())
     }
 
-    fn state(&self, witness: &Self::Witness) -> Vec<Fp> {
-        self.circuit.state(witness)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1497,7 +1528,7 @@ impl RecordedCompiledN1 {
             circuit: circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
         let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,
@@ -1648,7 +1679,7 @@ impl RecordedCompiledN1 {
             circuit: circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&base.wrap_verifier);
         let prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,
@@ -1779,7 +1810,7 @@ impl RecordedCompiledN1 {
             circuit: self.circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         if let RecordedProofInner::Recursive(previous_cycle) = &previous.inner {
             let stable_wrap_indexes = self
                 .stable_wrap_indexes
@@ -1970,7 +2001,7 @@ impl RecordedCompiledN2 {
             circuit: circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&first_base.wrap_verifier);
         let first_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,
@@ -2071,7 +2102,7 @@ impl RecordedCompiledN2 {
             circuit: circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&first_base.wrap_verifier);
         let first_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,
@@ -2169,7 +2200,7 @@ impl RecordedCompiledN2 {
             circuit: self.circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&first_base.wrap_verifier);
         let first_prepared = crate::recursive_step::prepare_recursive_step_with_state::<
             RecordedApp,
@@ -2451,7 +2482,9 @@ fn build_recorded_program_step_prepared(
     };
     let witness = branch.witness.clone();
     let main: crate::recursive_step::EmbeddedAppMain =
-        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        std::sync::Arc::new(move |sys, previous_app_state| {
+            app.main_with_previous_app_state(sys, Some(&witness), previous_app_state)
+        });
     (prepared, main)
 }
 
@@ -2520,7 +2553,9 @@ fn build_recorded_program_step_prepared_fixed_for_debug(
     };
     let witness = branch.witness.clone();
     let main: crate::recursive_step::EmbeddedAppMain =
-        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        std::sync::Arc::new(move |sys, previous_app_state| {
+            app.main_with_previous_app_state(sys, Some(&witness), previous_app_state)
+        });
     (prepared, main)
 }
 
@@ -3489,7 +3524,9 @@ impl RecordedCompiledProgram {
             circuit: branch.circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, previous_app_state| {
+                app.main_with_previous_app_state(sys, Some(&witness), previous_app_state)
+            });
         let indexes = self.step_indexes[branch_index]
             .take()
             .expect("compiled program Step indexes");
@@ -3652,6 +3689,22 @@ impl RecordedCompiledProgram {
         }
 
         prove_stage!("previous checked");
+        // A recorded o1js rule lays out `publicInput` first, followed by the
+        // public input/output state of each previous proof. Those values are
+        // dynamic: the branch witness used while compiling is only a shape
+        // witness. Keep the prove-time witness synchronized with the actual
+        // recursive statements before evaluating the new application state.
+        let previous_app_values: Vec<Fp> = previous_cycles
+            .iter()
+            .flat_map(|(proof, _)| proof.app_state.iter().copied())
+            .collect();
+        let mut witness = witness;
+        let app = RecordedApp {
+            circuit: branch.circuit.clone(),
+        };
+        if app.has_program_previous_state_slots(previous_app_values.len()) {
+            witness[1..].copy_from_slice(&previous_app_values);
+        }
         let app_state = branch.circuit.state(&witness);
         let mut prepared_previous = Vec::with_capacity(previous.len());
         for (proof, cycle) in &previous_cycles {
@@ -3735,7 +3788,9 @@ impl RecordedCompiledProgram {
             circuit: branch.circuit.clone(),
         };
         let main: crate::recursive_step::EmbeddedAppMain =
-            std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+            std::sync::Arc::new(move |sys, previous_app_state| {
+                app.main_with_previous_app_state(sys, Some(&witness), previous_app_state)
+            });
         let indexes = self.step_indexes[branch_index]
             .take()
             .expect("compiled program Step indexes");
@@ -4076,7 +4131,7 @@ pub fn prove_recorded_n1_over_keep(
     let new_state = circuit.state(&witness);
     let app = RecordedApp { circuit };
     let main: crate::recursive_step::EmbeddedAppMain =
-        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
     prove_n1_over_keep_at_rounds!(handle, main, new_state;
         (16, R16))
 }
@@ -4105,7 +4160,7 @@ pub fn prove_recorded_n2_over_base_handles(
     let new_state = circuit.state(&witness);
     let app = RecordedApp { circuit };
     let main: crate::recursive_step::EmbeddedAppMain =
-        std::sync::Arc::new(move |sys| app.main(sys, Some(&witness)));
+        std::sync::Arc::new(move |sys, _previous_app_state| app.main(sys, Some(&witness)));
     let proof = crate::recursive_step::prove_direct_n2_with_app::<
         RecordedApp,
         RECORDED_N1_STEP_ROUNDS,

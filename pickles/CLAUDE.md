@@ -20,12 +20,35 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact 2026-07-18 après alignement des evals/challenges)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 3 wires (1re @3042) ;
-merge **0 coeff** / 5 wires (1re @3285) ; wrap 233 coeff
-(1re @138, valeurs step-VK embarquées)
-/ 548 wires (1re @147) ; **VK 18/28** (restent σ[0..5] = wires du wrap +
-coeff[0,1,5,6]).
+## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
+**Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
+Wrap frais : **227 coeff** (1re @4741) / **548 wires** (1re @147),
+555 lignes full-diff sur 16384. **VK 18/28** (restent σ[0..5] = wires du
+wrap + coeff[0,1,5,6]). Les anciennes divergences de valeurs step-VK @138 ont
+donc convergé ; la prochaine vraie frontière coefficients du wrap est @4741.
+
+### JALON : threading direct et dynamique de l'état applicatif — steps 0/0
+La dernière famille update 3 / merge 5 venait de deux copies distinctes du
+même état applicatif précédent :
+- `recursive_per_proof_input` construisait déjà `proof.prev_app_state`, puis
+  retémoignait `d.prev_app_state` juste avant son retour ; le `main` recevait
+  cette seconde copie. Il retourne désormais exactement les cvars stockées
+  dans `PerProofInput` ;
+- `EmbeddedAppMain` reçoit la concaténation des états applicatifs des preuves
+  réelles, et le replay du programme Add réutilise ces cvars pour ses slots
+  aux `[1..]`, comme les arguments directs du `main` OCaml ;
+- au prove-time, ces mêmes slots de VALEURS sont remplacés par les
+  `app_state` réellement portés par les preuves précédentes avant de calculer
+  le nouvel état et le statement. Cela corrige le `DisconnectedWires` de la
+  première sonde 0/0 ;
+- le threading est reconnu par la forme enregistrée du programme Add
+  (`output.len()==2`, `aux_count == 1 + previous_state_len`) afin de préserver
+  la sémantique des fixtures `RecordedCircuit` génériques, qui n'encodent pas
+  leurs arguments récursifs dans les aux.
+
+Mesure fraîche `posdiff.mjs` : init/update/merge = **0 ligne différente**.
+Les deux régressions historiques ciblées repassent, puis suites complètes :
+recorded **21/21**, lib **112/112**.
 
 ### Fix wires step : 98→3 update, 206→5 merge
 Quatre alignements structurels OCaml, tous coefficient-neutres :
