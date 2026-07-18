@@ -2825,6 +2825,104 @@ fn assemble_template_dummies(
     Some((template, bootstrap))
 }
 
+/// A synthetic structure-donor wrap verifier index. The steps consume only
+/// STRUCTURAL data from the donor: its domain (which fixes the x_hat
+/// Lagrange commitment constants through the shared Tock SRS), its shifts,
+/// and 28 commitment slots whose point VALUES are witness data in the step
+/// circuits. A full donor wrap prover compile is therefore unnecessary —
+/// this mirrors `verify::wrap_verifier_index_from_side_loaded` with
+/// placeholder points, and OCaml's static `Wrap_domains` table, which never
+/// compiles a donor either.
+fn synthetic_structure_wrap_index(
+    wrap_domain_log2: u32,
+) -> snarky::api::VerifierIndexWrapper<
+    crate::api::WrapCircuit<RECORDED_N2_STEP_ROUNDS, RECORDED_N2_WRAP_STMT_LEN>,
+> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_poly::EvaluationDomain as _;
+    use kimchi::circuits::polynomials::permutation::{
+        permutation_vanishing_polynomial, zk_w, Shifts,
+    };
+    use kimchi::curve::KimchiCurve as _;
+    use kimchi::linearization::expr_linearization;
+    use poly_commitment::commitment::PolyComm;
+    use poly_commitment::SRS as _;
+
+    let domain = ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(
+        1usize << wrap_domain_log2,
+    )
+    .expect("wrap domain size is a supported power of two");
+    let srs = crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS);
+    srs.get_lagrange_basis(domain);
+
+    let generator = Pallas::generator().into_group();
+    let comm = |i: u64| PolyComm {
+        chunks: vec![(generator * mina_curves::pasta::Fq::from(i + 1)).into_affine()],
+    };
+
+    let feature_flags = kimchi::circuits::constraints::FeatureFlags {
+        range_check0: false,
+        range_check1: false,
+        foreign_field_add: false,
+        foreign_field_mul: false,
+        xor: false,
+        rot: false,
+        lookup_features: kimchi::circuits::lookup::lookups::LookupFeatures {
+            patterns: kimchi::circuits::lookup::lookups::LookupPatterns {
+                xor: false,
+                lookup: false,
+                range_check: false,
+                foreign_field_mul: false,
+            },
+            joint_lookup_used: false,
+            uses_runtime_tables: false,
+        },
+    };
+    let (linearization, powers_of_alpha) = expr_linearization(Some(&feature_flags), true);
+    let zk_rows = kimchi::circuits::constraints::ZK_ROWS_BY_DEFAULT;
+    let shifts = Shifts::new(&domain);
+    let index = kimchi::verifier_index::VerifierIndex {
+        domain,
+        max_poly_size: srs.max_poly_size(),
+        zk_rows,
+        srs,
+        public: RECORDED_N2_WRAP_STMT_LEN,
+        prev_challenges: crate::common::MAX_PROOFS_VERIFIED,
+        sigma_comm: core::array::from_fn(|i| comm(i as u64)),
+        coefficients_comm: core::array::from_fn(|i| comm(7 + i as u64)),
+        generic_comm: comm(22),
+        psm_comm: comm(23),
+        complete_add_comm: comm(24),
+        mul_comm: comm(25),
+        emul_comm: comm(26),
+        endomul_scalar_comm: comm(27),
+        range_check0_comm: None,
+        range_check1_comm: None,
+        foreign_field_add_comm: None,
+        foreign_field_mul_comm: None,
+        xor_comm: None,
+        rot_comm: None,
+        shift: *shifts.shifts(),
+        permutation_vanishing_polynomial_m: {
+            let cell = std::sync::OnceLock::new();
+            cell.set(permutation_vanishing_polynomial(domain, zk_rows))
+                .unwrap_or_else(|_| unreachable!("fresh OnceLock"));
+            cell
+        },
+        w: {
+            let cell = std::sync::OnceLock::new();
+            cell.set(zk_w(domain, zk_rows))
+                .unwrap_or_else(|_| unreachable!("fresh OnceLock"));
+            cell
+        },
+        endo: *Pallas::other_curve_endo(),
+        lookup_index: None,
+        linearization,
+        powers_of_alpha,
+    };
+    snarky::api::VerifierIndexWrapper { index }
+}
+
 /// Runs the live dummy manufacture and encodes the blob bytes — the
 /// regeneration entrypoint (`generate_template_dummy_blob` test).
 pub fn template_dummy_blob_bytes() -> Vec<u8> {
@@ -3030,11 +3128,22 @@ impl RecordedCompiledProgram {
             })
             .collect();
         prepared_wrap.domain_log2 = 0; // natural wrap domain (jsoo Wrap_domains fixpoint)
-        let structure_wrap = phase!(
-            "wrap structure compile",
-            crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap)
-        );
-        let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap.1);
+        let structure_wrap = phase!("wrap structure index", {
+            // The natural wrap domain depends on the statement sizes (it sits
+            // near the 2^14/2^15 boundary), so probe it from the constraint
+            // system alone — no SRS work, no polynomial commitments.
+            use snarky::api::SnarkyCircuit as _;
+            let donor_domain_log2 = crate::api::WrapCircuit::<
+                RECORDED_N2_STEP_ROUNDS,
+                RECORDED_N2_WRAP_STMT_LEN,
+            > {
+                w: Some(prepared_wrap.data.clone()),
+            }
+            .domain_log2()
+            .expect("wrap domain probe");
+            synthetic_structure_wrap_index(donor_domain_log2)
+        });
+        let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap);
 
         // Probe every branch's natural step domain (OCaml `Fix_domains`, at
         // rough placeholder domains): constraint systems only, no SRS work.
@@ -3053,7 +3162,7 @@ impl RecordedCompiledProgram {
                             branch,
                             &template,
                             &structure_vk,
-                            &structure_wrap.1.index,
+                            &structure_wrap.index,
                         )
                     })
                     .collect()
@@ -3066,7 +3175,7 @@ impl RecordedCompiledProgram {
                             branch,
                             &template,
                             &structure_vk,
-                            &structure_wrap.1.index,
+                            &structure_wrap.index,
                         )
                     })
                     .collect()
@@ -3096,7 +3205,7 @@ impl RecordedCompiledProgram {
                 &branches,
                 &template,
                 &structure_vk,
-                &structure_wrap.1.index,
+                &structure_wrap.index,
                 &finalize_domain_log2s,
             )
         );
@@ -3135,7 +3244,7 @@ impl RecordedCompiledProgram {
         prepared_wrap.data.step_statement_lagranges = wrap_statement_lagranges.clone();
         let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
             prepared_wrap,
-            &structure_wrap.1.index,
+            &structure_wrap.index,
         );
         let wrap_indexes = phase!(
             "wrap final compile",
@@ -3146,7 +3255,7 @@ impl RecordedCompiledProgram {
         // move any structural field the alignments consume. A violation here
         // means the steps were aligned against the wrong wrap structure.
         {
-            let donor = &structure_wrap.1.index;
+            let donor = &structure_wrap.index;
             let fixed = &wrap_indexes.1.index;
             assert_eq!(
                 fixed.domain, donor.domain,
