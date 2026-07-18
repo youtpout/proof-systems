@@ -5495,3 +5495,31 @@ one-hot 2 = idem, puis les 56 coords en fields. Hash =
 - C2 : per-proof side-loaded → dlog_index = index témoin (pas de
   share_index_sponge). C3 : x_hat dynamique. C4 : finalize SelectFrom
   [13,14,15] sur le one-hot domaine.
+
+## ✅ C1+C2 LANDÉS (d2a2c3daf9 + o1js d5902b9b0) — Poseidon step side-loaded EXACT
+
+Le gadget vk-témoin est en place (marqueur `side_loaded_vk` émis par
+o1js en fin de corps de méthode ; expansion rust fidèle ; stash
+thread-local app→machinerie ; la machinerie réutilise l'index témoin,
+sans partage de tag ni réutilisation next-key). Mesure : step Poseidon
+2541 = jsoo EXACT (le hash 57-absorbs était juste du premier coup) ;
+wrap histogramme exact (44 rows constantes qui suivront le step).
+Restes step : jsoo +233 Generic, +29 CompleteAdd, càd :
+- **C3 x_hat dynamique** : `public_input_commitment_dynamic` — par
+  élément du statement wrap, sélection one-hot (3 domaines 13/14/15) des
+  constantes lagrange : b·(x,y) = lincoms (0 row), somme, puis SEAL (2
+  rows/point) ; `lagrange_with_correction` = 2 points (g, −g·2^shift) et
+  un add_fast en plus (les +29 CompleteAdd ≈ un par élément packé).
+  Données : les lagranges des 3 domaines à préparer (tock SRS 2^13/14/15)
+  → nouveau champ RecursiveStepData (packed_lagranges par domaine) +
+  variant XHatInput dans le verify (step_verifier.rs) branché quand
+  side-loaded (le flag `_side_loaded` est déjà dans
+  recursive_per_proof_input).
+- **C4 finalize domaine enfant** : le finalize du wrap enfant doit être
+  `Pseudo.Domain` one-hot [13,14,15] piloté par le one-hot domaine du vk
+  témoin (stash), au lieu de Fixed — champs FinalizeDomain::SelectFrom
+  déjà existants côté step (utilisés pour les domaines de branches).
+Garde-fous après C1+C2 : bench W2 + w1 FULL MATCH ✓.
+⚠ REBUILD : le harness sideloaded compile via le blob WASM (3e binaire !)
+— `npm run build:wasm:node:rust` + copie des 4 kimchi_wasm* vers dist
+obligatoire après tout changement pickles, EN PLUS de build:native.
