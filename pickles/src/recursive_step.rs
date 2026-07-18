@@ -4905,17 +4905,16 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         // feature flags are circuit CONSTANTS (no witness, no boolean rows).
         feature_flags: (0..8).map(|_| Boolean::false_()).collect(),
     };
-    let finalize_domain = if let Some(one_hot) = &side_loaded_domain_one_hot {
-        // Side-loaded child: its wrap domain is any of 2^13/14/15, selected
-        // by the witnessed key's domain one-hot (OCaml `step_domains =
-        // `Side_loaded` → `Pseudo.Domain` over the wrap domains).
-        let mut domain_log2 = FieldVar::constant(Fp::from(0u64));
-        for (i, bit) in one_hot.iter().enumerate() {
-            domain_log2 = &domain_log2 + &bit.to_field_var().scale(Fp::from(13 + i as u64));
-        }
-        crate::ft_eval_circuit::FinalizeDomain::SelectFrom {
-            log2s: vec![13, 14, 15],
-            domain_log2,
+    let finalize_domain = if side_loaded_domain_one_hot.is_some() {
+        // Side-loaded child: the finalize evaluates the CHILD's step domain,
+        // witnessed as `branch_data.domain_log2`, over the full permissible
+        // range (OCaml `step_domains = `Side_loaded` →
+        // `side_loaded_domain ~log2_size:branch_data.domain_log2`,
+        // step_verifier.ml:884-885).
+        crate::ft_eval_circuit::FinalizeDomain::SideLoadedFrom {
+            log2_size: branch_domain_log2
+                .clone()
+                .expect("side-loaded slot witnesses branch data"),
         }
     } else {
         match (&d.finalize_domain_log2s[..], &branch_domain_log2) {

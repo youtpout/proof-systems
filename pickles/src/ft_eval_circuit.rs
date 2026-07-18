@@ -35,6 +35,104 @@ pub enum FinalizeDomain<F: PrimeField> {
         log2s: Vec<u32>,
         domain_log2: FieldVar<F>,
     },
+    /// Deferred [`SideLoadedDomain`]: a side-loaded slot's finalize domain
+    /// comes from the WITNESSED `branch_data.domain_log2` over the full
+    /// permissible range (OCaml `Step_verifier.side_loaded_domain`, max =
+    /// Tick rounds).
+    SideLoadedFrom { log2_size: FieldVar<F> },
+    SideLoadedSelected(SideLoadedDomain<F>),
+}
+
+/// OCaml `Step_verifier.side_loaded_domain` (step_verifier.ml:719-742): the
+/// domain of a side-loaded proof, from a witnessed `log2_size` in
+/// `0..=max` (max = Tick rounds = 16): a ones-prefix mask drives the masked
+/// squaring chain of the vanishing polynomial, and a one-hot selects the
+/// generator constant.
+#[derive(Clone)]
+pub struct SideLoadedDomain<F: PrimeField> {
+    pub mask: Vec<Boolean<F>>,
+    pub which: Vec<Boolean<F>>,
+}
+
+pub const SIDE_LOADED_MAX_DOMAIN_LOG2: usize = 16;
+
+impl<F: PrimeField> SideLoadedDomain<F> {
+    /// Emits `ones_vector ~first_zero:log2_size` (util.ml:51) then
+    /// `One_hot.of_index log2_size ~length:(max+1)` (one_hot_vector.ml)
+    /// with its `Boolean.Assert.any`, in OCaml's order.
+    pub fn create(
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        log2_size: &FieldVar<F>,
+    ) -> SnarkyResult<Self> {
+        let max = SIDE_LOADED_MAX_DOMAIN_LOG2;
+        // ones_vector: value_i = value_{i-1} AND NOT (log2_size == i)
+        let mut mask = Vec::with_capacity(max);
+        let mut value = Boolean::true_();
+        for i in 0..max {
+            let eq = FieldVar::constant(F::from(i as u64)).equal(sys, loc.clone(), log2_size)?;
+            value = value.and(&eq.not(), sys, loc.clone());
+            mask.push(value.clone());
+        }
+        // of_index: b_j = (j == log2_size), then Assert.any = assert_non_zero
+        // of the boolean sum (utils.ml:361 — inverse witness + one r1cs).
+        let mut which = Vec::with_capacity(max + 1);
+        for j in 0..=max {
+            which.push(FieldVar::constant(F::from(j as u64)).equal(sys, loc.clone(), log2_size)?);
+        }
+        let fields: Vec<FieldVar<F>> = which.iter().map(|b| b.to_field_var()).collect();
+        let sum = FieldVar::sum(&fields.iter().collect::<Vec<_>>());
+        let sum_for_witness = sum.clone();
+        let sum_inv: FieldVar<F> = sys.compute(loc.clone(), move |env| {
+            use ark_ff::Field as _;
+            env.read_var(&sum_for_witness)
+                .inverse()
+                .unwrap_or_else(F::zero)
+        })?;
+        sys.assert_r1cs(
+            Some("side-loaded domain one-hot any".into()),
+            loc,
+            sum,
+            sum_inv,
+            FieldVar::constant(F::one()),
+        )?;
+        Ok(Self { mask, which })
+    }
+
+    /// `Pseudo.Domain.generator` over the one-hot: a constants mask
+    /// (no rows).
+    pub fn generator_var(&self) -> FieldVar<F>
+    where
+        F: ark_ff::FftField,
+    {
+        let mut acc = FieldVar::constant(F::zero());
+        for (j, b) in self.which.iter().enumerate() {
+            let gen = if j == 0 {
+                F::one()
+            } else {
+                SelectedDomain::<F>::generator_of(j as u32)
+            };
+            acc = &acc + &b.to_field_var().scale(gen);
+        }
+        acc
+    }
+
+    /// The masked squaring chain (step_verifier.ml:698-712):
+    /// `fold i: acc = if mask[i] then acc² else acc`, minus one. No seal.
+    pub fn vanishing_polynomial(
+        &self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        x: &FieldVar<F>,
+    ) -> SnarkyResult<FieldVar<F>> {
+        let mut acc = x.clone();
+        for bit in &self.mask {
+            let squared = crate::expr_eval::square_circuit(sys, loc.clone(), &acc)?;
+            let selected = sys.if_(loc.clone(), bit.clone(), squared, acc)?;
+            acc = selected;
+        }
+        Ok(&acc - &FieldVar::constant(F::one()))
+    }
 }
 
 /// The one-hot-selected pseudo domain (OCaml `Pseudo.Domain`).
@@ -258,7 +356,22 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
                 omega_to_zk,
             }
         }
-        FinalizeDomain::SelectFrom { .. } => {
+        FinalizeDomain::SideLoadedSelected(sel) => {
+            let generator = sel.generator_var();
+            let one = FieldVar::constant(F::one());
+            let omega_to_minus_1 =
+                crate::plonk_curve_ops::div_snarky(sys, loc.clone(), &one, &generator)?;
+            let omega_to_zk_plus_1 =
+                omega_to_minus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
+            let omega_to_zk = omega_to_zk_plus_1.mul(&omega_to_minus_1, None, loc.clone(), sys)?;
+            DomainOmegas {
+                generator,
+                omega_to_minus_1,
+                omega_to_zk_plus_1,
+                omega_to_zk,
+            }
+        }
+        FinalizeDomain::SelectFrom { .. } | FinalizeDomain::SideLoadedFrom { .. } => {
             unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
         }
     };
@@ -276,7 +389,10 @@ pub fn scalars_env_circuit<F: PrimeField + ark_ff::FftField>(
             &zeta_n - &FieldVar::constant(F::one())
         }
         FinalizeDomain::Selected(sel) => sel.vanishing_polynomial(sys, loc.clone(), zeta)?,
-        FinalizeDomain::SelectFrom { .. } => {
+        FinalizeDomain::SideLoadedSelected(sel) => {
+            sel.vanishing_polynomial(sys, loc.clone(), zeta)?
+        }
+        FinalizeDomain::SelectFrom { .. } | FinalizeDomain::SideLoadedFrom { .. } => {
             unreachable!("scalars_env_circuit: SelectFrom is materialized by finalize_deferred")
         }
     };

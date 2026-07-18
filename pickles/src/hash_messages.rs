@@ -103,6 +103,12 @@ pub fn hash_messages_for_next_step_proof_opt<F: PrimeField>(
     for value in app_state {
         prefix.absorb(sys, loc.clone(), std::slice::from_ref(value));
     }
+    // OCaml's fold only converts to an `Opt_sponge` when the FIRST optional
+    // input arrives: a width-0 slot has none, and the plain sponge squeezes
+    // directly (`| `Not_opt sponge -> Sponge.squeeze_field sponge`).
+    if challenge_polynomial_commitments.is_empty() {
+        return Ok(prefix.squeeze(sys, loc));
+    }
     let mut sponge = crate::opt_sponge::OptSponge::from_sponge(prefix, sys, loc.clone());
     for ((commitment, challenges), keep) in challenge_polynomial_commitments
         .iter()

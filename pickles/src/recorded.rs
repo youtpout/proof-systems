@@ -605,28 +605,22 @@ fn side_loaded_vk_gadget(
         endomul_scalar_comm: points[27].clone(),
     };
 
-    // In-circuit `vk_digest`: sponge from the salted `MinaSideLoadedVk****`
-    // state, absorbing the 56 coordinates then the packed one-hot field
-    // (`Random_oracle_input.Chunked.pack_to_fields` puts the packed bits
-    // LAST — same layout as `SideLoadedVerificationKeyV2::mina_hash`).
-    let salted_state = {
+    // In-circuit `vk_digest`: o1js's `inCircuitVkHash` emits the SALT
+    // permutation in circuit too (`Snarky.poseidon.update([0,0,0],
+    // [prefix])`, zkprogram.ts:1384-1390), then absorbs the 56 coordinates
+    // and the packed one-hot field (`pack_to_fields` puts the packed bits
+    // LAST — same layout and values as
+    // `SideLoadedVerificationKeyV2::mina_hash`).
+    let prefix_field = {
         use ark_ff::PrimeField as _;
-        use kimchi::curve::KimchiCurve;
-        use mina_poseidon::poseidon::{ArithmeticSponge, Sponge};
-        let params = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::sponge_params();
-        let mut sponge = ArithmeticSponge::<
-            Fp,
-            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
-            { snarky::FULL_ROUNDS },
-        >::new(params);
         let prefix = b"MinaSideLoadedVk****";
         let mut bytes = [0u8; 32];
         bytes[..prefix.len()].copy_from_slice(prefix);
-        sponge.absorb(&[Fp::from_le_bytes_mod_order(&bytes)]);
-        let _ = sponge.squeeze();
-        [sponge.state[0], sponge.state[1], sponge.state[2]]
+        Fp::from_le_bytes_mod_order(&bytes)
     };
-    let mut sponge = crate::sponge::PoseidonSponge::from_constant_state(salted_state, 0);
+    let mut sponge = crate::sponge::PoseidonSponge::new();
+    sponge.absorb(sys, loc!(), &[FieldVar::constant(prefix_field)]);
+    let _ = sponge.squeeze(sys, loc!());
     for point in &points {
         sponge.absorb(sys, loc!(), std::slice::from_ref(&point.x));
         sponge.absorb(sys, loc!(), std::slice::from_ref(&point.y));

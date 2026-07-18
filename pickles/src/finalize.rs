@@ -460,6 +460,15 @@ pub fn finalize_deferred<F: PrimeField>(
                 )?,
             )
         }
+        crate::ft_eval_circuit::FinalizeDomain::SideLoadedFrom { log2_size } => {
+            crate::ft_eval_circuit::FinalizeDomain::SideLoadedSelected(
+                crate::ft_eval_circuit::SideLoadedDomain::create(
+                    sys,
+                    Cow::Owned(format!("{loc} | side_loaded_domain")),
+                    log2_size,
+                )?,
+            )
+        }
         other => other.clone(),
     };
 
@@ -471,6 +480,13 @@ pub fn finalize_deferred<F: PrimeField>(
         crate::ft_eval_circuit::FinalizeDomain::Selected(sel) => {
             sel.generator_var()
                 .mul(&witness.zeta, None, Cow::Owned(format!("{loc} | zetaw")), sys)?
+        }
+        crate::ft_eval_circuit::FinalizeDomain::SideLoadedSelected(sel) => {
+            sel.generator_var()
+                .mul(&witness.zeta, None, Cow::Owned(format!("{loc} | zetaw")), sys)?
+        }
+        crate::ft_eval_circuit::FinalizeDomain::SideLoadedFrom { .. } => {
+            unreachable!("materialized above")
         }
         crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
             unreachable!("materialized above")
@@ -606,13 +622,15 @@ pub fn finalize_deferred<F: PrimeField>(
             crate::ft_eval_circuit::FinalizeDomain::Fixed(d) => {
                 crate::scalars_ml::ScalarsMlDomain::Fixed(*d)
             }
-            crate::ft_eval_circuit::FinalizeDomain::Selected(_) => {
+            crate::ft_eval_circuit::FinalizeDomain::Selected(_)
+            | crate::ft_eval_circuit::FinalizeDomain::SideLoadedSelected(_) => {
                 crate::scalars_ml::ScalarsMlDomain::Selected {
                     omegas: env.omegas.clone(),
                     omega_to_zk_minus_1: std::cell::RefCell::new(None),
                 }
             }
-            crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. } => {
+            crate::ft_eval_circuit::FinalizeDomain::SelectFrom { .. }
+            | crate::ft_eval_circuit::FinalizeDomain::SideLoadedFrom { .. } => {
                 unreachable!("materialized above")
             }
         },
