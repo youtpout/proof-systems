@@ -78,6 +78,37 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### NUIT 2026-07-18/19 — VK UNIVERSELLE ✓ + WASM SOUS JSOO ✓ (commit 3c060e490d)
+**VK universelle atteinte** : BenchNativeProgram (corps app arbitraire :
+add(var), assertEquals(0), delta privé) = **byte-identique rust==jsoo sur
+les 4 circuits** (était 24/28). AddProgram inchangé (== o1js 2.15 stock).
+Cross-verify jsoo⇄rust true. Trois causes corrigées :
+1. **App AVANT la machinerie** (recursive_step.rs) : OCaml exécute rule.main
+   D'ABORD (step_main.ml) — les statements précédents arrivent en arguments
+   (witnessés à l'entrée, sans gates) et les gates de l'app précèdent le
+   vérifieur. Le circuit width-2 witnesse les prev app states à l'entrée,
+   exécute l'app, et passe les MÊMES vars à recursive_per_proof_input
+   (param prealloc). update 419→2 lignes. (Chemin width-1 legacy inchangé.)
+2. **previous_state_slots** (recorder o1js + replay rust) : l'heuristique de
+   layout (aux == 1+prev) cassait dès qu'une règle avait d'autres inputs
+   privés (le delta) → copies fraîches = classes scindées. Le recorder émet
+   [(dense, flat)] (ids des champs de statement des SelfProof témoins,
+   traduits en indices denses) ; le replay lie ces slots aux vars
+   pré-witnessées. Heuristique gardée en fallback (vieilles fixtures).
+   update 2→0, merge 3→0.
+3. **SRS sauvage dans prepare_n1** (l'« anomalie pv1 » 2,86 s vs 0,17) :
+   `SRS::<Vesta>::create(2^16)` NEUF à chaque appel (compile ET prove !) au
+   lieu du `pasta_dummy_step_sg()` caché existant ; idem MSM constant dans
+   n0. → compile wasm 18,7→**13,0 s** (SOUS jsoo 17,0 froid ✓ objectif
+   tâche #10), natif 8,1→**6,2 s** ; prove N1 natif 3,65→2,55 s.
+Bench final (froid, Cache.None, 32 cœurs) : compile natif 6,2 / wasm 13,0 /
+jsoo 17,0 ; proves wasm ≈ jsoo (init 5,4 vs 4,7 ; update 6,7 vs 6,3 ;
+merge 8,5 vs 8,2) ; natif TOTAL 15,8 s vs jsoo 40,7 (2,6×).
+Audit parallélisme : rayon partout où utile (steps par branche, SRS
+create_parallel wasm, pool 31 threads actif 50-80% CPU) ; probes wasm
+séquentiels (mémoire) — ok car pv1 réglé. Restant : #12 (cache prover
+keys, jsoo warm 6,0 s), 32x9 parqué (règle iso-jsoo).
+
 ### DÉCISIONS PERF (2026-07-18, directives utilisateur — règle ISO-JSOO)
 Règle : on n'intègre une optimisation QUE si jsoo a la fonctionnalité
 équivalente (iso-fonctionnalité ; le gain rust doit venir du parallélisme,
