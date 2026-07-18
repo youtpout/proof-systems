@@ -21,8 +21,8 @@ dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact 2026-07-18 après le fix fold mv merge)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 221 wires (1re @252) ;
-merge **0 coeff** / 450 wires (1re @252) ; wrap 240 coeff
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 196 wires (1re @473) ;
+merge **0 coeff** / 402 wires (1re @716) ; wrap 240 coeff
 (1re @134, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
@@ -38,6 +38,24 @@ Mesure actuelle : **130203 demi-gates Generic applicatives** tiennent dans
 65536 lignes (deux Generic par ligne), soit environ **435 lignes-equivalent**
 réservées par Pickles/Kimchi ; une demi-gate de plus sélectionne `2^17` et
 est donc hors limite o1js. L'exemple assert les deux côtés de la frontière.
+
+### Fix wires step : 221→196, frontière update 252→473
+Quatre permutations d'identité, toutes gate/coeff-neutres, isolées par les
+cycles de permutation :
+- les blocs Type2 d'ouverture étaient attachés `z2,z1` au lieu de `z1,z2`
+  (la première cvar jsoo alimente le premier scale RHS) : 221→213, @252→277 ;
+- les checks on-curve tardifs étaient `sg,delta` au lieu de `delta,sg` :
+  213→207, @277→384 ;
+- le couple `map_plonk_to_field` convertit `zeta` avant `alpha` (opérandes
+  OCaml droite-à-gauche) : 207→201, @384→433 ;
+- les entrées optionnelles front-padded `sg_evals` sont présentées au fold
+  CIP dans l'ordre inverse du H-list : 201→196, @433→473.
+
+Merge suit les mêmes corrections : 450→402 wires, frontière 252→716 ;
+coeffs step toujours 0/0/0. Sonde rejetée : inverser l'ordre d'émission des
+deux `Vector.map` zeta des old challenges aggrave 196→201 et recule @473→410 ;
+revert, ne pas retenter. Wrap inchangé 240 coeff / 663 wires.
+recorded **21/21**, lib **112/112**.
 
 ### PISTE PREUVES (zkapp-rust / o1js 2.15 stock) — état
 - ⚠️ zkapp-rust/contracts/node_modules/o1js = SYMLINK vers ~/Projects/o1js (la

@@ -4589,14 +4589,11 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .assert_equals(sys, loc!(), &FieldVar::constant(Fp::one()))?;
         Ok(ShiftedScalar::Type2(half, odd))
     };
-    // OCaml `Typ` runs field checks RIGHT-TO-LEFT (same order behind the
-    // api.rs `choose_pts` `.rev()` / `Step.map`). The bulletproof record is
-    // `{lr; z_1; z_2; delta; challenge_polynomial_commitment}`, so the on-curve
-    // checks of `sg` then `delta` are emitted BEFORE the z_2/z_1 `Other_field`
-    // witnesses (measured: jsoo puts 2 on-curve points at rows 237-240 where
-    // rust — witnessing z1/z2 first — did not).
-    let z2 = wt2(sys, d.z2)?;
+    // The opening typ exposes z1 before z2 in the witness stream. This is
+    // visible only in the permutation: the two Type2 blocks have identical
+    // coefficients, but jsoo wires the first one to the first RHS scale.
     let z1 = wt2(sys, d.z1)?;
+    let z2 = wt2(sys, d.z2)?;
     let openings = OpeningProof {
         lr,
         delta: delta_pt.clone(),
@@ -4607,11 +4604,11 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     };
     let branch_slot = 13 + PREV_ROUNDS;
     let sv = wvec(sys, &d.stmt[..branch_slot])?;
-    // Measured jsoo emission order around the branch data: [sg, delta
+    // Measured jsoo emission order around the branch data: [delta, sg
     // on-curve] [b0, b1, EndoMulScalar] [previous challenge-polynomial
     // commitments on-curve] [shifted-value forbidden blocks…].
-    sg_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
     delta_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
+    sg_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
     let prev_cpcs: Vec<Point<Fp>> = d
         .prev_challenge_polynomial_commitments
         .iter()

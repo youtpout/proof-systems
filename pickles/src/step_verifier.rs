@@ -379,19 +379,20 @@ where
 
     // finalize the previous step proof's deferred values (map_plonk_to_field:
     // alpha/zeta raw -> field via the endomorphism; beta/gamma used raw).
+    // The pair is evaluated right-to-left, so zeta is converted before alpha.
     // OCaml does NOT seal the converted challenges: the `endo·a + b` lincom
     // flows into every use and is re-reduced there (the `[c,1,-1,0,0]` rows
     // all over the env and linearization).
-    let alpha_f = scalar_to_field(
-        sys,
-        Cow::Owned(format!("{loc} | alpha to_field")),
-        &stmt.alpha,
-        finalize_params.endo_r,
-    )?;
     let zeta_f = scalar_to_field(
         sys,
         Cow::Owned(format!("{loc} | zeta to_field")),
         &stmt.zeta,
+        finalize_params.endo_r,
+    )?;
+    let alpha_f = scalar_to_field(
+        sys,
+        Cow::Owned(format!("{loc} | alpha to_field")),
+        &stmt.alpha,
         finalize_params.endo_r,
     )?;
     let witness = FinalizeWitness {

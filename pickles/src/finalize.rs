@@ -511,6 +511,10 @@ pub fn finalize_deferred<F: PrimeField>(
             cip_entries.push((at_zeta, at_zetaw));
         }
     }
+    // The fixed-width recursion vector is front-padded, while OCaml's
+    // heterogeneous-list conversion presents these optional entries to the
+    // combined-evaluation fold back-to-front.
+    masked_cip_entries.reverse();
 
     // Steps 4-5: reconstruct the fr-sponge, squeeze xi and r, convert.
     let sponge_inputs = FrSpongeInputs {
