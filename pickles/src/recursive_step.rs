@@ -4367,7 +4367,12 @@ fn statement_type2_forbidden_checks(
     statement: &[FieldVar<Fp>],
 ) -> SnarkyResult<()> {
     let forbidden_fp = crate::shifted_value::forbidden_shifted_values_fp_pairs();
-    for slot in (0..5).rev() {
+    // Slot binding measured from the jsoo WIRE cycles: the blocks check the
+    // five Type2 slots FORWARD (cip first) — the blocks are shape-identical
+    // so only the wiring distinguishes the order (a `.rev()` here kept the
+    // coefficients byte-equal but displaced every slot's uses by four
+    // blocks).
+    for slot in 0..5 {
         let half = statement[2 * slot].clone();
         let odd_field = statement[2 * slot + 1].clone();
         sys.add_constraint(
