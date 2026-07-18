@@ -47,7 +47,28 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
   `or(not mv).assert_equals(1)` post-finalize (OCaml n'a QUE le fold ok de
   step_main ; le Boolean.all du finalize = somme + equal(somme,4), déjà OK).
 
-### Blocage courant #1 : update @3752 — 2 ADD rust avant le Poseidon (SONDÉ)
+### ⭐ RÉSOLU #1 → PERCÉE SPONGE (commit du seal-à-l'absorb, snarky/poseidon.rs)
+Le blocage @3752 a mené à LA découverte structurelle : **sponge_inputs.ml:53
+`add_assign = state.(i) <- Utils.seal (state.(i) + x)`** — le sponge circuit de
+pickles SCELLE À CHAQUE ABSORB. Rust accumulait des lincoms réduits au permute :
+flux identique quand absorb⊣permute adjacents, DIVERGENT sinon. Fix : machine
+d'état inline dans `DuplexState::absorb` avec seal par add (seal court-circuite
+en 0 gate pour un lincom mono-terme, comme Utils.seal).
+**Effet : update 1re divergence 3752 → 5915, TOTAL 4246 → 550 lignes.**
+recorded 21/21, init byte-identique.
+
+### Blocage courant #1bis : update @5915 — rotation de 3 demi-gates (multiscale)
+Dans `verify wrap proof | multiscale` : jsoo `[2,4,-1],[1,1,-1],[2,1,-1]` vs
+rust `[2,1,-1],[2,4,-1],[1,1,-1]`. [2,4,-1]+[1,1,-1] = réduction du lincom pack
+branch_data (b0+2b1+4dl2, 3 termes) ; [2,1,-1] = contrainte de halving
+`2·half+odd` du scale_fast2 (public_input.rs:263 → scale_fast2_prime). jsoo
+réduit le pack AVANT le gate de halving (réduction des args R1CS droite-à-
+gauche ?), rust après/avant différemment. Sonde : lire scale_fast2_prime
+(plonk_curve_ops.rs) — l'ordre seal-du-scalaire vs émission du halving, et qui
+réduit `s` (le pack) à quel moment. NB: l'ordre des TERMES du multiscale est
+CORRECT (les lagranges appariés jsoo-recorded prouvent branch_data en dernier).
+
+### (ancienne sonde @3752, résolue ci-dessus)
 Cartographie 3740-3900 : structures IDENTIQUES (P×6, G ifs, P×11, P×11, G×1
 absorb-sg, P×11, G×2 multiscale…) sauf **1 ligne Generic rust en trop** =
 2 demi-ADD `[1,1,-1,0,0]` (label extérieur = `index_sponge.squeeze` dans
