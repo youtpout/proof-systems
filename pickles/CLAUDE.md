@@ -5523,3 +5523,28 @@ Garde-fous après C1+C2 : bench W2 + w1 FULL MATCH ✓.
 ⚠ REBUILD : le harness sideloaded compile via le blob WASM (3e binaire !)
 — `npm run build:wasm:node:rust` + copie des 4 kimchi_wasm* vers dist
 obligatoire après tout changement pickles, EN PLUS de build:native.
+
+### C3 — ordre d'émission EXACT du x_hat dynamique (step_verifier.ml:421-478)
+1. Partition constant/non-constant des éléments du statement (ordre
+   statement). Par élément non-constant, DANS L'ORDRE : 1 bit →
+   `assert boolean` (1 row) + `Cond_add(b, lagrange i)` ; n bits →
+   `Add_with_correction((x,n), lagrange_with_correction i)` — les
+   SÉLECTIONS one-hot (b·L_d en lincomb, 0 row) + SEAL (1 row/coord) des
+   points [g; corr] s'émettent ICI, par élément.
+2. `correction` = reduce `add_fast` de TOUTES les corrections (k−1
+   CompleteAdd pour k termes corrigés).
+3. `init` = fold add_fast des points constant_part sur `correction`.
+4. Fold principal par terme dans l'ordre : `Cond_add` → `if_ b
+   (add_fast g acc) acc` ; `Add_with_correction` → `add_fast acc
+   (scale_fast2' g x ~num_bits)` (le scale — nos scale_fast2_prime —
+   s'émet DANS le fold, PAS en passe séparée comme multiscale_known !).
+5. `negate` (puis blinding +H côté appelant, comme le chemin connu).
+Corrections : `lagrange_with_correction ~input_length:n i` = [L_i ;
+ −L_i·2^(bits_per_chunk·chunks_needed(n))] par domaine, sélectionnés puis
+seal. Implémentation : `public_input::multiscale_dynamic(sys, terms
+[(value, num_bits, [L^13,L^14,L^15])], one_hot: [Boolean;3])` + variant
+`XHatInput::Dynamic` dans verify ; données = lagranges des 3 domaines
+tock (2^13/14/15, SRS::get_lagrange_basis) par slot side-loaded (nouveau
+champ RecursiveStepData, rempli quand le slot est side-loaded).
+C4 rappel : finalize du wrap enfant en SelectFrom [13,14,15] piloté par
+le one-hot domaine du vk stashé (les +~117 Generic restants).
