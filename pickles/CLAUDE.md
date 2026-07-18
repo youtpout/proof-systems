@@ -78,6 +78,28 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### CAMPAGNE #13 — AVANCEMENT : 1 ✓, 2a ✓, 2b-part1 ✓ (e047510093)
+✓ 2b-part1 (NEUTRE, gate byte-identique + 22/22) : chaîne step générique en
+<STEP_PI, ACTIVE> (build_prepared, branch compile, probe, steps single-pass),
+alias RecordedProgramStepIndexesShaped<PI,A>, entrées circuit _arity pour
+compile/domain_log2. TOUS les sites d'appel encore épinglés <67, 2>.
+**2b-part2 (PROCHAINE SESSION)** — dans l'ordre :
+1. Dispatch max_pv dans compile_with_debug_stage : si max_pv==1 → chaîne
+   <RECORDED_N1_STEP_STMT_LEN=34, 1>. Le stockage RecordedCompiledProgram.
+   step_indexes doit devenir enum { W2(Vec<Option<Shaped<67,2>>>),
+   W1(Vec<Option<Shaped<34,1>>>) } + dispatch dans prove_n0/prove_n1 (les
+   entrées prove_prepared_..._arity<...,1> existent déjà).
+2. Wrap width-1 : prepare_recursive_wrap_n0 est typé sur le bootstrap
+   width-2 (RECORDED_N2_STEP_STMT_LEN) — le witness wrap W1 doit porter un
+   step_statement de 34 : dériver du bootstrap W2 (recomposer [seg0(32),
+   m4nstep recalculé 1-acc, m4nwrap(1)]) ou prouver un bootstrap W1 live
+   (puis blob). Vérifier WrapWitnessData (Vec, sans doute data-driven) et
+   les masques 1-accumulateur.
+3. Validation : MODE=rust tmp-w1-gates-diff → attendu PI 34 d'abord
+   (w1-gates-jsoo.json : init 2^9/PI34, update 2^14/PI34, wrap 2^14/PI40),
+   puis histogrammes/flat-emit jusqu'à 0 ; bench/add intacts à chaque pas.
+Puis volets 2 (gadget side-loaded natif) et 3 (slots zkapp.ts).
+
 ### CAMPAGNE #13 — JALONS 2a FAIT (7d4837ea26) ; DESIGN 2b PRÉCIS
 ✓ 2a : prepare_n0/n1 génériques en arité (A=(PI-1)/(18+WR)) ; à A=1 le slot
 actif 0 = REAL (pas de dummy en tête), dummy_slots [false,true], recursions
