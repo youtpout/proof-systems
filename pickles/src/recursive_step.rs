@@ -4435,9 +4435,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
         Ok(point)
     };
-    let mkpts = |sys: &mut RunState<Fp>, ps: &[(Fp, Fp)]| -> SnarkyResult<Vec<Point<Fp>>> {
-        ps.iter().map(|&p| mkpt(sys, p)).collect()
-    };
     let w1 = |sys: &mut RunState<Fp>, v: Fp| sys.compute(loc!(), move |_| v);
     let wvec = |sys: &mut RunState<Fp>, vs: &[Fp]| -> SnarkyResult<Vec<FieldVar<Fp>>> {
         vs.iter()
@@ -4520,17 +4517,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         }
     };
     let prev_app_state = wvec(sys, &d.prev_app_state)?;
-    let vk = VerificationKeyComm {
-        generic: mkpt(sys, d.generic)?,
-        psm: mkpt(sys, d.psm)?,
-        complete_add: mkpt(sys, d.complete_add)?,
-        mul: mkpt(sys, d.mul)?,
-        emul: mkpt(sys, d.emul)?,
-        endomul_scalar: mkpt(sys, d.endomul_scalar)?,
-        coefficients: mkpts(sys, &d.coefficients)?,
-        sigma_init: mkpts(sys, &d.sigma_init)?,
-        sigma_last: mkpts(sys, &d.sigma_last)?,
-    };
     let messages = Messages {
         w_comm: d
             .w_comm
@@ -4544,19 +4530,36 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .map(|&p| mkpt(sys, p))
             .collect::<SnarkyResult<Vec<_>>>()?,
     };
-    // The LR pairs are witnessed UNCHECKED (OCaml `Bulletproof.typ` leaves
-    // them plain pairs); each round's on-curve marker comes from `endo_inv`'s
-    // `exists G.typ` inside the bulletproof loop instead.
+    // `Wrap_proof.typ` checks every LR point here. The wrap verification key
+    // itself is the already-witnessed `dlog_index`; witnessing/checking a
+    // second copy put the right on-curve gates on the wrong cvars.
+    let lr = d
+        .lr
+        .iter()
+        .map(|&(l, r)| Ok((mkpt(sys, l)?, mkpt(sys, r)?)))
+        .collect::<SnarkyResult<Vec<_>>>()?;
+    let vk = VerificationKeyComm {
+        generic: dlog_index.generic_comm.clone(),
+        psm: dlog_index.psm_comm.clone(),
+        complete_add: dlog_index.complete_add_comm.clone(),
+        mul: dlog_index.mul_comm.clone(),
+        emul: dlog_index.emul_comm.clone(),
+        endomul_scalar: dlog_index.endomul_scalar_comm.clone(),
+        coefficients: dlog_index.coefficients_comm.clone(),
+        sigma_init: dlog_index.sigma_comm[..PERMUTS - 1].to_vec(),
+        sigma_last: dlog_index.sigma_comm[PERMUTS - 1..].to_vec(),
+    };
+    // Delta/sg are allocated with the opening, but their `Typ` checks are
+    // emitted below at the positions previously (and incorrectly) occupied
+    // by duplicate previous-accumulator point checks.
     let mkpt_unchecked = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
         Ok(Point::new(
             sys.compute(loc!(), move |_| p.0)?,
             sys.compute(loc!(), move |_| p.1)?,
         ))
     };
-    let lr =
-        d.lr.iter()
-            .map(|&(l, r)| Ok((mkpt_unchecked(sys, l)?, mkpt_unchecked(sys, r)?)))
-            .collect::<SnarkyResult<Vec<_>>>()?;
+    let sg_pt = mkpt_unchecked(sys, d.sg)?;
+    let delta_pt = mkpt_unchecked(sys, d.delta)?;
     let h = cpt(d.h);
     // OCaml `Impls.Step.Other_field.typ` (impls.ml:50-107): a Tock scalar is
     // witnessed as `(low bits, high bit)` — the Boolean check on the bit,
@@ -4592,31 +4595,33 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // checks of `sg` then `delta` are emitted BEFORE the z_2/z_1 `Other_field`
     // witnesses (measured: jsoo puts 2 on-curve points at rows 237-240 where
     // rust — witnessing z1/z2 first — did not).
-    let sg_pt = mkpt(sys, d.sg)?;
-    let delta_pt = mkpt(sys, d.delta)?;
     let z2 = wt2(sys, d.z2)?;
     let z1 = wt2(sys, d.z1)?;
     let openings = OpeningProof {
         lr,
-        delta: delta_pt,
+        delta: delta_pt.clone(),
         z1,
         z2,
-        challenge_polynomial_commitment: sg_pt,
+        challenge_polynomial_commitment: sg_pt.clone(),
         h_generator: h.clone(),
     };
     let branch_slot = 13 + PREV_ROUNDS;
     let sv = wvec(sys, &d.stmt[..branch_slot])?;
-    // Measured jsoo emission order around the branch data: [2 on-curve
-    // points] [b0, b1, EndoMulScalar] [2 on-curve points] [shifted-value
-    // forbidden blocks…]. The per-proof witness carries BOTH the previous
-    // challenge-polynomial commitments AND the old accumulator points as
-    // their own on-curve witnesses (no dedup even when the values are
-    // equal): the first pair right before the branch data, the second right
-    // after.
+    // Measured jsoo emission order around the branch data: [sg, delta
+    // on-curve] [b0, b1, EndoMulScalar] [previous challenge-polynomial
+    // commitments on-curve] [shifted-value forbidden blocks…].
+    sg_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
+    delta_pt.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
     let prev_cpcs: Vec<Point<Fp>> = d
         .prev_challenge_polynomial_commitments
         .iter()
-        .map(|&p| mkpt(sys, p))
+        .map(|&p| {
+            if d.fixed_width_branch_data.is_some() {
+                mkpt_unchecked(sys, p)
+            } else {
+                mkpt(sys, p)
+            }
+        })
         .collect::<SnarkyResult<Vec<_>>>()?;
     // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152 /
     // branch_data.ml:135): the branch data is witnessed as the two
@@ -4664,13 +4669,25 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             (packed, None, None)
         }
     };
-    // Second on-curve pair (see above): the old accumulator points, witnessed
-    // separately even when equal to `prev_cpcs`.
-    let messages_accumulators: Vec<Point<Fp>> = d
-        .messages_for_next_step_accumulators
-        .iter()
-        .map(|&p| mkpt(sys, p))
-        .collect::<SnarkyResult<Vec<_>>>()?;
+    let messages_accumulators = if d.fixed_width_branch_data.is_some() {
+        // The fixed-width program typ has one point vector here: the
+        // messages accumulator is the previous challenge-polynomial
+        // commitments, not a second witness. Legacy fixtures model the two
+        // inputs independently and must retain their original vector.
+        debug_assert_eq!(
+            d.messages_for_next_step_accumulators,
+            d.prev_challenge_polynomial_commitments
+        );
+        for point in &prev_cpcs {
+            point.assert_on_curve(sys, loc!(), Fp::zero(), Fp::from(5u64))?;
+        }
+        prev_cpcs.clone()
+    } else {
+        d.messages_for_next_step_accumulators
+            .iter()
+            .map(|&p| mkpt(sys, p))
+            .collect::<SnarkyResult<Vec<_>>>()?
+    };
     // The remaining flattened statement slots (feature flags, joint-combiner
     // padding) keep their witness allocations as before.
     let _sv_tail = wvec(sys, &d.stmt[branch_slot + 1..])?;

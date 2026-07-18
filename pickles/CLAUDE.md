@@ -21,7 +21,7 @@ dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact fin de nuit 2026-07-18)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 444 wires ; merge 5481 coeff
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 221 wires ; merge 5481 coeff
 (1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
@@ -60,7 +60,7 @@ synchronise maintenant le slot terminal AVANT son early-return fixed-width et
 Les deux tests anciennement rouges passent ciblés ; dump frais : init 0,
 update 444 wires (première @135), merge full-diff 6902 (première @10).
 
-### Wires update (444 après mv-pin, 446 avant) — familles identifiées
+### Wires update (221 après fix des points per-proof) — familles identifiées
 1. RÉSOLU : binding des slots SV forward (commit) — cycle(32.0) aligné.
 2. Classe {9,255..376,11071,1,3,5,7} vs {63,393.3,393.4} : rust a DEUX classes,
    jsoo UNE — il manque l'union du sf du slot DUMMY (PI63, update est width-2 :
@@ -73,6 +73,30 @@ update 444 wires (première @135), merge full-diff 6902 (première @10).
    `combine` (8742) → un seal/copie d'un côté. Buckets: {0:182, 1000:40,
    2000:59, 3000:41, ...} — ~5-6 familles à traiter une par une (méthode :
    cycle-walk + labels).
+
+### Fix witness points du per-proof (2026-07-18) : update 444→221 wires
+Le cycle @135 a montré que les checks on-curve avaient le bon compte et les
+bonnes positions, mais étaient attachés aux mauvais objets. Décomposition
+exacte des 101 marqueurs `c=5` du step update :
+- jsoo rows 79..239 = dlog index (28) + messages (23) + LR (30) ;
+- rust = dlog index (28) + messages (23) + COPIE VK (28) + sg/delta (2) ;
+- jsoo rows 278/280/284/286 = sg/delta (2) + prev cpcs (2) ;
+- rust = prev cpcs (2) + COPIE messages accumulators (2) ;
+- les 15 marqueurs tardifs `endo_inv` matchaient déjà.
+
+Fix structurel, gate-neutre : `vk` réutilise les cvars de `dlog_index`, les
+30 LR passent par `Inner_curve.typ`, sg/delta sont alloués puis checkés aux
+anciens emplacements prev-cpcs, et `messages_accumulators` réutilise les
+`prev_cpcs` (OCaml n'a qu'un champ). Le simple swap messages avant la copie VK
+avait d'abord donné 444→374/frontière 135→181 ; le fix complet donne
+**221 wires, première @252, toujours 0 coeff**, merge full-diff 6679.
+Réfutation conservée : inverser les champs autonomes de la VK selon l'ordre
+du hlist est un no-op bit-à-bit ; ne pas le retenter.
+La dédup `messages_accumulators = prev_cpcs` est gatée au chemin programme
+`fixed_width_branch_data` : les fixtures legacy N2 portent légitimement deux
+vecteurs indépendants (parfois 2 commitments mais 0 challenges). Sans le gate,
+5 tests N2 échouaient dans `hash_messages_for_next_step_proof`; avec le gate,
+recorded **21/21** et lib **112/112**.
 
 ### Merge @529 (5481 coeff) — le double-boolean
 jsoo émet 2 booleanités adjacentes à la frontière groupe-p2/groupe-p1 des
