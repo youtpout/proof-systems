@@ -5586,3 +5586,21 @@ qui change le packing double-generic autour.
 Boucle : dumper les VALEURS/coeffs des rows 440-475 des deux côtés,
 identifier ce que chaque Generic calcule (les 2 vs 3 avant le 1er bloc
 Poseidon), remonter au code o1js correspondant.
+
+### 132 Generic — structure fine (dernière observation de la fenêtre)
+Liste des mismatches de runs (0-2500) : petits ±1 (run74 G62→63,
+run158 G1→3) puis RÉORDONNANCEMENT à la frontière app→machinerie
+(runs 161-170) : jsoo = [G3, P11, Z, G203, EMS1, G90, EMS16, G114,
+P11-chain…] ; rust = [G147, EMS1, G146, EMS16, G13, P11-chain…].
+Lecture : jsoo émet UN bloc P11 isolé tôt (squeeze du digest vk ?) puis
+les témoins machinerie (EMS16 = les 16 challenges), alors que notre
+gadget émet [one-hots, 56 on-curve, 29×P11] d'un bloc à la position du
+marqueur puis toute la machinerie. L'ORDRE jsoo exact du bloc side-loaded
+(`vkToCircuit` → `exists typ` alloue AVANT les checks ? les checks typ
+émis où ?) est à établir avec une trace labellisée jsoo (ou par lecture
+snarky typ : exists = alloc puis check TOUS ensemble — mais
+`inCircuitVkHash` (P-chain) s'émet à l'appel vkDigest, AVANT
+`Field(hash).assertEquals` et AVANT `sideLoaded.inCircuit`). Piste : nos
+one-hot/on-curve devraient peut-être s'émettre APRÈS la P-chain du hash
+(l'ordre exists(typ) : alloc sans rows, hash sur les vars alloués,
+checks typ à la FIN ?) — tester en déplaçant les checks. Reprendre ici.
