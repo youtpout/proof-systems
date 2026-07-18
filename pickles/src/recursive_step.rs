@@ -269,20 +269,28 @@ pub fn program_dummy_unfinalized(
 /// used by the shared Wrap. Padding values are witnessed just like real
 /// values, matching OCaml's fixed request type and avoiding branch-dependent
 /// cvar schedules.
+///
+/// The accumulator HASH follows `Wrap_hack.Checked`: the front pad
+/// (`MAX_PROOFS_VERIFIED - active` dummy vectors) is absorbed as circuit
+/// CONSTANTS (a precomputed sponge state in OCaml), only the `active`
+/// real vectors cost rows. The absorbed sequence — and so every digest
+/// value — is unchanged; at `active == 2` the split is a no-op.
 pub fn normalize_program_unfinalized(
     mut data: WrapUnfinalizedWitnessData,
     prev_step_acc: (Fq, Fq),
     old_bulletproof_challenges: Vec<Vec<Fq>>,
+    active: usize,
 ) -> WrapUnfinalizedWitnessData {
     assert_eq!(
         old_bulletproof_challenges.len(),
         crate::common::MAX_PROOFS_VERIFIED,
         "program old bulletproof challenges must have fixed width two"
     );
+    let pad = crate::common::MAX_PROOFS_VERIFIED - active;
     data.old_bulletproof_challenges = old_bulletproof_challenges.clone();
     data.prev_step_acc = prev_step_acc;
-    data.hash_dummy_challenges.clear();
-    data.hash_old_bulletproof_challenges = old_bulletproof_challenges;
+    data.hash_dummy_challenges = old_bulletproof_challenges[..pad].to_vec();
+    data.hash_old_bulletproof_challenges = old_bulletproof_challenges[pad..].to_vec();
     data
 }
 
@@ -3223,7 +3231,7 @@ pub fn prepare_recursive_wrap_width2<
         let real = wrap_unfinalized_from_base(base);
         let prev_step_acc = real.prev_step_acc;
         let old_bulletproof_challenges = real.old_bulletproof_challenges.clone();
-        normalize_program_unfinalized(real, prev_step_acc, old_bulletproof_challenges)
+        normalize_program_unfinalized(real, prev_step_acc, old_bulletproof_challenges, 2)
     };
     prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
         &step.verifier.index,
@@ -3273,8 +3281,10 @@ pub fn prepare_recursive_wrap_n1<
         program_dummy_unfinalized(&real),
         (dummy_step_sg.x, dummy_step_sg.y),
         fixed_old_challenges.clone(),
+        2,
     );
-    let real = normalize_program_unfinalized(real, real_prev_step_acc, fixed_old_challenges);
+    let real =
+        normalize_program_unfinalized(real, real_prev_step_acc, fixed_old_challenges, 2);
     prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
         &step.verifier.index,
         &step.proof,
@@ -3356,6 +3366,7 @@ pub fn prepare_recursive_wrap_n0_arity<
         program_dummy_unfinalized(&prototype),
         (dummy_step_sg.x, dummy_step_sg.y),
         fixed_old_challenges,
+        ACTIVE,
     );
     prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
         &step.verifier.index,
@@ -3418,7 +3429,7 @@ pub fn program_unfinalized_from_previous<
         vec![],
         old_bulletproof_challenges.clone(),
     );
-    normalize_program_unfinalized(data, prev_step_acc, old_bulletproof_challenges)
+    normalize_program_unfinalized(data, prev_step_acc, old_bulletproof_challenges, ACTIVE)
 }
 
 /// Wraps an N1 or N2 program Step with one shared maximal Wrap circuit. Real
@@ -3461,6 +3472,7 @@ pub fn prepare_program_recursive_wrap<
                 program_dummy_unfinalized(&prototype),
                 (dummy_step_sg.x, dummy_step_sg.y),
                 fixed_dummy_challenges.clone(),
+                ACTIVE,
             ),
         );
     }

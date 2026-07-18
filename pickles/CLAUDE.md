@@ -5297,3 +5297,33 @@ W2 : `MODE=rust ./run src/tests/tmp-bench-gates-diff.ts` = FULL MATCH, et
 recorded 22/22 (dont two_field = e2e W1 prove+verify). État courant : W1
 init FULL MATCH ; update +514 Generic +187 Poseidon ; wrap +21 Generic
 +77 Poseidon.
+
+## ✅ W1 wrap : Wrap_hack prev-accumulator LANDÉ (Poseidon wrap ALIGNÉ)
+
+`normalize_program_unfinalized` prend `active` et splitte la liste paddée :
+préfixe `MAX−active` → `hash_dummy_challenges` (pré-absorbé constant),
+suffixe → `hash_old_bulletproof_challenges` (en circuit). Séquence absorbée
+inchangée ⇒ tous les digests identiques ; no-op à active=2 (re-vérifié :
+bench W2 = 0 diff, recorded 22/22, two_field e2e W1 ok). Le digest du
+NOUVEL accumulateur était DÉJÀ largeur-aware (`next_wrap_dummy_challenges`
+= préfixe MAX−len, recursive_step.rs:3037→ `new_acc_dummies`).
+
+Mesure W1 après fix (dump local) : wrap histo-delta = {Generic:+15,
+Zero:−15} (Poseidon 0 ✓) ; update inchangé {Generic:+514, Poseidon:+187,
+Zero:−701}.
+
+**DIAGNOSTIC STEP (+187 Poseidon = ~17 perms = 2×17 éléments)** : les DEUX
+hash m4nSTEP du step absorbent la largeur physique 2 au lieu de 1 :
+1. per-proof « old digest » (step_verifier.rs:439-457,
+   `hash_messages_for_next_step_proof_opt`, inputs
+   `messages_for_next_step_accumulators` + `prev_challenges` [;2]) ;
+2. « new digest » (step_main.rs:227, hash plain de la NOUVELLE m4nstep).
+⚠ CONTRAIREMENT au wrap-hack, côté step OCaml hashe à la largeur RÉELLE
+SANS pad → réduire la largeur CHANGE les valeurs de digest : il faut
+mettre à jour EN MÊME TEMPS les calculs hors-circuit
+(`hash_messages_for_next_step_proof_ref` dans les prepare — vérifier si
+les prepare A-driven de la 2a produisent déjà des m4n width-1 côté
+VALEURS ; si oui le circuit reçoit peut-être déjà des vecteurs len 1 et
+c'est le CÂBLAGE [;2] du circuit main qui force 2). Le +15 Generic wrap
+restant et le +514 Generic step : témoins/checks du pad à élaguer — passer
+à la boucle labels/flat-emit pour être chirurgical.
