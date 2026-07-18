@@ -341,6 +341,12 @@ pub struct RecordedCircuit {
     /// Absent (empty) on legacy recordings — the layout heuristic applies.
     #[serde(default)]
     pub previous_state_slots: Vec<(u32, u32)>,
+    /// Per previous proof (logical order), the verified proof's own program
+    /// width — OCaml's per-tag `max_proofs_verified` (a DynamicProof's
+    /// declared bound, a SelfProof's own program width). Absent (empty) on
+    /// legacy recordings: every slot falls back to the program's width.
+    #[serde(default)]
+    pub previous_proof_widths: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2500,6 +2506,7 @@ fn build_recorded_program_step_prepared<const STEP_PI: usize, const ACTIVE: usiz
         }
         _ => unreachable!(),
     };
+    let prepared = apply_previous_proof_widths(prepared, &branch, ACTIVE);
     let app = RecordedApp {
         circuit: branch.circuit.clone(),
     };
@@ -2509,6 +2516,28 @@ fn build_recorded_program_step_prepared<const STEP_PI: usize, const ACTIVE: usiz
             app.main_with_previous_app_state(sys, Some(&witness), previous_app_state)
         });
     (prepared, main)
+}
+
+/// Stamps each REAL slot's `local_max_proofs_verified` (the verified
+/// proof's own width, from the recording) onto the prepared step's per-proof
+/// data. Logical previous `i` sits at physical slot `active - pv + i`
+/// (front-padded).
+fn apply_previous_proof_widths<const W1: usize, const PI: usize>(
+    mut prepared: crate::recursive_step::PreparedRecursiveStepWidth2<W1, PI>,
+    branch: &RecordedProgramBranch,
+    active: usize,
+) -> crate::recursive_step::PreparedRecursiveStepWidth2<W1, PI> {
+    let widths = &branch.circuit.previous_proof_widths;
+    if widths.is_empty() {
+        return prepared;
+    }
+    let pv = branch.proofs_verified as usize;
+    assert_eq!(widths.len(), pv, "one recorded width per verified proof");
+    for (i, &width) in widths.iter().enumerate() {
+        let slot = active - pv + i;
+        prepared.proofs[slot].local_max_proofs_verified = Some(width as usize);
+    }
+    prepared
 }
 
 /// Debug-only: the probe's prepared step WITHOUT the Selected domain list
@@ -2755,6 +2784,34 @@ fn take_probe_timings() -> Vec<String> {
         .lock()
         .map(|mut timings| std::mem::take(&mut *timings))
         .unwrap_or_default()
+}
+
+/// Per-slot `local_max_proofs_verified`: for each of the program's `active`
+/// physical slots, the max over branches of the width of the proof verified
+/// in that slot (front-padded alignment). Legacy recordings (no widths)
+/// default every slot to the program width.
+fn recorded_slot_local_max(branches: &[RecordedProgramBranch], active: usize) -> Vec<usize> {
+    (0..active)
+        .map(|j| {
+            branches
+                .iter()
+                .filter_map(|branch| {
+                    let pv = branch.proofs_verified as usize;
+                    let front_pad = active - pv;
+                    if j < front_pad {
+                        return None;
+                    }
+                    let i = j - front_pad;
+                    Some(if branch.circuit.previous_proof_widths.is_empty() {
+                        active
+                    } else {
+                        branch.circuit.previous_proof_widths[i] as usize
+                    })
+                })
+                .max()
+                .unwrap_or(active)
+        })
+        .collect()
 }
 
 fn recorded_program_wrap_branches<const STEP_PI: usize, const ACTIVE: usize>(
@@ -3337,7 +3394,11 @@ where
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
             ACTIVE,
-        >(&template, &bootstrap_step);
+        >(
+            &template,
+            &bootstrap_step,
+            &recorded_slot_local_max(&branches, ACTIVE),
+        );
         prepared_wrap.data.which_branch = 0;
         prepared_wrap.data.branches = branches
             .iter()
@@ -3931,6 +3992,7 @@ where
             RECORDED_N1_STEP_STMT_LEN,
             STEP_PI,
         >(prepared, app_state.clone());
+        let prepared = apply_previous_proof_widths(prepared, branch, ACTIVE);
         let carried_accumulators = prepared
             .messages_for_next_step_proof
             .challenge_polynomial_commitments
@@ -3987,7 +4049,11 @@ where
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
             ACTIVE,
-        >(&self.template, &step);
+        >(
+            &self.template,
+            &step,
+            &recorded_slot_local_max(&self.branches, ACTIVE),
+        );
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();
@@ -4201,6 +4267,7 @@ where
             ),
             _ => unreachable!(),
         };
+        let prepared = apply_previous_proof_widths(prepared, branch, ACTIVE);
         let carried_accumulators = prepared
             .messages_for_next_step_proof
             .challenge_polynomial_commitments
@@ -4297,7 +4364,11 @@ where
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
             ACTIVE,
-        >(&step, real_unfinalized);
+        >(
+            &step,
+            real_unfinalized,
+            &recorded_slot_local_max(&self.branches, ACTIVE),
+        );
         prepared_wrap.data.which_branch = branch_index;
         prepared_wrap.data.branches = self.wrap_branches.clone();
         prepared_wrap.data.step_statement_lagranges = self.wrap_statement_lagranges.clone();

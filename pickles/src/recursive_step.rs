@@ -936,6 +936,11 @@ pub struct RecursiveStepData {
     /// bound by the messages digest (OCaml pads the former to width 2,
     /// `Wrap_hack.Checked.pad_challenges`).
     pub finalize_prev_challenges: Vec<Vec<Fp>>,
+    /// The verified proof's own program width (OCaml per-tag
+    /// `max_proofs_verified`): sizes the per-proof witness vectors, the
+    /// accumulator-hash inputs and the trimmed mask. `None` falls back to
+    /// the surrounding program's width.
+    pub local_max_proofs_verified: Option<usize>,
     /// Host values used to witness and constrain the branch-data split for a
     /// fixed-width program. `None` keeps the historical fixed-arity path.
     pub fixed_width_branch_data: Option<(usize, u8)>,
@@ -2070,6 +2075,7 @@ fn prepare_recursive_step_from_parts<
         z2: sw.z2,
         packed_lagranges,
         flag_lagranges,
+        local_max_proofs_verified: None,
     };
 
     let raw_step_challenges: Vec<BulletproofChallenge<ScalarChallenge<Fp>>> = wrap_statement
@@ -3332,7 +3338,7 @@ pub fn prepare_recursive_wrap_n0<
         STEP_PROOF_ROUNDS,
         WRAP_STMT_LEN,
         2,
-    >(template, step)
+    >(template, step, &[2, 2])
 }
 
 /// [`prepare_recursive_wrap_n0`] generic over the program arity: the wrap
@@ -3353,6 +3359,10 @@ pub fn prepare_recursive_wrap_n0_arity<
 >(
     template: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
     step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN, ACTIVE>,
+    // Per-slot `local_max_proofs_verified` (OCaml: the max over branches of
+    // the slot's verified-proof width) — sizes each slot's accumulator-hash
+    // absorption and finalize pad.
+    slot_widths: &[usize],
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     let sg_olds: Vec<Vesta> = step
         .proof
@@ -3369,18 +3379,24 @@ pub fn prepare_recursive_wrap_n0_arity<
         crate::common::MAX_PROOFS_VERIFIED
     ];
     let dummy_step_sg = crate::dummy::pasta_dummy_step_sg();
-    let dummy = normalize_program_unfinalized(
-        program_dummy_unfinalized(&prototype),
-        (dummy_step_sg.x, dummy_step_sg.y),
-        fixed_old_challenges,
-        ACTIVE,
-    );
+    assert_eq!(slot_widths.len(), ACTIVE, "one width per unfinalized slot");
+    let dummies: Vec<_> = slot_widths
+        .iter()
+        .map(|&width| {
+            normalize_program_unfinalized(
+                program_dummy_unfinalized(&prototype),
+                (dummy_step_sg.x, dummy_step_sg.y),
+                fixed_old_challenges.clone(),
+                width,
+            )
+        })
+        .collect();
     prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
         &step.verifier.index,
         &step.proof,
         &step.statement,
         step_statement_slots::<WRAP_ROUNDS>(&step.statement, ACTIVE),
-        vec![dummy; ACTIVE],
+        dummies,
         sg_olds,
         ProofsVerified::N0,
         step.messages_for_next_step_proof.clone(),
@@ -3460,9 +3476,11 @@ pub fn prepare_program_recursive_wrap<
         ACTIVE,
     >,
     mut real_unfinalized: Vec<WrapUnfinalizedWitnessData>,
+    slot_widths: &[usize],
 ) -> PreparedRecursiveWrap<STEP_PROOF_ROUNDS, WRAP_STMT_LEN> {
     let logical_width = real_unfinalized.len();
     assert!((1..=ACTIVE).contains(&logical_width));
+    assert_eq!(slot_widths.len(), ACTIVE, "one width per unfinalized slot");
     let prototype = real_unfinalized[0].clone();
     let fixed_dummy_challenges = vec![
         crate::dummy::pasta_ipa_wrap_and_step()
@@ -3473,13 +3491,14 @@ pub fn prepare_program_recursive_wrap<
     ];
     let dummy_step_sg = crate::dummy::pasta_dummy_step_sg();
     while real_unfinalized.len() < ACTIVE {
+        let slot = ACTIVE - 1 - real_unfinalized.len();
         real_unfinalized.insert(
             0,
             normalize_program_unfinalized(
                 program_dummy_unfinalized(&prototype),
                 (dummy_step_sg.x, dummy_step_sg.y),
                 fixed_dummy_challenges.clone(),
-                ACTIVE,
+                slot_widths[slot],
             ),
         );
     }
@@ -5176,7 +5195,9 @@ impl<
                         .then(|| &statement[ACTIVE_PROOFS * per_proof + 1 + i]),
                     &mds,
                     dummy_slots[i],
-                    ACTIVE_PROOFS,
+                    proof_data[i]
+                        .local_max_proofs_verified
+                        .unwrap_or(ACTIVE_PROOFS),
                     shared_index.as_ref(),
                     prealloc_prev_app_states[i].take(),
                 )?;
