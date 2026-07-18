@@ -25,7 +25,21 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 (1re @529) / 5714 wires ; wrap 284 coeff (1re @90, valeurs step-VK embarquées)
 / 663 wires ; **VK 18/28** (restent σ[0..5] = wires du wrap + coeff[0,1,5,6]).
 
-### Wires update (450) — familles identifiées
+### Fix PARKÉ (validé parité, conflit interne) : threading du digest m4nwrap
+La famille wire PI66 : rust témoigne une COPIE du digest m4nwrap (sv[11]) et ne
+câble jamais le slot PI (self-loop) ; jsoo threade LA VAR DU STATEMENT dans le
+wrap-statement (classe {PI66, usages multiscale}). Fix testé : param
+`m4nwrap_digest: Option<&FieldVar>` dans recursive_per_proof_input, call-site
+`Some(&statement[len*per_proof + 1 + i])` gated `fixed_width_branch_data.is_some()`
+→ **wire 66-family résolue (446→444, frontière 66→135), coeffs 0, N2 legacy OK**
+MAIS casse 2 tests programme : `recorded_program_compiles_n0_n1_n2_with_one_wrap_key`
+et `recorded_program_two_field_state_proves_n0_then_n1` (invariant clé partagée +
+proving) → REVERTÉ pour garder l'arbre vert. À reprendre : comprendre pourquoi le
+threading casse la clé partagée n0/n1/n2 (les valeurs d.stmt[11] vs slot PI
+divergent-elles dans ces fixtures ? l'index slot est-il bon pour width1 ?) puis
+re-landing. Le diff du patch est trivial à refaire (3 hunks, cf ce paragraphe).
+
+### Wires update (444 après mv-pin, 446 avant) — familles identifiées
 1. RÉSOLU : binding des slots SV forward (commit) — cycle(32.0) aligné.
 2. Classe {9,255..376,11071,1,3,5,7} vs {63,393.3,393.4} : rust a DEUX classes,
    jsoo UNE — il manque l'union du sf du slot DUMMY (PI63, update est width-2 :
