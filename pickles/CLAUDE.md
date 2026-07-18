@@ -47,14 +47,23 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
   `or(not mv).assert_equals(1)` post-finalize (OCaml n'a QUE le fold ok de
   step_main ; le Boolean.all du finalize = somme + equal(somme,4), déjà OK).
 
-### Blocage courant #1 : update @3752 — 2 ADD rust avant le Poseidon
-Après le squeeze `old digest opt` (cond_permute_if ok), rust émet 2 seals
-`[1,1,-1,0,0]` (label extérieur `verify wrap proof` = le squeeze du
-sponge_after_index, incrementally_verify) PUIS son Poseidon ; jsoo enchaîne
-DIRECTEMENT un Poseidon (état déjà var/scellé). Hypothèses : ordre index-squeeze
-vs old-digest inversé, ou gestion d'état de sponge (seal à l'absorb vs au
-permute). À sonder via les positions des Poseidon (compter les blocs Poseidon
-entre les deux côtés sur 3700-3800).
+### Blocage courant #1 : update @3752 — 2 ADD rust avant le Poseidon (SONDÉ)
+Cartographie 3740-3900 : structures IDENTIQUES (P×6, G ifs, P×11, P×11, G×1
+absorb-sg, P×11, G×2 multiscale…) sauf **1 ligne Generic rust en trop** =
+2 demi-ADD `[1,1,-1,0,0]` (label extérieur = `index_sponge.squeeze` dans
+incrementally_verify, IndexDigest::SpongeAfterIndex). Après les cond_permute_if
+du old-digest, jsoo enchaîne DIRECTEMENT ses 2 permutations Poseidon
+(old-digest final + index-digest squeeze) ; rust seal 2 lincoms pending avant.
+ÉLIMINÉ par la sonde : (a) pas de seal-par-absorb jsoo (la région build 56
+coords ~3400-3740 matche sans seals) ; (b) pas de seal au build (idem) ;
+(c) pas de mémoïsation lincom dans plonk_constraint_system (cached_constants =
+constantes seulement). RESTE à lire : le Sponge OCaml de pickles
+(step_main_inputs.ml / sponge lib) — comment sa `block_cipher`/copy traite les
+2 add pending du 56e absorb pour que le squeeze de l'index-copy ne re-réduise
+PAS (aliasing d'état mutable dans Sponge.copy ? absorb-eager au 56e ?
+of_sponge du chemin old-digest consommant le pending PARTAGÉ ?). Le rust
+équivalent devra faire consommer le pending UNE fois (au chemin old-digest) et
+faire partir l'index-squeeze de l'état post-permute.
 
 ### Blocage courant #2 : merge @529 — la variable partagée v2
 jsoo (merge) : 2 booleanités adjacentes ligne 529 [B=v2, A=odd-bool p1-bloc1].
