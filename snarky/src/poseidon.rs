@@ -206,21 +206,46 @@ where
         self.mode = machine.mode;
     }
 
-    /// Absorbs field elements (shares the [`SpongeMachine`] protocol with
-    /// `mina_poseidon::ArithmeticSponge`).
+    /// Absorbs field elements (the `ArithmeticSponge` state machine, but with
+    /// OCaml pickles' sealing add: `add_assign ~state i x = state.(i) <-
+    /// Utils.seal (state.(i) + x)` — sponge_inputs.ml:53). Sealing at absorb
+    /// keeps every state slot a plain var, so a later permute emits NO
+    /// reduction gates. Accumulating lincoms and reducing at permute time
+    /// coincides with the sealed schedule only when the absorbs are adjacent
+    /// to the permute; it diverges when other gadgets run in between
+    /// (measured: the `sponge_after_index` squeeze in `verify_one`).
     pub fn absorb(
         &mut self,
         sys: &mut RunState<F>,
         loc: Cow<'static, str>,
         inputs: &[FieldVar<F>],
     ) {
-        let mut machine = self.take_machine();
-        machine.absorb(
-            inputs,
-            |a: &FieldVar<F>, b: &FieldVar<F>| a + b,
-            Self::permute_closure(sys, loc),
-        );
-        self.restore(machine);
+        for x in inputs {
+            match self.mode {
+                SpongeMode::Absorbed(n) => {
+                    if n == RATE_SIZE {
+                        let arr: [FieldVar<F>; 3] =
+                            core::array::from_fn(|i| self.state[i].clone());
+                        self.state = permute(sys, loc.clone(), arr);
+                        self.state[0] = (&self.state[0] + x)
+                            .seal(sys, loc.clone())
+                            .expect("sponge absorb seal");
+                        self.mode = SpongeMode::Absorbed(1);
+                    } else {
+                        self.state[n] = (&self.state[n] + x)
+                            .seal(sys, loc.clone())
+                            .expect("sponge absorb seal");
+                        self.mode = SpongeMode::Absorbed(n + 1);
+                    }
+                }
+                SpongeMode::Squeezed(_) => {
+                    self.state[0] = (&self.state[0] + x)
+                        .seal(sys, loc.clone())
+                        .expect("sponge absorb seal");
+                    self.mode = SpongeMode::Absorbed(1);
+                }
+            }
+        }
     }
 
     /// Squeezes a field element.
