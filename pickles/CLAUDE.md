@@ -29,6 +29,55 @@ retourne **0 differing rows** (types, coefficients et wires).
 `sigma[0..6]`, `coefficient[0..14]` et les six sélecteurs matchent tous.
 Suites finales : recorded **21/21**, lib **112/112**.
 
+### PISTE PERF WASM (2026-07-18 soir — EN COURS, tâche : compile wasm < jsoo)
+Bench 3-modes (`o1js/src/tests/tmp-bench-wasm.ts`, BENCH_BACKEND=rust-wasm|
+rust-native|jsoo ; wasm = `setBackend('wasm')+setProofSystemBackend('rust')`) :
+compile natif 12.2s / **wasm 29.2s** / jsoo 16.6s ; proves wasm ≈ jsoo (init
+4.4 vs 4.6 ✓, update 9.0 vs 6.1 ✗, merge 8.0 vs 7.8 ≈) ; verify wasm 0.03s
+(1er appel 1.0s, warmup pool) vs jsoo 0.25s ✓. VK wasm == natif ✓, preuves
+verify=true ✓ → **le rust wasm FONCTIONNE**, reste le compile à accélérer.
+
+Fixes landés (commit 566fcab975, −2.9s : 30.7→28.4 mesuré, 29.2 var.) :
+- `tick_srs/tock_srs` → `SRS::create_parallel` **cfg(wasm32) SEULEMENT** :
+  ~98k group maps étaient SÉRIELS sur le main thread wasm (−3.3s). ⚠️ En
+  natif l'initialiseur parallèle sous `OnceLock::get_or_init` AFFAME les
+  pools rayon du harnais multi-tests (recorded passait de 107s à >10min,
+  processus à 32% d'UN cœur) — gardé `create` sériel hors wasm.
+- Cache Lagrange **v2** (`LGB2`, `*.v2.bin`) : points non-compressés NON
+  validés, décodage parallèle (`encode/decode_lagrange_basis_raw` dans
+  common.rs). Le v1 rmp/serde payait 1 sqrt/point au seed (7.4s pour 122k
+  points wasm, PIRE que recalculer). kimchi-wasm seed : v2 + fallback v1.
+- o1js TS (NON COMMITTÉ, rust-pickles-recorded.ts) : seed déplacé DANS le
+  scope `runRustPickles` (pool actif, browser-safe), lecture fichiers sur le
+  main, noms `.v2.bin`, timers `O1JS_PROFILE_COMPILE` détaillés.
+
+Anatomie du compile wasm restant (~28s ; bisect `O1JS_DEBUG_PROGRAM_STAGE=8`,
+timings SANS seed) : template base compile 2.4 + **template base prove 3.6** +
+**bootstrap N2 prove 2.3** + wrap structure 2.8 + domain probe 3.3 (pv1
+prepare 2.7 domine) + steps 4.9-8.3 (selon seed lagrange) + wrap final 1.2 +
+**final template prove 4.2**. Les phases wasm ≈ 2-3× le natif (pénalité
+per-op wasm, pool 31 threads actif, CPU 50-80%).
+
+Prochains leviers (ordre) :
+1. **Embarquer les dummies** (~−7s wasm) : OCaml `Pickles.compile` ne PROUVE
+   JAMAIS (constantes `Pickles.Dummy` précalculées). Nous manufacturons
+   template+bootstrap à CHAQUE compile. Scopé : seul `BaseCaseProof` (et
+   `RecursiveStepProof` bootstrap) à sérialiser — `template_compiled` meurt
+   après `.prove(())` (recorded.rs:2869). Champs : ProverProof kimchi (serde
+   ✓), VerifierIndexWrapper = kimchi VerifierIndex (serde ✓, SRS skip à
+   réinjecter + linearization à reconstruire), WrapStatementMinimalV1 /
+   StepMessagesForNextProofV1 (structs simples Fp/Fq, DTO à la main),
+   statements [F; N] → Vec. Cache disque `~/.cache/pickles-rs/template-*.bin`
+   versionné + seed wasm par bytes (comme lagrange). `final template prove`
+   (4.2s) dépend du wrap VK final → reste live.
+2. Cache SRS brut (même codec v2, −1-1.5s wasm, tick 6.3MB/tock 3.1MB).
+3. **Backend de corps 32x9** (fork openmina d'arkworks, features dans
+   mina-rust Cargo.toml `UNCOMMENTED_IN_CI`) : ~2× sur les ops de corps wasm
+   — le levier structurel (notre mina-curves n'a PAS la feature ; adoption
+   du fork = projet). Long terme, cf. note mémoire « Embedded SRS+Lagrange ».
+4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
+   contraintes sans valeurs) — supprimerait le besoin des proves au compile.
+
 ### VALIDATION BOUT-EN-BOUT o1js (2026-07-18, addon rebuildé au pin d86a9430)
 mina-rust `pickle-rs` bumpé → dfbb4075 (lock = proof-systems d86a9430) ;
 `npm run build:rust-backend` (PAS yarn — erreur workspace) installe
