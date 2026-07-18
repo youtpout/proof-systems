@@ -78,6 +78,25 @@ Prochains leviers (ordre) :
 4. Architecture : compiler les circuits SANS witness (OCaml synthétise les
    contraintes sans valeurs) — supprimerait le besoin des proves au compile.
 
+### CAMPAGNE #13 — +2b-part2a ✓ : prepare_recursive_wrap_n0_arity (neutre)
+Le prepare wrap est générique en ACTIVE (slots unfinalized, décomposition du
+statement ; padding old-challenges = MAX_PROOFS_VERIFIED protocole). Prend
+le RecursiveStepWidth2Proof<..., ACTIVE>. Recorded 22/22.
+**RESTE pour 2b-part2 (les 3 morceaux, dans l'ordre)** :
+(i) enum de stockage : RecordedCompiledProgram.step_indexes →
+    { W2(Vec<Option<Shaped<67,2>>>), W1(Vec<Option<Shaped<34,1>>>) } ;
+    consommateurs = prove paths lignes ~3767-3775 (prove n0/n1 wrap flow)
+    et ~4031-4066 (variante debug-stage) : y remplacer aussi
+    prove_prepared_recursive_step_width2 → _arity et
+    prepare_recursive_wrap_n0 → _arity, dispatchés par le match enum.
+(ii) genericiser compile_with_debug_stage → compile_shaped<STEP_PI,ACTIVE>
+    (pins actuels ::<RECORDED_N2_STEP_STMT_LEN, 2> → ::<STEP_PI, ACTIVE>) ;
+    pub fn compile() dispatch max_pv≤1 → <34,1>. Bootstrap W1 : live
+    prepare_recursive_step_n0::<...,34>(template) +
+    prove_prepared_recursive_step_width2_arity<...,34,1> (blob plus tard).
+(iii) validation : MODE=rust tmp-w1-gates-diff → PI 34, histogrammes,
+    flat-emit → 0 ; régression bench/add à chaque pas.
+
 ### CAMPAGNE #13 — AVANCEMENT : 1 ✓, 2a ✓, 2b-part1 ✓ (e047510093)
 ✓ 2b-part1 (NEUTRE, gate byte-identique + 22/22) : chaîne step générique en
 <STEP_PI, ACTIVE> (build_prepared, branch compile, probe, steps single-pass),
