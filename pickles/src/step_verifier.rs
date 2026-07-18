@@ -304,6 +304,48 @@ pub fn wrap_statement_known_terms<F: PrimeField>(
         .collect()
 }
 
+/// [`wrap_statement_known_terms`], but with the per-domain Lagrange
+/// constants of a SIDE-LOADED slot (the one-hot selection happens inside
+/// `multiscale_dynamic`).
+pub fn wrap_statement_dynamic_terms<F: PrimeField>(
+    stmt: &WrapStatementVars<F>,
+    messages_for_next_step_proof_digest: &FieldVar<F>,
+    lagranges_by_element: &[Vec<((F, F), (F, F))>],
+) -> Vec<crate::public_input::DynamicTerm<F>> {
+    let widths = wrap_statement_packed_widths(stmt.bulletproof_challenges.len());
+    let mut values: Vec<FieldVar<F>> = vec![
+        stmt.combined_inner_product.clone(),
+        stmt.b.clone(),
+        stmt.zeta_to_srs_length.clone(),
+        stmt.zeta_to_domain_size.clone(),
+        stmt.perm.clone(),
+        stmt.beta.clone(),
+        stmt.gamma.clone(),
+        stmt.alpha.clone(),
+        stmt.zeta.clone(),
+        stmt.xi.clone(),
+        stmt.sponge_digest_before_evaluations.clone(),
+        stmt.messages_for_next_wrap_proof_digest.clone(),
+        messages_for_next_step_proof_digest.clone(),
+    ];
+    values.extend(stmt.bulletproof_challenges.iter().cloned());
+    values.push(stmt.branch_data.clone());
+    assert_eq!(values.len(), widths.len(), "wrap statement element count");
+    assert_eq!(lagranges_by_element.len(), widths.len());
+    values
+        .into_iter()
+        .zip(&widths)
+        .zip(lagranges_by_element)
+        .map(
+            |((value, &num_bits), lagranges)| crate::public_input::DynamicTerm {
+                value,
+                num_bits,
+                lagranges: lagranges.clone(),
+            },
+        )
+        .collect()
+}
+
 /// One previous proof, fully handled inside a step circuit
 /// (`step_main.ml::verify_one`):
 ///
@@ -343,6 +385,7 @@ pub fn verify_one<F, C>(
     // the verifier-index digest (step_verifier.ml:533-537).
     vk: &VerificationKeyComm<F>,
     packed_lagranges: &[(Point<F>, Point<F>)],
+    side_loaded_x_hat: Option<&(Vec<Boolean<F>>, Vec<Vec<((F, F), (F, F))>>)>,
     flag_lagranges: &[Point<F>],
     h_generator: &Point<F>,
     messages: &Messages<F>,
@@ -462,7 +505,26 @@ where
     // of circuit); the boolean feature flags are constant `false` and
     // contribute nothing.
     let _ = flag_lagranges;
-    let terms = wrap_statement_known_terms(stmt, &msgs_step_digest, packed_lagranges);
+    let known_terms;
+    let dynamic_terms;
+    let x_hat_input = match side_loaded_x_hat {
+        None => {
+            known_terms = wrap_statement_known_terms(stmt, &msgs_step_digest, packed_lagranges);
+            XHatInput::MultiscaleKnown {
+                terms: &known_terms,
+                h_generator,
+            }
+        }
+        Some((which, lagranges)) => {
+            dynamic_terms =
+                wrap_statement_dynamic_terms(stmt, &msgs_step_digest, lagranges);
+            XHatInput::MultiscaleDynamic {
+                terms: &dynamic_terms,
+                which,
+                h_generator,
+            }
+        }
+    };
     let sg_old_mask = vec![Boolean::true_(); prev_challenge_polynomial_commitments.len()];
     let index_digest = if share_index_sponge {
         IndexDigest::SpongeAfterIndex(sponge_after_index)
@@ -477,10 +539,7 @@ where
         vk,
         prev_challenge_polynomial_commitments,
         &sg_old_mask,
-        XHatInput::MultiscaleKnown {
-            terms: &terms,
-            h_generator,
-        },
+        x_hat_input,
         messages,
         openings,
         advice,

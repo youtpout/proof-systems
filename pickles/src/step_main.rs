@@ -61,6 +61,10 @@ pub struct PerProofInput<'a, F: PrimeField> {
     // the wrap proof itself
     pub vk: VerificationKeyComm<F>,
     pub packed_lagranges: Vec<(Point<F>, Point<F>)>,
+    /// Side-loaded slots: the witnessed key's wrap-domain one-hot plus the
+    /// per-element `(lagrange, correction)` constants of each selectable
+    /// domain — switches the x_hat to `multiscale_dynamic`.
+    pub side_loaded_x_hat: Option<(Vec<snarky::Boolean<F>>, Vec<Vec<((F, F), (F, F))>>)>,
     pub flag_lagranges: Vec<Point<F>>,
     pub h_generator: Point<F>,
     pub messages: Messages<F>,
@@ -159,6 +163,7 @@ where
             p.proofs_verified_mask.as_deref(),
             &p.vk,
             &p.packed_lagranges,
+            p.side_loaded_x_hat.as_ref(),
             &p.flag_lagranges,
             &p.h_generator,
             &p.messages,

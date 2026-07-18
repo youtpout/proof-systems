@@ -2680,17 +2680,47 @@ fn apply_previous_proof_widths<const W1: usize, const PI: usize>(
     branch: &RecordedProgramBranch,
     active: usize,
 ) -> crate::recursive_step::PreparedRecursiveStepWidth2<W1, PI> {
-    let widths = &branch.circuit.previous_proof_widths;
-    if widths.is_empty() {
-        return prepared;
-    }
     let pv = branch.proofs_verified as usize;
-    assert_eq!(widths.len(), pv, "one recorded width per verified proof");
-    for (i, &width) in widths.iter().enumerate() {
-        let slot = active - pv + i;
-        prepared.proofs[slot].local_max_proofs_verified = Some(width as usize);
+    let widths = &branch.circuit.previous_proof_widths;
+    if !widths.is_empty() {
+        assert_eq!(widths.len(), pv, "one recorded width per verified proof");
+        for (i, &width) in widths.iter().enumerate() {
+            let slot = active - pv + i;
+            prepared.proofs[slot].local_max_proofs_verified = Some(width as usize);
+        }
+    }
+    for constraint in &branch.circuit.constraints {
+        if let RecordedConstraint::SideLoadedVk { proof, .. } = constraint {
+            let slot = active - pv + *proof as usize;
+            prepared.proofs[slot].side_loaded_lagranges =
+                Some(side_loaded_x_hat_lagranges().clone());
+        }
     }
     prepared
+}
+
+/// The per-element `(lagrange, correction)` constants of the three
+/// selectable side-loaded wrap domains (2^13/14/15 over the shared Tock
+/// SRS), in one-hot order, transposed per statement element.
+fn side_loaded_x_hat_lagranges() -> &'static Vec<Vec<((Fp, Fp), (Fp, Fp))>> {
+    static CACHE: std::sync::OnceLock<Vec<Vec<((Fp, Fp), (Fp, Fp))>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        use ark_poly::EvaluationDomain as _;
+        use poly_commitment::SRS as _;
+        let srs = crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS);
+        let per_domain: Vec<Vec<((Fp, Fp), (Fp, Fp))>> = (13..=15u32)
+            .map(|log2| {
+                let domain =
+                    ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(1 << log2)
+                        .expect("wrap domain");
+                let basis = srs.get_lagrange_basis(domain);
+                crate::recursive_step::wrap_x_hat_lagranges(&basis, RECORDED_N1_STEP_ROUNDS).0
+            })
+            .collect();
+        (0..per_domain[0].len())
+            .map(|element| per_domain.iter().map(|domain| domain[element]).collect())
+            .collect()
+    })
 }
 
 /// Debug-only: the probe's prepared step WITHOUT the Selected domain list

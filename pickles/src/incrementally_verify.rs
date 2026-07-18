@@ -98,6 +98,14 @@ pub enum XHatInput<'a, F: PrimeField> {
         terms: &'a [crate::public_input::KnownTerm<F>],
         h_generator: &'a Point<F>,
     },
+    /// The SIDE-LOADED x_hat (`public_input_commitment_dynamic`): the
+    /// Lagrange constants are one-hot selections over the possible wrap
+    /// domains, then negate + blind by `H` like the known path.
+    MultiscaleDynamic {
+        terms: &'a [crate::public_input::DynamicTerm<F>],
+        which: &'a [Boolean<F>],
+        h_generator: &'a Point<F>,
+    },
     Statement {
         elements: &'a [StatementElement<F>],
         lagranges: &'a crate::public_input::StatementLagranges<'a, F>,
@@ -365,6 +373,25 @@ where
                 sys,
                 Cow::Owned(format!("{loc} | multiscale_known")),
                 terms,
+            )?;
+            x_hat = crate::plonk_curve_ops::add_fast(
+                sys,
+                Cow::Owned(format!("{loc} | x_hat blinding")),
+                &sum.negate(),
+                h_generator,
+            )?;
+            std::slice::from_ref(&x_hat)
+        }
+        XHatInput::MultiscaleDynamic {
+            terms,
+            which,
+            h_generator,
+        } => {
+            let sum = crate::public_input::multiscale_dynamic::<F, C>(
+                sys,
+                Cow::Owned(format!("{loc} | multiscale_dynamic")),
+                terms,
+                which,
             )?;
             x_hat = crate::plonk_curve_ops::add_fast(
                 sys,

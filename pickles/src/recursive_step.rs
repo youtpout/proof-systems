@@ -941,6 +941,11 @@ pub struct RecursiveStepData {
     /// accumulator-hash inputs and the trimmed mask. `None` falls back to
     /// the surrounding program's width.
     pub local_max_proofs_verified: Option<usize>,
+    /// Side-loaded slots only: per wrap-statement element, the
+    /// `(lagrange, correction)` constants of each selectable wrap domain
+    /// (2^13/14/15) — the dynamic x_hat selects among them with the
+    /// witnessed key's domain one-hot.
+    pub side_loaded_lagranges: Option<Vec<Vec<((Fp, Fp), (Fp, Fp))>>>,
     /// Host values used to witness and constrain the branch-data split for a
     /// fixed-width program. `None` keeps the historical fixed-arity path.
     pub fixed_width_branch_data: Option<(usize, u8)>,
@@ -2076,6 +2081,7 @@ fn prepare_recursive_step_from_parts<
         packed_lagranges,
         flag_lagranges,
         local_max_proofs_verified: None,
+        side_loaded_lagranges: None,
     };
 
     let raw_step_challenges: Vec<BulletproofChallenge<ScalarChallenge<Fp>>> = wrap_statement
@@ -4658,9 +4664,12 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // `domain_for_compiled` position.)
     // Shared-tag proofs verify against the SAME wrap key: OCaml witnesses
     // `d.wrap_key` once and every proof of the tag reuses those points.
-    let _side_loaded = side_loaded_vk.is_some();
-    let dlog_index = match (side_loaded_vk, shared_dlog_index) {
-        (Some(vars), _) => vars.index,
+    let (side_loaded_index, side_loaded_domain_one_hot) = match side_loaded_vk {
+        Some(vars) => (Some(vars.index), Some(vars.domain_one_hot)),
+        None => (None, None),
+    };
+    let dlog_index = match (side_loaded_index, shared_dlog_index) {
+        (Some(index), _) => index,
         (None, Some(index)) => index.clone(),
         (None, None) => {
             let vk_pts = d
@@ -4896,12 +4905,26 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         // feature flags are circuit CONSTANTS (no witness, no boolean rows).
         feature_flags: (0..8).map(|_| Boolean::false_()).collect(),
     };
-    let finalize_domain = match (&d.finalize_domain_log2s[..], &branch_domain_log2) {
-        ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
-        (log2s, Some(domain_log2)) => crate::ft_eval_circuit::FinalizeDomain::SelectFrom {
-            log2s: log2s.to_vec(),
-            domain_log2: domain_log2.clone(),
-        },
+    let finalize_domain = if let Some(one_hot) = &side_loaded_domain_one_hot {
+        // Side-loaded child: its wrap domain is any of 2^13/14/15, selected
+        // by the witnessed key's domain one-hot (OCaml `step_domains =
+        // `Side_loaded` → `Pseudo.Domain` over the wrap domains).
+        let mut domain_log2 = FieldVar::constant(Fp::from(0u64));
+        for (i, bit) in one_hot.iter().enumerate() {
+            domain_log2 = &domain_log2 + &bit.to_field_var().scale(Fp::from(13 + i as u64));
+        }
+        crate::ft_eval_circuit::FinalizeDomain::SelectFrom {
+            log2s: vec![13, 14, 15],
+            domain_log2,
+        }
+    } else {
+        match (&d.finalize_domain_log2s[..], &branch_domain_log2) {
+            ([], _) | (_, None) => crate::ft_eval_circuit::FinalizeDomain::Fixed(d.finalize_domain),
+            (log2s, Some(domain_log2)) => crate::ft_eval_circuit::FinalizeDomain::SelectFrom {
+                log2s: log2s.to_vec(),
+                domain_log2: domain_log2.clone(),
+            },
+        }
     };
     let finalize_params = FinalizeParams {
         tokens: &d.finalize_tokens,
@@ -5030,10 +5053,16 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .map(|chals| wvec(sys, chals))
             .collect::<SnarkyResult<Vec<_>>>()?
     };
+    let side_loaded_x_hat = side_loaded_domain_one_hot.and_then(|one_hot| {
+        d.side_loaded_lagranges
+            .clone()
+            .map(|lagranges| (one_hot, lagranges))
+    });
     let proof = PerProofInput {
         finalize_params,
         finalize_evals,
         stmt,
+        side_loaded_x_hat,
         dlog_index: dlog_index.clone(),
         share_index_sponge: d.share_index_sponge,
         prev_app_state,
@@ -5596,6 +5625,7 @@ impl<
         let flag_lagranges: Vec<Point<Fp>> = d.flag_lagranges.iter().map(|&l| cpt(l)).collect();
 
         let per_proof = PerProofInput {
+            side_loaded_x_hat: None,
             finalize_params,
             finalize_evals,
             stmt,

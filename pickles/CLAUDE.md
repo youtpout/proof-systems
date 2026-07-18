@@ -5548,3 +5548,22 @@ tock (2^13/14/15, SRS::get_lagrange_basis) par slot side-loaded (nouveau
 champ RecursiveStepData, rempli quand le slot est side-loaded).
 C4 rappel : finalize du wrap enfant en SelectFrom [13,14,15] piloté par
 le one-hot domaine du vk stashé (les +~117 Generic restants).
+
+## ★★ C3+C4 CÂBLÉS — side-loaded step : delta = {Generic: −132} SEULEMENT
+
+multiscale_dynamic branché (XHatInput::MultiscaleDynamic, verify_one
+switch sur side_loaded_x_hat = (one-hot domaine du vk stashé, lagranges
+3-domaines par élément — cache OnceLock `side_loaded_x_hat_lagranges()`
+recorded.rs, ATTENTION rounds = RECORDED_N1_STEP_ROUNDS=16 pas TOCK=15)
++ C4 finalize SelectFrom [13,14,15] piloté par le one-hot (domain_log2 =
+Σ b_i·(13+i)). Mesure dump local : step check — CompleteAdd/Poseidon/
+VBM/EndoMul/EMS TOUS EXACTS ; reste {Generic: −132, Zero: +132} (rust en
+MANQUE 132) ; wrap toujours 44 rows constantes (suivront le step).
+PISTE pour les 132 : différence entre notre FinalizeDomain::SelectFrom
+(re-dérive des égalités one-hot depuis la var domain_log2) et le
+`Pseudo.Domain` jsoo sur les booléens du vk ; ou le `assert_16_bits` /
+vanishing amount ; localiser à la boucle labels (dump local
+SNARKY_KEEP_LABELS=1 + première zone divergente vs jsoo).
+Encore à faire ensuite : garde-fous (bench W2, w1, recorded 22/22) puis
+commit ; puis wrap 44 rows (auto) ; puis PROVE side-loaded (chemin
+DynamicProof envelope) + zkapp-rust suite.
