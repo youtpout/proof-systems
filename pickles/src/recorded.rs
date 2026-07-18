@@ -2774,12 +2774,50 @@ fn recorded_program_wrap_branches<const STEP_PI: usize, const ACTIVE: usize>(
 }
 
 type RecordedTemplateBase = crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>;
-type RecordedBootstrapStep = crate::recursive_step::RecursiveStepWidth2Proof<
-    RECORDED_N1_STEP_ROUNDS,
-    RECORDED_BASE_WRAP_ROUNDS,
-    RECORDED_N1_STEP_STMT_LEN,
-    RECORDED_N2_STEP_STMT_LEN,
->;
+type RecordedBootstrapStepShaped<const STEP_PI: usize, const ACTIVE: usize> =
+    crate::recursive_step::RecursiveStepWidth2Proof<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
+    >;
+type RecordedBootstrapStep = RecordedBootstrapStepShaped<RECORDED_N2_STEP_STMT_LEN, 2>;
+
+/// Live prove of the bootstrap step at one program shape: an N0 recursive
+/// step over the template base cycle, whose index structure seeds every
+/// placeholder branch of that shape.
+fn manufacture_bootstrap_step<const STEP_PI: usize, const ACTIVE: usize>(
+    template: &RecordedTemplateBase,
+) -> RecordedBootstrapStepShaped<STEP_PI, ACTIVE> {
+    let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
+    let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
+        RecordedProgramTemplateApp,
+        16,
+        RECORDED_BASE_WRAP_ROUNDS,
+        40,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(
+        template,
+        bootstrap_vk,
+        vec![Fp::from(0u64)],
+        vec![Fp::from(0u64)],
+    );
+    let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
+    let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        STEP_PI,
+    >(bootstrap, vec![Fp::from(0u64)]);
+    crate::recursive_step::prove_prepared_recursive_step_width2_arity::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        STEP_PI,
+        ACTIVE,
+    >(bootstrap, None, None)
+    .0
+}
 
 /// Live manufacture of the compile-time dummies: the template base cycle
 /// proof and the bootstrap width-2 step proof. This is what
@@ -2791,32 +2829,38 @@ fn manufacture_template_dummies() -> (RecordedTemplateBase, RecordedBootstrapSte
         (),
     );
     let template = template_compiled.prove(());
-    let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
-    let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
-        RecordedProgramTemplateApp,
-        16,
-        RECORDED_BASE_WRAP_ROUNDS,
-        40,
-        RECORDED_N1_STEP_STMT_LEN,
-    >(
-        &template,
-        bootstrap_vk,
-        vec![Fp::from(0u64)],
-        vec![Fp::from(0u64)],
-    );
-    let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
-    let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
-        RECORDED_BASE_WRAP_ROUNDS,
-        RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
-    >(bootstrap, vec![Fp::from(0u64)]);
-    let bootstrap_step = crate::recursive_step::prove_recursive_step_width2::<
-        RECORDED_N1_STEP_ROUNDS,
-        RECORDED_BASE_WRAP_ROUNDS,
-        RECORDED_N1_STEP_STMT_LEN,
-        RECORDED_N2_STEP_STMT_LEN,
-    >(bootstrap);
+    let bootstrap_step = manufacture_bootstrap_step::<RECORDED_N2_STEP_STMT_LEN, 2>(&template);
     (template, bootstrap_step)
+}
+
+/// Shape-directed acquisition of the compile-time dummies. The embedded blob
+/// carries the width-2 bootstrap; the width-1 shape reuses the embedded
+/// template and proves its own bootstrap live (blob extension to follow).
+trait ProgramTemplateDummies: Sized {
+    fn template_dummies() -> (RecordedTemplateBase, Self);
+}
+
+impl ProgramTemplateDummies for RecordedBootstrapStepShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
+    fn template_dummies() -> (RecordedTemplateBase, Self) {
+        match crate::template_dummy::decode_embedded().and_then(assemble_template_dummies) {
+            Some(pair) => pair,
+            None => manufacture_template_dummies(),
+        }
+    }
+}
+
+impl ProgramTemplateDummies for RecordedBootstrapStepShaped<RECORDED_N1_STEP_STMT_LEN, 1> {
+    fn template_dummies() -> (RecordedTemplateBase, Self) {
+        let template = match crate::template_dummy::decode_embedded()
+            .and_then(assemble_template_dummies)
+        {
+            Some((template, _)) => template,
+            None => manufacture_template_dummies().0,
+        };
+        let bootstrap_step =
+            manufacture_bootstrap_step::<RECORDED_N1_STEP_STMT_LEN, 1>(&template);
+        (template, bootstrap_step)
+    }
 }
 
 /// Rebuilds the typed template/bootstrap artifacts from decoded blob parts.
@@ -3057,10 +3101,28 @@ macro_rules! with_program_shape {
 }
 
 impl RecordedCompiledProgram {
-    /// Compiles a program in a single fixpoint-free pass.
+    /// The physical width OCaml `Pickles.compile` gives a program: the max
+    /// `proofs_verified` over its branches, floored at 1 (a proof-free
+    /// program still compiles at width 1).
+    fn shape_width(branches: &[RecordedProgramBranch]) -> usize {
+        branches
+            .iter()
+            .map(|branch| usize::from(branch.proofs_verified))
+            .max()
+            .unwrap_or(0)
+            .max(1)
+    }
+
+    /// Compiles a program in a single fixpoint-free pass, at the width its
+    /// branches declare (OCaml compiles max-pv<=1 programs at width 1).
     pub fn compile(branches: Vec<RecordedProgramBranch>) -> Result<Self, RecordedProveError> {
-        RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::compile(branches)
-            .map(Self::W2)
+        if Self::shape_width(&branches) <= 1 {
+            RecordedCompiledProgramShaped::<RECORDED_N1_STEP_STMT_LEN, 1>::compile(branches)
+                .map(Self::W1)
+        } else {
+            RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::compile(branches)
+                .map(Self::W2)
+        }
     }
 
     /// See [`RecordedCompiledProgramShaped::debug_compile_stage`].
@@ -3069,9 +3131,15 @@ impl RecordedCompiledProgram {
         branches: Vec<RecordedProgramBranch>,
         stage: usize,
     ) -> Result<String, RecordedProveError> {
-        RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::debug_compile_stage(
-            branches, stage,
-        )
+        if Self::shape_width(&branches) <= 1 {
+            RecordedCompiledProgramShaped::<RECORDED_N1_STEP_STMT_LEN, 1>::debug_compile_stage(
+                branches, stage,
+            )
+        } else {
+            RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::debug_compile_stage(
+                branches, stage,
+            )
+        }
     }
 
     /// See [`RecordedCompiledProgramShaped::compile_multipass_reference`].
@@ -3153,7 +3221,11 @@ impl RecordedCompiledProgram {
     }
 }
 
-impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
+#[allow(private_bounds)]
+impl<const STEP_PI: usize, const ACTIVE: usize> RecordedCompiledProgramShaped<STEP_PI, ACTIVE>
+where
+    RecordedBootstrapStepShaped<STEP_PI, ACTIVE>: ProgramTemplateDummies,
+{
     /// Compiles a program in a single fixpoint-free pass.
     ///
     /// The step and wrap circuits only exchange VALUES (verification-key
@@ -3206,6 +3278,12 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
                     "proofs_verified must be 0, 1 or 2".into(),
                 ));
             }
+            if usize::from(branch.proofs_verified) > ACTIVE {
+                return Err(RecordedProveError::Program(format!(
+                    "branch proofs_verified {} exceeds the program shape width {ACTIVE}",
+                    branch.proofs_verified
+                )));
+            }
         }
 
         let profile = std::env::var_os("PICKLES_PROFILE").is_some();
@@ -3241,26 +3319,24 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
         // and the blob generator.
         let (template, bootstrap_step) = phase!(
             "template dummies",
-            match crate::template_dummy::decode_embedded().and_then(assemble_template_dummies) {
-                Some(pair) => pair,
-                None => manufacture_template_dummies(),
-            }
+            <RecordedBootstrapStepShaped<STEP_PI, ACTIVE> as ProgramTemplateDummies>::template_dummies()
         );
 
         // Structure-donor wrap: compiled from branch data whose VALUES are
         // placeholders (the bootstrap recursive-step index, which has the
         // real program-step shape). Only its structural fields are consumed
         // by the step alignment, and those are invariant under branch data.
-        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0::<
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0_arity::<
             RecordedProgramTemplateApp,
             16,
             40,
             RECORDED_N1_STEP_ROUNDS,
             RECORDED_BASE_WRAP_ROUNDS,
             RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
+            STEP_PI,
             RECORDED_N2_STEP_ROUNDS,
             RECORDED_N2_WRAP_STMT_LEN,
+            ACTIVE,
         >(&template, &bootstrap_step);
         prepared_wrap.data.which_branch = 0;
         prepared_wrap.data.branches = branches
@@ -3303,7 +3379,7 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
                 branches
                     .iter()
                     .map(|branch| {
-                        recorded_program_step_branch_domain_log2::<RECORDED_N2_STEP_STMT_LEN, 2>(
+                        recorded_program_step_branch_domain_log2::<STEP_PI, ACTIVE>(
                             branch,
                             &template,
                             &structure_vk,
@@ -3316,7 +3392,7 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
                 branches
                     .par_iter()
                     .map(|branch| {
-                        recorded_program_step_branch_domain_log2::<RECORDED_N2_STEP_STMT_LEN, 2>(
+                        recorded_program_step_branch_domain_log2::<STEP_PI, ACTIVE>(
                             branch,
                             &template,
                             &structure_vk,
@@ -3346,7 +3422,7 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
         // shared finalize index.
         let step_indexes = phase!(
             "steps compile",
-            compile_recorded_program_steps_single_pass(
+            compile_recorded_program_steps_single_pass::<STEP_PI, ACTIVE>(
                 &branches,
                 &template,
                 &structure_vk,
@@ -3439,6 +3515,9 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
         })
     }
 
+}
+
+impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
     /// The historical multi-pass fixpoint compile, kept as the reference the
     /// single-pass `compile` is tested against. Do not use outside tests.
     #[doc(hidden)]

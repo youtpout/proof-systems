@@ -3370,8 +3370,8 @@ pub fn prepare_recursive_wrap_n0_arity<
 }
 
 /// Reconstructs the real Wrap-side unfinalized witness carried by a previous
-/// program cycle. Its old challenge typ is always the fixed `[2]` program
-/// width, independently of the previous branch's logical arity.
+/// program cycle. Its old challenge typ is always the program's physical
+/// width `ACTIVE`, independently of the previous branch's logical arity.
 pub fn program_unfinalized_from_previous<
     const PREVIOUS_STEP_ROUNDS: usize,
     const VERIFIED_WRAP_ROUNDS: usize,
@@ -3393,12 +3393,23 @@ pub fn program_unfinalized_from_previous<
         previous_step.proof.proof.sg.x,
         previous_step.proof.proof.sg.y,
     );
-    let old_bulletproof_challenges = previous_wrap.next_wrap_old_challenges.clone();
+    let mut old_bulletproof_challenges = previous_wrap.next_wrap_old_challenges.clone();
     assert_eq!(
         old_bulletproof_challenges.len(),
-        crate::common::MAX_PROOFS_VERIFIED,
-        "program Wrap must carry fixed-width old challenges"
+        ACTIVE,
+        "program Wrap must carry its shape-width old challenges"
     );
+    // OCaml's `Wrap_hack` always pads the old-challenge vectors to the
+    // protocol maximum before they are hashed or replayed: a width-1
+    // program's wrap statement carries one vector, front-padded here with
+    // the canonical dummy wrap challenges.
+    let dummy_wrap_challenges = crate::dummy::pasta_ipa_wrap_and_step()
+        .0
+        .challenges_computed
+        .clone();
+    while old_bulletproof_challenges.len() < crate::common::MAX_PROOFS_VERIFIED {
+        old_bulletproof_challenges.insert(0, dummy_wrap_challenges.clone());
+    }
     let data = wrap_unfinalized_from_parts(
         &previous_wrap.verifier.index,
         &previous_wrap.proof,
