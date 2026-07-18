@@ -14,6 +14,7 @@ use pickles::{
 /// x0 = witness, x1 = x0², output = x1.
 fn square_circuit() -> RecordedCircuit {
     RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 2,
         output: vec![LinComb::var(1)],
         constraints: vec![RecordedConstraint::Square {
@@ -31,6 +32,7 @@ fn recorded_program_two_field_state_proves_n0_then_n1() {
     use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};
 
     let circuit = RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 2,
         output: vec![LinComb::var(0), LinComb::var(1)],
         constraints: vec![RecordedConstraint::Square {
@@ -337,6 +339,7 @@ fn ec_add_circuit() -> RecordedCircuit {
     use pickles::recorded::RecordedConstraint::EcAddComplete;
     let zero = LinComb::default;
     RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 8,
         output: vec![LinComb::var(4)],
         constraints: vec![EcAddComplete {
@@ -357,6 +360,7 @@ fn recorded_gate_variants_round_trip_and_validate() {
     use pickles::recorded::RecordedConstraint;
 
     let range_check0 = RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 15,
         output: vec![],
         constraints: vec![RecordedConstraint::RangeCheck0 {
@@ -372,6 +376,7 @@ fn recorded_gate_variants_round_trip_and_validate() {
 
     // Wrong row width is rejected.
     let bad = RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 15,
         output: vec![],
         constraints: vec![RecordedConstraint::Lookup {
@@ -587,6 +592,7 @@ fn recorded_n2_over_two_kept_bases_executes_the_new_application() {
             )
             .unwrap();
             let app = RecordedCircuit {
+        previous_state_slots: vec![],
                 aux_count: 3,
                 output: vec![LinComb::var(2)],
                 constraints: vec![RecordedConstraint::R1cs {
@@ -672,6 +678,7 @@ fn recorded_chained_n1_runs_new_circuit_over_kept_base() {
     // Recursive step: a *different* circuit (x·y = z) runs in-step while
     // verifying the kept base proof — the ZkProgram SelfProof shape.
     let mul_circuit = RecordedCircuit {
+        previous_state_slots: vec![],
         aux_count: 3,
         output: vec![LinComb::var(2)],
         constraints: vec![RecordedConstraint::R1cs {

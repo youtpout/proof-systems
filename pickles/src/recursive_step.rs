@@ -2349,8 +2349,11 @@ pub fn prepare_recursive_step_n1<
     statement.push(program_dummy_wrap_messages_digest());
     statement.push(real.statement[WIDTH1_INPUT_LEN - 1]);
 
-    let step_srs = SRS::<Vesta>::create(1 << crate::common::TICK_ROUNDS);
-    let dummy_step_sg = crate::dummy::compute_sg(&step_srs, &dummy_step.challenges_computed);
+    // `Dummy.Ipa.Step.sg` is a protocol constant: use the cached commitment
+    // over the SHARED Tick SRS (this used to create a fresh 2^16 SRS on every
+    // n1 preparation — ~1s native / ~2.7s wasm per call, at compile AND at
+    // prove time).
+    let dummy_step_sg = crate::dummy::pasta_dummy_step_sg();
     let dummy_recursion = kimchi::proof::RecursionChallenge {
         chals: dummy_step.challenges_computed.clone(),
         comm: PolyComm {
@@ -2411,8 +2414,9 @@ pub fn prepare_recursive_step_n0<
     statement.push(program_dummy_wrap_messages_digest());
     statement.push(program_dummy_wrap_messages_digest());
 
-    let step_srs = crate::common::tick_srs(1 << crate::common::TICK_ROUNDS);
-    let dummy_step_sg = crate::dummy::compute_sg(&step_srs, &dummy_challenges);
+    // `Dummy.Ipa.Step.sg` is a protocol constant — cached commitment, no
+    // per-call 2^16 MSM.
+    let dummy_step_sg = crate::dummy::pasta_dummy_step_sg();
     let dummy_recursion = kimchi::proof::RecursionChallenge {
         chals: dummy_challenges,
         comm: PolyComm {
@@ -4420,6 +4424,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     shared_dlog_index: Option<
         &crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
     >,
+    prealloc_prev_app_state: Option<Vec<FieldVar<Fp>>>,
 ) -> SnarkyResult<(
     PerProofInput<'a, Fp>,
     crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
@@ -4487,7 +4492,13 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             }
         }
     };
-    let prev_app_state = wvec(sys, &d.prev_app_state)?;
+    // The program path pre-witnesses the previous app state at circuit entry
+    // (the rule's arguments in OCaml) and hands the vars in for reuse; the
+    // legacy width-1 path still witnesses it here.
+    let prev_app_state = match prealloc_prev_app_state {
+        Some(vars) => vars,
+        None => wvec(sys, &d.prev_app_state)?,
+    };
     let messages = Messages {
         w_comm: d
             .w_comm
@@ -4921,7 +4932,33 @@ impl<
             PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
         )> = None;
         let mut real_segments: Vec<&[FieldVar<Fp>]> = Vec::new();
-        let mut previous_app_states = Vec::new();
+        // OCaml runs the rule's `main` FIRST (step_main.ml): the previous
+        // proof statements arrive as circuit arguments — their app-state
+        // vars are created at entry (no gates emitted) and the application
+        // logic emits its gates BEFORE the verification machinery. Mirror
+        // that order: witness the previous app states, run the app, then
+        // hand the same vars to the per-proof witnesses for reuse.
+        let mut prealloc_prev_app_states: [Option<Vec<FieldVar<Fp>>>; 2] = [None, None];
+        let mut previous_app_states: Vec<FieldVar<Fp>> = Vec::new();
+        for i in 0..2 {
+            if dummy_slots[i] {
+                continue;
+            }
+            let vars = proof_data[i]
+                .prev_app_state
+                .iter()
+                .map(|&value| sys.compute(loc!(), move |_| value))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            previous_app_states.extend(vars.iter().cloned());
+            prealloc_prev_app_states[i] = Some(vars);
+        }
+        let app_state = match app {
+            Some(app_main) => app_main(sys, &previous_app_states)?,
+            None => app_state
+                .iter()
+                .map(|&value| sys.compute(loc!(), move |_| value))
+                .collect::<SnarkyResult<Vec<_>>>()?,
+        };
         for i in 0..2 {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
@@ -4938,7 +4975,7 @@ impl<
                 .as_ref()
                 .filter(|(pts, _)| *pts == proof_data[i].wrap_vk_pts)
                 .map(|(_, index)| index.clone());
-            let (proof, index, previous_app_state) =
+            let (proof, index, _previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
                     &proof_data[i],
@@ -4950,8 +4987,8 @@ impl<
                     &mds,
                     dummy_slots[i],
                     shared_index.as_ref(),
+                    prealloc_prev_app_states[i].take(),
                 )?;
-            previous_app_states.extend(previous_app_state);
             if shared_tag_index.is_none() {
                 shared_tag_index = Some((proof_data[i].wrap_vk_pts.clone(), index.clone()));
             }
@@ -5021,13 +5058,6 @@ impl<
                     endomul_scalar_comm: next_it.next().unwrap(),
                 }
             }
-        };
-        let app_state = match app {
-            Some(app_main) => app_main(sys, &previous_app_states)?,
-            None => app_state
-                .iter()
-                .map(|&value| sys.compute(loc!(), move |_| value))
-                .collect::<SnarkyResult<Vec<_>>>()?,
         };
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         let digest = step_main::<Fp, PallasParameters>(

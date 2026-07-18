@@ -334,6 +334,13 @@ pub struct RecordedCircuit {
     /// bound by the Pickles accumulator digest.
     pub output: Vec<LinComb>,
     pub constraints: Vec<RecordedConstraint>,
+    /// `(dense_index, prev_state_flat_index)` bindings between auxiliary
+    /// slots and the previous proofs' statement fields. OCaml hands the same
+    /// cvars to the rule's main and to the verification machinery; the
+    /// replay uses these to reuse the pre-witnessed statement vars.
+    /// Absent (empty) on legacy recordings — the layout heuristic applies.
+    #[serde(default)]
+    pub previous_state_slots: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -533,10 +540,21 @@ impl RecordedApp {
         witness: Option<&Vec<Fp>>,
         previous_app_state: &[FieldVar<Fp>],
     ) -> SnarkyResult<Vec<FieldVar<Fp>>> {
-        let reuse_previous = self.has_program_previous_state_slots(previous_app_state.len());
+        // Recorded slot bindings take precedence; the layout heuristic only
+        // covers legacy recordings without `previous_state_slots`.
+        let slot_map: std::collections::HashMap<usize, usize> = self
+            .circuit
+            .previous_state_slots
+            .iter()
+            .map(|&(dense, flat)| (dense as usize, flat as usize))
+            .collect();
+        let reuse_previous = slot_map.is_empty()
+            && self.has_program_previous_state_slots(previous_app_state.len());
         let mut vars = Vec::with_capacity(self.circuit.aux_count as usize);
         for index in 0..self.circuit.aux_count as usize {
-            let var = if reuse_previous && index > 0 {
+            let var = if let Some(&flat) = slot_map.get(&index) {
+                previous_app_state[flat].clone()
+            } else if reuse_previous && index > 0 {
                 previous_app_state[index - 1].clone()
             } else {
                 sys.compute(loc!(), |_| witness.unwrap()[index])?
@@ -4524,6 +4542,7 @@ mod wrap_wdata_independence_tests {
                 v: LinComb::var(0),
                 square: LinComb::var(1),
             }],
+            previous_state_slots: vec![],
         };
         let witness = vec![Fp::from(6u64), Fp::from(36u64)];
         let app = RecordedApp {
