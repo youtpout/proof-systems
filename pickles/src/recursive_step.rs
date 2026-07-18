@@ -4607,6 +4607,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     shared_dlog_index: Option<
         &crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
     >,
+    // The key witnessed in the APP by the side-loaded gadget, when this slot
+    // verifies a side-loaded proof (OCaml `Side_loaded.in_circuit`): the
+    // machinery reuses those cvars instead of witnessing `d.wrap_vk_pts`.
+    side_loaded_vk: Option<crate::recorded::SideLoadedVkVars>,
     prealloc_prev_app_state: Option<Vec<FieldVar<Fp>>>,
 ) -> SnarkyResult<(
     PerProofInput<'a, Fp>,
@@ -4654,9 +4658,11 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // `domain_for_compiled` position.)
     // Shared-tag proofs verify against the SAME wrap key: OCaml witnesses
     // `d.wrap_key` once and every proof of the tag reuses those points.
-    let dlog_index = match shared_dlog_index {
-        Some(index) => index.clone(),
-        None => {
+    let _side_loaded = side_loaded_vk.is_some();
+    let dlog_index = match (side_loaded_vk, shared_dlog_index) {
+        (Some(vars), _) => vars.index,
+        (None, Some(index)) => index.clone(),
+        (None, None) => {
             let vk_pts = d
                 .wrap_vk_pts
                 .iter()
@@ -5180,10 +5186,20 @@ impl<
                 continue;
             }
             let segment = &statement[i * per_proof..(i + 1) * per_proof];
-            let shared_index = shared_tag_index
-                .as_ref()
-                .filter(|(pts, _)| *pts == proof_data[i].wrap_vk_pts)
-                .map(|(_, index)| index.clone());
+            // The slot's logical previous index (real slots are trailing;
+            // the app's side-loaded gadget stashes by logical index).
+            let logical = i - dummy_slots[..i].iter().filter(|dummy| **dummy).count();
+            let side_loaded_vk = crate::recorded::SIDE_LOADED_VK_STASH
+                .with(|stash| stash.borrow_mut().remove(&logical));
+            let is_side_loaded = side_loaded_vk.is_some();
+            let shared_index = if is_side_loaded {
+                None
+            } else {
+                shared_tag_index
+                    .as_ref()
+                    .filter(|(pts, _)| *pts == proof_data[i].wrap_vk_pts)
+                    .map(|(_, index)| index.clone())
+            };
             let (proof, index, _previous_app_state) =
                 recursive_per_proof_input::<PREV_ROUNDS, WRAP_ROUNDS>(
                     sys,
@@ -5199,16 +5215,18 @@ impl<
                         .local_max_proofs_verified
                         .unwrap_or(ACTIVE_PROOFS),
                     shared_index.as_ref(),
+                    side_loaded_vk,
                     prealloc_prev_app_states[i].take(),
                 )?;
-            if shared_tag_index.is_none() {
+            if !is_side_loaded && shared_tag_index.is_none() {
                 shared_tag_index = Some((proof_data[i].wrap_vk_pts.clone(), index.clone()));
             }
             // Shared-wrap self-recursion: the next-step message commits to
             // the SAME wrap key the proof was verified with — OCaml reuses
             // the witnessed `d.wrap_key` points instead of witnessing a
             // second copy.
-            if reused_next_dlog_index.is_none()
+            if !is_side_loaded
+                && reused_next_dlog_index.is_none()
                 && proof_data[i].wrap_vk_pts == *messages_for_next_step_vk_pts
             {
                 reused_next_dlog_index = Some(index);

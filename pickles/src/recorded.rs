@@ -230,6 +230,15 @@ pub enum RecordedConstraint {
     Lookup {
         row: Vec<LinComb>,
     },
+    /// The o1js `DynamicProof.verify(vk)` declaration point: the replay
+    /// expands OCaml's side-loaded verification-key witness gadget here
+    /// (`Side_loaded.in_circuit` + in-circuit `vk_digest`) and asserts the
+    /// digest equals the app's `vk_hash` value. `proof` is the logical
+    /// previous-proof index the key belongs to.
+    SideLoadedVk {
+        proof: u32,
+        vk_hash: LinComb,
+    },
 }
 
 /// One VarBaseMul round (see [`ScaleRound`]).
@@ -488,6 +497,7 @@ impl RecordedCircuit {
                         check(lincomb)?;
                     }
                 }
+                RecordedConstraint::SideLoadedVk { vk_hash, .. } => check(vk_hash)?,
             }
         }
         Ok(())
@@ -507,6 +517,136 @@ impl RecordedCircuit {
 #[derive(Clone)]
 pub struct RecordedApp {
     pub circuit: RecordedCircuit,
+}
+
+/// The in-circuit side-loaded verification key of one previous-proof slot,
+/// witnessed by the APP replay (OCaml `Side_loaded.in_circuit` runs inside
+/// the rule's main) and consumed by the same-thread step machinery.
+pub(crate) struct SideLoadedVkVars {
+    pub index: crate::composition_types::PlonkVerificationKeyEvals<
+        snarky::gadgets::curve::Point<Fp>,
+    >,
+    #[allow(dead_code)]
+    pub max_pv_one_hot: Vec<snarky::Boolean<Fp>>,
+    #[allow(dead_code)]
+    pub domain_one_hot: Vec<snarky::Boolean<Fp>>,
+}
+
+std::thread_local! {
+    /// Slot-indexed stash bridging the app replay to the per-proof
+    /// machinery. One circuit synthesis runs on one thread, and the app
+    /// main runs FIRST (app-before-machinery), so the machinery can take
+    /// each slot's witnessed key without any struct plumbing.
+    pub(crate) static SIDE_LOADED_VK_STASH: std::cell::RefCell<
+        std::collections::HashMap<usize, SideLoadedVkVars>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Emits OCaml's `Side_loaded_verification_key.typ` witness + checks and the
+/// in-circuit `vk_digest`, returning the witnessed key vars. Row layout
+/// (side_loaded_verification_key.ml:349+, one_hot_vector.ml, mina_hash):
+/// two one-hot vectors (3 boolean rows + one sum-assert each), 28 points
+/// witnessed through `Inner_curve.typ` (2 on-curve rows each), then the
+/// digest sponge from the `MinaSideLoadedVk` salted state absorbing the 56
+/// coordinates and the packed 6-bit one-hot field.
+fn side_loaded_vk_gadget(
+    sys: &mut RunState<Fp>,
+    child_max_pv: usize,
+    vk_hash: FieldVar<Fp>,
+) -> SnarkyResult<SideLoadedVkVars> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    use snarky::gadgets::curve::Point;
+    use snarky::Boolean;
+
+    let one_hot = |sys: &mut RunState<Fp>, selected: usize| -> SnarkyResult<Vec<Boolean<Fp>>> {
+        let bools = (0..3)
+            .map(|j| sys.compute(loc!(), move |_| j == selected))
+            .collect::<SnarkyResult<Vec<Boolean<Fp>>>>()?;
+        // `Boolean.Assert.exactly_one`: the boolean sum equals one.
+        let fields: Vec<FieldVar<Fp>> = bools.iter().map(|b| b.to_field_var()).collect();
+        let sum = FieldVar::sum(&fields.iter().collect::<Vec<_>>());
+        sum.assert_equals(sys, loc!(), &FieldVar::constant(Fp::from(1u64)))?;
+        Ok(bools)
+    };
+    let max_pv_one_hot = one_hot(sys, child_max_pv)?;
+    // `actual_wrap_domain_size` — the wrap domain of a `max_pv` program is
+    // `wrap_domains(max_pv)` (13/14/15), i.e. one-hot index == max_pv.
+    let domain_one_hot = one_hot(sys, child_max_pv)?;
+
+    // The 28 wrap-index commitments (PlonkVerificationKeyEvals order),
+    // witnessed through `Inner_curve.typ` (y² = x³ + 5, two rows per
+    // point). Compile-time placeholder values: distinct generator
+    // multiples (structure only; the prove path will supply the real key).
+    let generator = Pallas::generator().into_group();
+    let placeholder = |i: usize| -> (Fp, Fp) {
+        let p: Pallas = (generator * mina_curves::pasta::Fq::from(i as u64 + 1)).into();
+        (p.x, p.y)
+    };
+    let mkpt = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+        let point = Point::new(
+            sys.compute(loc!(), move |_| p.0)?,
+            sys.compute(loc!(), move |_| p.1)?,
+        );
+        point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+        Ok(point)
+    };
+    let mut points = Vec::with_capacity(28);
+    for i in 0..28 {
+        points.push(mkpt(sys, placeholder(i))?);
+    }
+    let index = crate::composition_types::PlonkVerificationKeyEvals {
+        sigma_comm: points[0..7].to_vec(),
+        coefficients_comm: points[7..22].to_vec(),
+        generic_comm: points[22].clone(),
+        psm_comm: points[23].clone(),
+        complete_add_comm: points[24].clone(),
+        mul_comm: points[25].clone(),
+        emul_comm: points[26].clone(),
+        endomul_scalar_comm: points[27].clone(),
+    };
+
+    // In-circuit `vk_digest`: sponge from the salted `MinaSideLoadedVk****`
+    // state, absorbing the 56 coordinates then the packed one-hot field
+    // (`Random_oracle_input.Chunked.pack_to_fields` puts the packed bits
+    // LAST — same layout as `SideLoadedVerificationKeyV2::mina_hash`).
+    let salted_state = {
+        use ark_ff::PrimeField as _;
+        use kimchi::curve::KimchiCurve;
+        use mina_poseidon::poseidon::{ArithmeticSponge, Sponge};
+        let params = <Vesta as KimchiCurve<{ snarky::FULL_ROUNDS }>>::sponge_params();
+        let mut sponge = ArithmeticSponge::<
+            Fp,
+            mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+            { snarky::FULL_ROUNDS },
+        >::new(params);
+        let prefix = b"MinaSideLoadedVk****";
+        let mut bytes = [0u8; 32];
+        bytes[..prefix.len()].copy_from_slice(prefix);
+        sponge.absorb(&[Fp::from_le_bytes_mod_order(&bytes)]);
+        let _ = sponge.squeeze();
+        [sponge.state[0], sponge.state[1], sponge.state[2]]
+    };
+    let mut sponge = crate::sponge::PoseidonSponge::from_constant_state(salted_state, 0);
+    for point in &points {
+        sponge.absorb(sys, loc!(), std::slice::from_ref(&point.x));
+        sponge.absorb(sys, loc!(), std::slice::from_ref(&point.y));
+    }
+    let packed = {
+        let mut acc = FieldVar::constant(Fp::from(0u64));
+        for bit in max_pv_one_hot.iter().chain(domain_one_hot.iter()) {
+            acc = &acc.scale(Fp::from(2u64)) + &bit.to_field_var();
+        }
+        acc
+    };
+    sponge.absorb(sys, loc!(), std::slice::from_ref(&packed));
+    let digest = sponge.squeeze(sys, loc!());
+    digest.assert_equals(sys, loc!(), &vk_hash)?;
+
+    Ok(SideLoadedVkVars {
+        index,
+        max_pv_one_hot,
+        domain_one_hot,
+    })
 }
 
 impl StepApp for RecordedApp {
@@ -554,6 +694,7 @@ impl RecordedApp {
             .iter()
             .map(|&(dense, flat)| (dense as usize, flat as usize))
             .collect();
+        SIDE_LOADED_VK_STASH.with(|stash| stash.borrow_mut().clear());
         let reuse_previous = slot_map.is_empty()
             && self.has_program_previous_state_slots(previous_app_state.len());
         let mut vars = Vec::with_capacity(self.circuit.aux_count as usize);
@@ -636,6 +777,18 @@ impl RecordedApp {
                     None,
                     loc!(),
                 )?,
+                RecordedConstraint::SideLoadedVk { proof, vk_hash } => {
+                    let child_max_pv = self
+                        .circuit
+                        .previous_proof_widths
+                        .get(*proof as usize)
+                        .copied()
+                        .unwrap_or(0) as usize;
+                    let vars = side_loaded_vk_gadget(sys, child_max_pv, resolve(vk_hash))?;
+                    SIDE_LOADED_VK_STASH.with(|stash| {
+                        stash.borrow_mut().insert(*proof as usize, vars);
+                    });
+                }
                 RecordedConstraint::EcAddComplete {
                     p1,
                     p2,
