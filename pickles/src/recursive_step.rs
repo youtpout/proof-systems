@@ -4459,40 +4459,6 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // pseudo-domain selection is driven by the witnessed `domain_log2`, and
     // its one-hot gadgets are emitted inside `finalize_deferred` at OCaml's
     // `domain_for_compiled` position.)
-    let public_evals = [
-        wvec(sys, &d.public_evals[0])?,
-        wvec(sys, &d.public_evals[1])?,
-    ];
-    let mut fe = d.evals_flat.iter();
-    let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
-        let &(a, b) = fe.next().unwrap();
-        Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
-    };
-    let evals = crate::fr_sponge::AbsorbEvalsVar {
-        w: (0..COLUMNS)
-            .map(|_| next_pe(sys))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        coefficients: (0..COLUMNS)
-            .map(|_| next_pe(sys))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        z: next_pe(sys)?,
-        s: (0..PERMUTS - 1)
-            .map(|_| next_pe(sys))
-            .collect::<SnarkyResult<Vec<_>>>()?,
-        generic_selector: next_pe(sys)?,
-        poseidon_selector: next_pe(sys)?,
-        complete_add_selector: next_pe(sys)?,
-        mul_selector: next_pe(sys)?,
-        emul_selector: next_pe(sys)?,
-        endomul_scalar_selector: next_pe(sys)?,
-    };
-    let finalize_evals = FinalizeEvals {
-        ft_eval1: w1(sys, d.ft_eval1)?,
-        public_evals,
-        evals,
-    };
-
-
     // Shared-tag proofs verify against the SAME wrap key: OCaml witnesses
     // `d.wrap_key` once and every proof of the tag reuses those points.
     let dlog_index = match shared_dlog_index {
@@ -4781,6 +4747,43 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // `step_main.ml:63`). Physical order matches the front-padded proof
     // vector: [b0 = pv≥2, b1 = pv≥1] ⇒ N0=[F,F], N1=[F,T], N2=[T,T].
     let proofs_verified_mask = branch_mask;
+
+    // `prev_proof_evals` follows the wrap proof and proof state in
+    // `Per_proof_witness.typ`.  These allocations emit no constraints, but
+    // their cvar indices decide the ascending `reduce_lincom` order and thus
+    // the permutation wires.
+    let public_evals = [
+        wvec(sys, &d.public_evals[0])?,
+        wvec(sys, &d.public_evals[1])?,
+    ];
+    let mut fe = d.evals_flat.iter();
+    let mut next_pe = |sys: &mut RunState<Fp>| -> SnarkyResult<crate::fr_sponge::PointEvalVar<Fp>> {
+        let &(a, b) = fe.next().unwrap();
+        Ok((vec![w1(sys, a)?], vec![w1(sys, b)?]))
+    };
+    let evals = crate::fr_sponge::AbsorbEvalsVar {
+        w: (0..COLUMNS)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        coefficients: (0..COLUMNS)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        z: next_pe(sys)?,
+        s: (0..PERMUTS - 1)
+            .map(|_| next_pe(sys))
+            .collect::<SnarkyResult<Vec<_>>>()?,
+        generic_selector: next_pe(sys)?,
+        poseidon_selector: next_pe(sys)?,
+        complete_add_selector: next_pe(sys)?,
+        mul_selector: next_pe(sys)?,
+        emul_selector: next_pe(sys)?,
+        endomul_scalar_selector: next_pe(sys)?,
+    };
+    let finalize_evals = FinalizeEvals {
+        ft_eval1: w1(sys, d.ft_eval1)?,
+        public_evals,
+        evals,
+    };
 
     let prev_challenges = d
         .prev_challenges

@@ -107,10 +107,20 @@ impl<F: PrimeField> SelectedDomain<F> {
         xs: &[FieldVar<F>],
     ) -> SnarkyResult<FieldVar<F>> {
         assert_eq!(xs.len(), self.which.len());
+        // OCaml `Pseudo.mask` builds the products with `Vector.map`, so their
+        // constraints are emitted from the last vector element to the first.
+        // The resulting vector is still folded in logical order.
+        let mut terms: Vec<Option<FieldVar<F>>> = (0..xs.len()).map(|_| None).collect();
+        for i in (0..xs.len()).rev() {
+            terms[i] = Some(
+                self.which[i]
+                    .to_field_var()
+                    .mul(&xs[i], None, loc.clone(), sys)?,
+            );
+        }
         let mut acc = FieldVar::constant(F::zero());
-        for (b, x) in self.which.iter().zip(xs) {
-            let term = b.to_field_var().mul(x, None, loc.clone(), sys)?;
-            acc = &acc + &term;
+        for term in terms {
+            acc = &acc + &term.expect("all pseudo-mask terms set");
         }
         Ok(acc)
     }

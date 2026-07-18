@@ -20,12 +20,44 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
-## REPRISE (état exact 2026-07-18 après partage des old challenges)
-**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 98 wires (1re @1280) ;
-merge **0 coeff** / 206 wires (1re @1510) ; wrap 240 coeff
-(1re @134, valeurs step-VK embarquées)
-/ 591 wires (1re @147) ; **VK 18/28** (restent σ[0..5] = wires du wrap +
+## REPRISE (état exact 2026-07-18 après alignement des evals/challenges)
+**Scores** : init 0/0 ✓✓ ; update **0 coeff** / 3 wires (1re @3042) ;
+merge **0 coeff** / 5 wires (1re @3285) ; wrap 233 coeff
+(1re @138, valeurs step-VK embarquées)
+/ 548 wires (1re @147) ; **VK 18/28** (restent σ[0..5] = wires du wrap +
 coeff[0,1,5,6]).
+
+### Fix wires step : 98→3 update, 206→5 merge
+Quatre alignements structurels OCaml, tous coefficient-neutres :
+- `prev_proof_evals` était alloué au début du builder Rust, alors que
+  `Per_proof_witness.typ` le place après le wrap proof et le proof state. Le
+  déplacement pur des allocations change les indices de cvars et donc le tri
+  `reduce_lincom` : update 98→60, frontière 1280→1885 ; merge 206→119 ;
+- `Pseudo.mask` construit ses produits via `Vector.map` droite-à-gauche, puis
+  replie le vecteur en ordre logique : update 60→55, merge 119→111 ;
+- l'inverse Snarky OCaml câble `b · b_inv = 1` (et non `b_inv · b`) :
+  update 55→51, frontière 1886→2445 ; merge 111→103 ;
+- les 16 nouveaux bulletproof challenges passent par un `Vector.map` : les
+  conversions `scalar_to_field` sont émises du dernier round au premier, puis
+  le vecteur logique est restauré avant `b_actual`. Effet massif : update
+  **51→3**, merge **103→5**.
+
+Les 8 lignes restantes sont une seule famille : le `main` o1js reçoit
+directement les cvars des états applicatifs des preuves précédentes, tandis
+que `RecordedApp` retémoigne actuellement les slots auxiliaires correspondants.
+Cycles update : `3042.0↔11435.3` et `3055.3↔11435.0` attendus dans jsoo,
+self-loops Rust (`old digest opt` ↔ `new digest`).
+
+Sonde importante rejetée : réutiliser directement ces cvars dans le replay
+donne bien **0/0 sur les trois steps**, mais les témoins applicatifs statiques
+des fixtures de preuve ne sont pas synchronisés avec les états récursifs
+dynamiques ; deux recorded échouent en `DisconnectedWires` :
+`recorded_program_compiles_n0_n1_n2_with_one_wrap_key` et
+`recorded_program_two_field_state_proves_n0_then_n1`. Il faut threader aussi
+les VALEURS dynamiques/statement, pas seulement changer le circuit.
+
+Palier sûr : recorded **21/21**, lib **112/112**. Dump wrap frais :
+233 coeff (@138), 548 wires (@147). VK toujours 18/28.
 
 ### Exemple frontière de capacité o1js 2^16
 `pickles/examples/max_gates.rs` construit le step Pickles complet et cherche

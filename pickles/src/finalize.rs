@@ -682,7 +682,7 @@ pub fn finalize_deferred<F: PrimeField>(
 
     // Step 9: the NEW bulletproof challenges to field form, then b_correct
     let mut challenges = Vec::with_capacity(witness.bulletproof_challenges.len());
-    for pre in &witness.bulletproof_challenges {
+    for pre in witness.bulletproof_challenges.iter().rev() {
         challenges.push(scalar_to_field(
             sys,
             Cow::Owned(format!("{loc} | bp-challenge to_field")),
@@ -690,6 +690,9 @@ pub fn finalize_deferred<F: PrimeField>(
             params.endo_r,
         )?);
     }
+    // OCaml's `Vector.map` emits right-to-left but returns the vector in its
+    // original logical round order for `b_actual`.
+    challenges.reverse();
     let b_derived = b_actual(
         sys,
         Cow::Owned(format!("{loc} | b_actual")),
