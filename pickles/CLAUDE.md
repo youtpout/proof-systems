@@ -5621,3 +5621,29 @@ public_input conditional add » rows 2606-3070 + 105 + 4394) —
 différences de CONSTANTES dans les cond-adds du x_hat wrap (les 5
 clusters ≈ les 5 odd-bits Type2 ? valeurs lagrange ≠). À élucider :
 d'où viennent les constantes jsoo ('0262d2e23722…') vs les nôtres.
+
+## ✅✅✅✅ #13 TERMINÉ — VK PARITY TOTALE (gate zkapp-rust 3/3 × 4 backends)
+
+`npm run test:vk-parity` (zkapp-rust) : square, add (récursif) et
+**side-loaded zkapp (SmartContract + DynamicProof)** produisent le MÊME
+hash VK sur jsoo-wasm / jsoo-native / rust-wasm / rust-native
+(side-loaded : 22686407…0736392). Test side-loaded ajouté au gate
+(VkParity.check.ts, zkapp-rust ae2fbb6). Dernier fix décisif : le
+raccourci all-equal du x_hat wrap ne replie QUE les paires corrigées ;
+le `lagrange` simple masque toujours par which_branch
+(OneHot{corrected_constant}) ; donor structurel et wraps legacy gardent
+Prepared. Harnais o1js : sideloaded + w1 + bench = TRIPLE FULL MATCH.
+recorded 22/22. Pin mina-rust 59191898 ; tip 183f0d0177.
+NOTE prove side-loaded : le PROVE d'un DynamicProof réel (enveloppe →
+witness du gadget vk avec les vraies valeurs + chemin prove side-loaded)
+n'est PAS encore câblé — compile/VK seulement.
+
+## ➡ TÂCHE SUIVANTE : #12 — cache des clés prover (iso jsoo, warm 6 s)
+
+Modèle : le chemin base-path existant (rust-pickles-recorded.ts
+~1660-1712) : cache_key → readCache → from_cache_bytes → compile →
+cache_bytes → writeCache (kind 'step-pk'). À faire pour
+RecordedCompiledProgram : exports napi+wasm (program_cache_key,
+program_cache_bytes, compile_program_from_cache_bytes), sérialisation
+des index (rmp comme le blob template), branchement o1js dans
+compileRecordedProgram avec le Cache o1js standard.
