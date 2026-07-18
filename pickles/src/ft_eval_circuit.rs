@@ -70,7 +70,12 @@ impl<F: PrimeField> SideLoadedDomain<F> {
         let mut mask = Vec::with_capacity(max);
         let mut value = Boolean::true_();
         for i in 0..max {
-            let eq = FieldVar::constant(F::from(i as u64)).equal(sys, loc.clone(), log2_size)?;
+            // `Field.equal first_zero (of_int i)` — the WITNESS is the left
+            // operand (operand order decides the equal gadget's coefficient
+            // signs).
+            let eq = log2_size
+                .clone()
+                .equal(sys, loc.clone(), &FieldVar::constant(F::from(i as u64)))?;
             value = value.and(&eq.not(), sys, loc.clone());
             mask.push(value.clone());
         }

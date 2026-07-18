@@ -5202,6 +5202,47 @@ impl<
                 .map(|&value| sys.compute(loc!(), move |_| value))
                 .collect::<SnarkyResult<Vec<_>>>()?,
         };
+        // OCaml witnesses `dlog_plonk_index` (the program's own wrap key) as
+        // the FIRST `exists` of step_main (step_main.ml:345). A SELF slot
+        // shares those cvars with its per-proof wrap key — for those
+        // branches the 56 on-curve rows sit at the per-proof position
+        // (matched byte-for-byte). When NO slot verifies against the self
+        // key (side-loaded-only branches), the rows land here, before the
+        // per-proof machinery.
+        let has_self_slot = (0..ACTIVE_PROOFS).any(|i| {
+            !dummy_slots[i]
+                && proof_data[i].wrap_vk_pts == *messages_for_next_step_vk_pts
+                && !crate::recorded::SIDE_LOADED_VK_STASH.with(|stash| {
+                    let logical = i - dummy_slots[..i].iter().filter(|d| **d).count();
+                    stash.borrow().contains_key(&logical)
+                })
+        });
+        if !has_self_slot {
+            let mk_next_point =
+                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                    let point = Point::new(
+                        sys.compute(loc!(), move |_| p.0)?,
+                        sys.compute(loc!(), move |_| p.1)?,
+                    );
+                    point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+                    Ok(point)
+                };
+            let next_vk_pts = messages_for_next_step_vk_pts
+                .iter()
+                .map(|&p| mk_next_point(sys, p))
+                .collect::<SnarkyResult<Vec<_>>>()?;
+            let mut next_it = next_vk_pts.into_iter();
+            reused_next_dlog_index = Some(PlonkVerificationKeyEvals {
+                sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
+                coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
+                generic_comm: next_it.next().unwrap(),
+                psm_comm: next_it.next().unwrap(),
+                complete_add_comm: next_it.next().unwrap(),
+                mul_comm: next_it.next().unwrap(),
+                emul_comm: next_it.next().unwrap(),
+                endomul_scalar_comm: next_it.next().unwrap(),
+            });
+        }
         for i in 0..ACTIVE_PROOFS {
             if dummy_slots[i] {
                 let expected = program_dummy_step_statement_segment::<WRAP_ROUNDS>();
@@ -5262,6 +5303,8 @@ impl<
             real_segments.push(segment);
             proofs.push(proof);
         }
+        let next_dlog_index = reused_next_dlog_index
+            .expect("either a self slot or the pre-loop witness provides the next wrap key");
         // OCaml `exists` the step statement once, AFTER every per-proof
         // witness: the unfinalized Type2 slot checks of every real proof
         // come back to back here.
@@ -5284,39 +5327,6 @@ impl<
                 proof.witness_must_verify = false;
             }
         }
-        let next_dlog_index = match reused_next_dlog_index {
-            Some(index) => index,
-            None => {
-                let mk_next_point =
-                    |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-                        // OCaml witnesses the wrap key through
-                        // `Inner_curve.typ`, whose `check` asserts y² = x³ + 5
-                        // (2 rows per point — the 56 Generic rows before the
-                        // index sponge in a base-case jsoo step circuit).
-                        let point = Point::new(
-                            sys.compute(loc!(), move |_| p.0)?,
-                            sys.compute(loc!(), move |_| p.1)?,
-                        );
-                        point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
-                        Ok(point)
-                    };
-                let next_vk_pts = messages_for_next_step_vk_pts
-                    .iter()
-                    .map(|&p| mk_next_point(sys, p))
-                    .collect::<SnarkyResult<Vec<_>>>()?;
-                let mut next_it = next_vk_pts.into_iter();
-                PlonkVerificationKeyEvals {
-                    sigma_comm: (0..PERMUTS).map(|_| next_it.next().unwrap()).collect(),
-                    coefficients_comm: (0..COLUMNS).map(|_| next_it.next().unwrap()).collect(),
-                    generic_comm: next_it.next().unwrap(),
-                    psm_comm: next_it.next().unwrap(),
-                    complete_add_comm: next_it.next().unwrap(),
-                    mul_comm: next_it.next().unwrap(),
-                    emul_comm: next_it.next().unwrap(),
-                    endomul_scalar_comm: next_it.next().unwrap(),
-                }
-            }
-        };
         let params = groupmap::BWParameters::<PallasParameters>::setup();
         let digest = step_main::<Fp, PallasParameters>(
             sys,
