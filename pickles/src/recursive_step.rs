@@ -4551,13 +4551,15 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     let forbidden_fp = crate::shifted_value::forbidden_shifted_values_fp_pairs();
     let wt2 = |sys: &mut RunState<Fp>, p: (Fp, bool)| -> SnarkyResult<ShiftedScalar<Fp>> {
         let half: FieldVar<Fp> = sys.compute(loc!(), move |_| p.0)?;
-        let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
         // OCaml `Other_field.check` (impls.ml:91-102) runs `typ_unchecked.check
-        // t` BEFORE the forbidden-values loop — for the `(field, bool)` shifted
-        // scalar that is the Boolean check on the `odd` bit. Without it `odd`
-        // is unconstrained (a soundness gap) AND we emit one gate fewer than
-        // jsoo per z1/z2 witness (step update/merge diverge here, ancre 6).
-        odd.check(sys, loc!())?;
+        // t` (the Boolean constraint on the `odd` bit) exactly ONCE before the
+        // forbidden-values loop. `sys.compute::<Boolean>` already emits that
+        // check (runner.rs `compute_inner` with `checked=true` calls
+        // `snarky_type.check`), so an extra explicit `odd.check` here DOUBLES
+        // the boolean gate — measured: rust had two `[-1,0,0,1,0]` halves per
+        // z1/z2 witness where jsoo has one, shifting the whole wt2 stream by
+        // one half-gate.
+        let odd: Boolean<Fp> = sys.compute(loc!(), move |_| p.1)?;
         let mut eqs: Vec<Boolean<Fp>> = Vec::with_capacity(forbidden_fp.len());
         for &(lo, hi) in &forbidden_fp {
             let x_eq = half.equal(sys, loc!(), &FieldVar::constant(lo))?;
@@ -4591,6 +4593,18 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     };
     let branch_slot = 13 + PREV_ROUNDS;
     let sv = wvec(sys, &d.stmt[..branch_slot])?;
+    // Measured jsoo emission order around the branch data: [2 on-curve
+    // points] [b0, b1, EndoMulScalar] [2 on-curve points] [shifted-value
+    // forbidden blocks…]. The per-proof witness carries BOTH the previous
+    // challenge-polynomial commitments AND the old accumulator points as
+    // their own on-curve witnesses (no dedup even when the values are
+    // equal): the first pair right before the branch data, the second right
+    // after.
+    let prev_cpcs: Vec<Point<Fp>> = d
+        .prev_challenge_polynomial_commitments
+        .iter()
+        .map(|&p| mkpt(sys, p))
+        .collect::<SnarkyResult<Vec<_>>>()?;
     // OCaml `Branch_data.typ ~assert_16_bits` (per_proof_witness.ml:152 /
     // branch_data.ml:135): the branch data is witnessed as the two
     // prefix-mask BOOLEANS and `domain_log2` — one boolean row per mask bit,
@@ -4637,6 +4651,13 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             (packed, None, None)
         }
     };
+    // Second on-curve pair (see above): the old accumulator points, witnessed
+    // separately even when equal to `prev_cpcs`.
+    let messages_accumulators: Vec<Point<Fp>> = d
+        .messages_for_next_step_accumulators
+        .iter()
+        .map(|&p| mkpt(sys, p))
+        .collect::<SnarkyResult<Vec<_>>>()?;
     // The remaining flattened statement slots (feature flags, joint-combiner
     // padding) keep their witness allocations as before.
     let _sv_tail = wvec(sys, &d.stmt[branch_slot + 1..])?;
@@ -4709,43 +4730,23 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         zeta: statement[14].clone(),
         bulletproof_challenges: statement[16..16 + WRAP_ROUNDS].to_vec(),
     };
-    let should_finalize = statement[16 + WRAP_ROUNDS].clone();
-    sys.assert_r1cs(
-        Some("should_finalize bit".into()),
-        loc!(),
-        should_finalize.clone(),
-        should_finalize.clone(),
-        should_finalize.clone(),
-    )?;
-    let should_finalize = Boolean::create_unsafe(should_finalize);
+    // No booleanity gate here: OCaml pins this statement slot in `verify_one`
+    // (`Boolean.Assert.(=) should_finalize must_verify`, step_main.ml:28) —
+    // mirrored by step_verifier.rs's `should_finalize == must_verify`
+    // assert_equals, which fully constrains the bit (equality to the constant
+    // `true` subsumes booleanity). An extra `s·s = s` r1cs here shifted the
+    // whole stream one half-gate vs jsoo.
+    let should_finalize = Boolean::create_unsafe(statement[16 + WRAP_ROUNDS].clone());
     // OCaml takes `must_verify` from the RULE (`proof_must_verify`), not from
     // the statement: for a slot we actually verify it is the CONSTANT
     // `Boolean.true_`, so `not must_verify` is the constant false and both
     // `Field.if_ is_base_case` (the 16 bulletproof-challenge bypasses) and
     // the `||| not must_verify` of the per-proof result fold away with no
-    // gate. `verify_one` still asserts `should_finalize == must_verify`
-    // (step_main.ml:28), which pins the statement slot.
+    // gate. `verify_one` re-witnesses `must_verify` at its entry (the o1js
+    // rule's shouldVerify Bool, `witness_must_verify` below) and asserts
+    // `should_finalize == must_verify` as a pure wire merge.
     let must_verify = Boolean::true_();
     let is_base_case: Boolean<Fp> = must_verify.not();
-    // OCaml witnesses the previous challenge-polynomial commitments last in
-    // the per-proof witness (`Vector.typ Inner_curve.typ`, on-curve rows) and
-    // reuses the SAME points as the old accumulators of the digest
-    // reconstruction — there is no separate accumulator witness. Legacy
-    // fixed-arity paths carry distinct vectors and keep their own witness.
-    let prev_cpcs: Vec<Point<Fp>> = d
-        .prev_challenge_polynomial_commitments
-        .iter()
-        .map(|&p| mkpt(sys, p))
-        .collect::<SnarkyResult<Vec<_>>>()?;
-    let messages_accumulators: Vec<Point<Fp>> =
-        if d.messages_for_next_step_accumulators == d.prev_challenge_polynomial_commitments {
-            prev_cpcs.clone()
-        } else {
-            d.messages_for_next_step_accumulators
-                .iter()
-                .map(|&p| mkpt(sys, p))
-                .collect::<SnarkyResult<Vec<_>>>()?
-        };
     // The proofs-verified mask is the pair of witnessed prefix-mask booleans
     // (OCaml `branch_data.proofs_verified_mask`, used directly by
     // `step_main.ml:63`). Physical order matches the front-padded proof
@@ -4790,6 +4791,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         should_finalize: should_finalize.clone(),
         must_verify,
         is_base_case,
+        witness_must_verify: true,
     };
     let app_state = wvec(sys, &d.prev_app_state)?;
     Ok((proof, dlog_index, app_state))
@@ -5306,6 +5308,7 @@ impl<
             should_finalize: tru.clone(),
             must_verify: tru.clone(),
             is_base_case: fals,
+            witness_must_verify: false,
         };
 
         let params = groupmap::BWParameters::<PallasParameters>::setup();

@@ -80,6 +80,12 @@ pub struct PerProofInput<'a, F: PrimeField> {
     pub should_finalize: Boolean<F>,
     pub must_verify: Boolean<F>,
     pub is_base_case: Boolean<F>,
+    /// Program path: re-witness `must_verify` at `verify_one` entry (the
+    /// o1js rule's shouldVerify Bool is an `exists Boolean.typ`, emitting one
+    /// booleanity gate there); the `should_finalize == must_verify` assert
+    /// then merges wires with no gate, and `||| not must_verify` is a real
+    /// or-gate. Legacy/recorded paths keep the constant (false here).
+    pub witness_must_verify: bool,
 }
 
 /// Runs the verification half of a step circuit and returns the new
@@ -106,6 +112,19 @@ where
     let mut chalss: Vec<Vec<FieldVar<F>>> = Vec::with_capacity(proofs.len());
     let mut oks: Vec<Boolean<F>> = Vec::with_capacity(proofs.len());
     for p in proofs {
+        // Program path: the o1js rule's shouldVerify Bool is witnessed HERE
+        // (verify_one entry) — one booleanity gate, queued before the
+        // finalize's endo conversions like jsoo's.
+        let (must_verify, is_base_case) = if p.witness_must_verify {
+            let mv_src = p.must_verify.to_field_var();
+            let mv: Boolean<F> = sys.compute(loc.clone(), move |env| {
+                env.read_var(&mv_src) == F::one()
+            })?;
+            let ibc = mv.not();
+            (mv, ibc)
+        } else {
+            (p.must_verify.clone(), p.is_base_case.clone())
+        };
         let (chals, verified, finalized) = verify_one::<F, C>(
             sys,
             loc.clone(),
@@ -130,8 +149,8 @@ where
             &p.xi,
             &p.claimed,
             &p.should_finalize,
-            &p.must_verify,
-            &p.is_base_case,
+            &must_verify,
+            &is_base_case,
             group_map_params,
             endo_base,
             endo_scalar,
@@ -144,7 +163,7 @@ where
         let verified_and_finalized =
             verified.and(&finalized, sys, Cow::Borrowed("wrap proof verified"));
         let ok = verified_and_finalized.or(
-            &p.must_verify.not(),
+            &must_verify.not(),
             Cow::Borrowed("step proof finalized"),
             sys,
         );

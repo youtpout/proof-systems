@@ -1100,6 +1100,7 @@ mod tests {
                 should_finalize: fals.clone(),
                 must_verify: fals,
                 is_base_case: tru,
+                witness_must_verify: false,
             };
             crate::step_main::step_main::<Fp, PallasParameters>(
                 sys,

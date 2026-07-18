@@ -228,9 +228,13 @@ fn consume_pairs<F: PrimeField>(
         add_in(sys, Cow::Borrowed("os:add_in_yb"), state, &p2, &y_before)?;
 
         // permute iff (b && b2) || (p && (b || b2))
-        let b_and_b2 = b.and(b2, sys, Cow::Borrowed("os:b&b2"));
+        // OCaml `Boolean.(any [ all [ b; b' ]; all [ p; b ||| b' ] ])`
+        // (opt_sponge.ml:169): list elements evaluate RIGHT-TO-LEFT, so the
+        // `b ||| b'` (two not-seals + or-mul) and `p & or` come first, the
+        // `b & b'` mul LAST.
         let b_or_b2 = b.or(b2, Cow::Borrowed("os:b|b2"), sys);
         let p_and_or = p.and(&b_or_b2, sys, Cow::Borrowed("os:p&or"));
+        let b_and_b2 = b.and(b2, sys, Cow::Borrowed("os:b&b2"));
         let permute_flag = Boolean::any(&[&b_and_b2, &p_and_or], sys, Cow::Borrowed("os:any2"))?;
 
         cond_permute(sys, loc.clone(), &permute_flag, state)?;
