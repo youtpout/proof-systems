@@ -959,19 +959,35 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         }
         // `old_bp_chals` (wrap_main.ml:306): the old bulletproof challenge
         // vectors (both the finalize copy and the accumulator-hash copy).
-        let mut unf_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
+        let mut finalize_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
         for u in &w.unfinalized {
             let old_bulletproof_challenges = u
                 .old_bulletproof_challenges
                 .iter()
                 .map(|chals| wvec(sys, chals))
                 .collect::<SnarkyResult<Vec<_>>>()?;
-            let hash_old_bulletproof_challenges = u
-                .hash_old_bulletproof_challenges
-                .iter()
-                .map(|chals| wvec(sys, chals))
-                .collect::<SnarkyResult<Vec<_>>>()?;
-            unf_old_bp_chals.push((old_bulletproof_challenges, hash_old_bulletproof_challenges));
+            finalize_old_bp_chals.push(old_bulletproof_challenges);
+        }
+        let cross_shared = w.unfinalized.len() == 2
+            && w.unfinalized.iter().enumerate().all(|(i, u)| {
+                u.hash_dummy_challenges.is_empty()
+                    && u.hash_old_bulletproof_challenges
+                        == w.unfinalized[1 - i].old_bulletproof_challenges
+            });
+        let mut unf_old_bp_chals = Vec::with_capacity(w.unfinalized.len());
+        for (i, u) in w.unfinalized.iter().enumerate() {
+            let hash_old_bulletproof_challenges = if cross_shared {
+                finalize_old_bp_chals[1 - i].clone()
+            } else {
+                u.hash_old_bulletproof_challenges
+                    .iter()
+                    .map(|chals| wvec(sys, chals))
+                    .collect::<SnarkyResult<Vec<_>>>()?
+            };
+            unf_old_bp_chals.push((
+                finalize_old_bp_chals[i].clone(),
+                hash_old_bulletproof_challenges,
+            ));
         }
         // `evals` (wrap_main.ml:341-349): the deferred evaluations of each
         // unfinalized proof, witnessed after the old challenges; the

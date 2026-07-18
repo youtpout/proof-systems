@@ -3323,6 +3323,18 @@ pub fn prepare_program_recursive_wrap<
             ),
         );
     }
+    // The H-list of unfinalized proof states is front-padded, while
+    // `Vector.map2 prev_step_accs old_bp_chals` consumes the physical
+    // accumulator slots in the opposite order. Keep the host values in the
+    // same crossed layout as the cvars used by the Wrap circuit.
+    let finalize_old_challenges: Vec<_> = real_unfinalized
+        .iter()
+        .map(|u| u.old_bulletproof_challenges.clone())
+        .collect();
+    for (i, u) in real_unfinalized.iter_mut().enumerate() {
+        u.hash_old_bulletproof_challenges =
+            finalize_old_challenges[crate::common::MAX_PROOFS_VERIFIED - 1 - i].clone();
+    }
     let sg_olds: Vec<Vesta> = step
         .proof
         .prev_challenges

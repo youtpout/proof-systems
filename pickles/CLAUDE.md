@@ -22,7 +22,7 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## REPRISE (état exact 2026-07-18 — LES 3 STEPS SONT BYTE-IDENTIQUES)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓.
-Wrap frais : **0 coeff** / **81 wires** (1re @304), soit 81 lignes full-diff
+Wrap frais : **0 coeff** / **20 wires** (1re @4021), soit 20 lignes full-diff
 sur 16384. **VK 22/28** : tous les coefficients et sélecteurs matchent ; il
 reste uniquement **σ[0..5]** (wires du wrap). Les anciennes divergences de
 valeurs step-VK @138 ont convergé avec les steps, puis le bloc coefficients
@@ -50,6 +50,22 @@ quatre coordonnées entre les checks on-curve @147..150 et les hashes des
 accumulateurs @4021/@4046/@4228/@4241. `mkpts` émet désormais en reverse puis
 reverse son résultat. Coeffs wrap toujours 0 ; recorded **21/21**, lib
 **112/112**.
+
+### Wires wrap : 81→20, frontière 304→4021 — partage croisé old_bp
+Les deux blocs de 15 divergences de finalisation et les 35 lignes des hashes
+étaient une seule famille. Les cycles jsoo montrent que le premier bloc
+`finalize` @304..485 partage ses challenges avec le **second** accumulator
+hash @4034..4215, et inversement pour le second bloc @2134..2315.
+
+Le partage est donc croisé au niveau extérieur des deux `unfinalized` (padding
+H-list vs ordre physique de `Vector.map2 prev_step_accs old_bp_chals`), sans
+inverser les deux vecteurs internes ni leurs 15 challenges. Le circuit réutilise
+les cvars de l'entrée opposée. Important : la première sonde ne croisait que
+les cvars et faisait échouer
+`recorded_program_compiles_n0_n1_n2_with_one_wrap_key` en
+`DisconnectedWires`; `prepare_program_recursive_wrap` croise maintenant aussi
+les VALEURS `hash_old_bulletproof_challenges` après le front-padding. Test
+ciblé repassé, puis recorded **21/21**, lib **112/112**. Coefficients wrap 0.
 
 ### Wires wrap : 181→81, frontière 174→304 — threader prev_proof_state
 Rust retémoignait presque tout `w.step_statement` avant `x_hat`, alors que le
