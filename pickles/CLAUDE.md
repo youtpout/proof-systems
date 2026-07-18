@@ -5380,3 +5380,44 @@ Neutralité re-prouvée : bench W2 0 diff (dump local), recorded 22/22
 (gadget side-loaded natif — `tmp-sideloaded-gates-diff`) et volet 3
 (slots `declareRecordedPreviousState` dans zkapp.ts), puis re-validation
 o1js (rebuild kimchi_napi + addon + wasm) et zkapp-rust VkParity.
+
+## ★ VOLET 2 SCOPÉ AU GATE PRÈS — side-loaded (SmartContract + DynamicProof)
+
+Harnais `tmp-sideloaded-gates-diff` après le volet 1 : le zkapp compile
+DÉJÀ à PI=34 / 16384 gates des deux côtés (width-1 acquis). Restes :
+- step check(pv=1) : jsoo +132 Poseidon, +29 CompleteAdd, −189 Generic ;
+  EndoMul/VBM/EMS ÉGAUX (le MSM est déjà iso !).
+- wrap : rust +77 Poseidon +22 Generic (la même signature que le pré-fix
+  Wrap_hack) — car le slot enfant doit être à la largeur du CHILD
+  (maxPV=0 → 0 vecteurs absorbés, pré-absorb 2 dummies, finalize 0 réels)
+  et non à la largeur de NOTRE programme (1).
+
+Constat clé : le recorder o1js traite le DynamicProof comme un SelfProof
+(pv=1, machinerie standard liée à NOTRE clé wrap) — l'app n'enregistre
+que le hash du vk (27 poseidon). Le wrap possède DÉJÀ la sélection
+one-hot du domaine par slot (`wrap_domain_index`, wrap_main.rs:126-170).
+
+### Plan d'implémentation (incréments committables)
+A. **Plomberie largeur enfant** : RecordedCircuit gagne un descripteur
+   par preuve précédente `{ child_max_pv, side_loaded: bool, vk_slots }`
+   (o1js l'écrit : DynamicProof → maxProofsVerified, SelfProof → largeur
+   du programme). Les prepare/normalize utilisent la largeur ENFANT par
+   slot (au lieu d'ACTIVE) pour : hash_dummy/hash_old (wrap),
+   constant_pad_challenges (wrap finalize), old-digest/masque/vecteurs
+   per-proof (step). ACTIVE reste la largeur du STATEMENT.
+B. **Wrap enfant maxPV=0** : devrait tomber à ~0 diff avec A (le domaine
+   2^13 passe par wrap_domain_index déjà en place — vérifier la valeur
+   posée par les prepare pour un slot side-loaded).
+C. **Step gadget side-loaded** (le gros) :
+   - vk TÉMOIN par slot (56 coords, on-curve via Inner_curve.typ) au lieu
+     du partage `share_index_sponge` avec la clé du programme ;
+   - index-sponge absorbé sur les points témoins (+14 perms jsoo) ;
+   - x_hat DYNAMIQUE : `public_input_commitment_dynamic` (one-hot sur les
+     3 domaines wrap 13/14/15 possibles, step_verifier.ml:558+) — les
+     +29 CompleteAdd ;
+   - liaison app : les cvars du vk témoin = les fields de l'argument `vk`
+     (comme previous_state_slots — vk_slots depuis o1js) ; le hash du vk
+     dans l'app (27 poseidon) reste applicatif.
+   - old-digest à largeur enfant (0) — via A.
+D. Re-validation : sideloaded harness 0-diff, bench W2 + w1 FULL MATCH,
+   recorded 22/22, puis zkapp-rust (VkParity + side-loaded key test).
