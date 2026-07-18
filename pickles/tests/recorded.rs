@@ -970,3 +970,30 @@ fn stock_jsoo_215_proof_cross_verifies() {
         }
     }
 }
+
+/// Regenerates the embedded compile-time dummy blob
+/// (`pickles/src/template_dummy.blob`). Run after any change to the template
+/// base or bootstrap step circuits, then commit the new blob:
+/// `cargo test -p pickles --release --test recorded generate_template_dummy_blob -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn generate_template_dummy_blob() {
+    let bytes = pickles::recorded::template_dummy_blob_bytes();
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/template_dummy.blob");
+    std::fs::write(path, &bytes).expect("write blob");
+    eprintln!("wrote {} bytes to {path}", bytes.len());
+}
+
+/// The embedded dummy blob must exist and match the CURRENT template base
+/// circuits (compile-only check, no proving). On failure, regenerate with
+/// `generate_template_dummy_blob` above and commit the blob.
+#[test]
+fn template_dummy_blob_is_fresh() {
+    let blob = pickles::recorded::template_blob_digests()
+        .expect("embedded template dummy blob missing or undecodable — regenerate it");
+    let live = pickles::recorded::template_live_digests();
+    assert_eq!(
+        blob, live,
+        "template circuits drifted from the embedded dummy blob — regenerate it"
+    );
+}

@@ -2748,6 +2748,140 @@ fn recorded_program_wrap_branches(
         .collect()
 }
 
+type RecordedTemplateBase = crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>;
+type RecordedBootstrapStep = crate::recursive_step::RecursiveStepWidth2Proof<
+    RECORDED_N1_STEP_ROUNDS,
+    RECORDED_BASE_WRAP_ROUNDS,
+    RECORDED_N1_STEP_STMT_LEN,
+    RECORDED_N2_STEP_STMT_LEN,
+>;
+
+/// Live manufacture of the compile-time dummies: the template base cycle
+/// proof and the bootstrap width-2 step proof. This is what
+/// [`crate::template_dummy`] embeds; the program compile only runs it when
+/// the embedded blob is absent or stale.
+fn manufacture_template_dummies() -> (RecordedTemplateBase, RecordedBootstrapStep) {
+    let mut template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+        RecordedProgramTemplateApp,
+        (),
+    );
+    let template = template_compiled.prove(());
+    let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
+    let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
+        RecordedProgramTemplateApp,
+        16,
+        RECORDED_BASE_WRAP_ROUNDS,
+        40,
+        RECORDED_N1_STEP_STMT_LEN,
+    >(
+        &template,
+        bootstrap_vk,
+        vec![Fp::from(0u64)],
+        vec![Fp::from(0u64)],
+    );
+    let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
+    let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >(bootstrap, vec![Fp::from(0u64)]);
+    let bootstrap_step = crate::recursive_step::prove_recursive_step_width2::<
+        RECORDED_N1_STEP_ROUNDS,
+        RECORDED_BASE_WRAP_ROUNDS,
+        RECORDED_N1_STEP_STMT_LEN,
+        RECORDED_N2_STEP_STMT_LEN,
+    >(bootstrap);
+    (template, bootstrap_step)
+}
+
+/// Rebuilds the typed template/bootstrap artifacts from decoded blob parts.
+/// `None` on any shape mismatch (→ live fallback).
+fn assemble_template_dummies(
+    parts: crate::template_dummy::DummyParts,
+) -> Option<(RecordedTemplateBase, RecordedBootstrapStep)> {
+    let template = crate::api::BaseCaseProof {
+        statement: parts.template_statement,
+        stable_statement: parts.template_stable,
+        proof: parts.template_proof,
+        step_proof: parts.template_step_proof,
+        step_verifier: snarky::api::VerifierIndexWrapper {
+            index: parts.template_step_vi,
+        },
+        wrap_verifier: snarky::api::VerifierIndexWrapper {
+            index: parts.template_wrap_vi,
+        },
+        wrap_vk_pts: parts.template_wrap_vk_pts,
+    };
+    let statement: [Fp; RECORDED_N2_STEP_STMT_LEN] = parts.boot_statement.try_into().ok()?;
+    let bootstrap = crate::recursive_step::RecursiveStepWidth2Proof {
+        statement,
+        proof: parts.boot_proof,
+        verifier: snarky::api::VerifierIndexWrapper {
+            index: parts.boot_vi,
+        },
+        messages_for_next_step_vk_pts: parts.boot_vk_pts,
+        messages_for_next_step_proof: parts.boot_m4n,
+    };
+    Some((template, bootstrap))
+}
+
+/// Runs the live dummy manufacture and encodes the blob bytes — the
+/// regeneration entrypoint (`generate_template_dummy_blob` test).
+pub fn template_dummy_blob_bytes() -> Vec<u8> {
+    let (template, bootstrap_step) = manufacture_template_dummies();
+    let parts = crate::template_dummy::DummyParts {
+        template_statement: template.statement,
+        template_stable: template.stable_statement,
+        template_proof: template.proof,
+        template_step_proof: template.step_proof,
+        template_step_vi: template.step_verifier.index,
+        template_wrap_vi: template.wrap_verifier.index,
+        template_wrap_vk_pts: template.wrap_vk_pts,
+        boot_statement: bootstrap_step.statement.to_vec(),
+        boot_proof: bootstrap_step.proof,
+        boot_vi: bootstrap_step.verifier.index,
+        boot_vk_pts: bootstrap_step.messages_for_next_step_vk_pts,
+        boot_m4n: bootstrap_step.messages_for_next_step_proof,
+    };
+    crate::template_dummy::encode(&parts)
+}
+
+type TemplateVestaSponge = mina_poseidon::sponge::DefaultFqSponge<
+    mina_curves::pasta::VestaParameters,
+    mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+    { snarky::FULL_ROUNDS },
+>;
+type TemplatePallasSponge = mina_poseidon::sponge::DefaultFqSponge<
+    mina_curves::pasta::PallasParameters,
+    mina_poseidon::constants::PlonkSpongeConstantsKimchi,
+    { snarky::FULL_ROUNDS },
+>;
+
+/// Digest freshness probe for the guard test: the step and wrap verifier
+/// digests of a LIVE template base compile (no proving).
+pub fn template_live_digests() -> (mina_curves::pasta::Fq, Fp) {
+    let template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+        RecordedProgramTemplateApp,
+        (),
+    );
+    let step_vi = &template_compiled.step_indexes.as_ref().expect("compiled").1;
+    let wrap_vi = &template_compiled.wrap_indexes.as_ref().expect("compiled").1;
+    (
+        step_vi.index.digest::<TemplateVestaSponge>(),
+        wrap_vi.index.digest::<TemplatePallasSponge>(),
+    )
+}
+
+/// The step and wrap verifier digests carried by the embedded blob, when
+/// present.
+pub fn template_blob_digests() -> Option<(mina_curves::pasta::Fq, Fp)> {
+    let parts = crate::template_dummy::decode_embedded()?;
+    Some((
+        parts.template_step_vi.digest::<TemplateVestaSponge>(),
+        parts.template_wrap_vi.digest::<TemplatePallasSponge>(),
+    ))
+}
+
 /// A fixed-width recorded Pickles program. Every method owns its Step index,
 /// while every arity uses one shared maximal Wrap index and verification key.
 pub struct RecordedCompiledProgram {
@@ -2855,49 +2989,19 @@ impl RecordedCompiledProgram {
             }};
         }
 
-        // Template base cycle (bootstrap VK): supplies proof-shaped values to
-        // every preparation below. Its concrete values never reach a circuit
-        // constant, so proving it against the bootstrap key is enough for
-        // compilation.
-        let mut template_compiled = phase!(
-            "template base compile",
-            crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
-                RecordedProgramTemplateApp,
-                (),
-            )
-        );
-        let template = phase!("template base prove", template_compiled.prove(()));
-        let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
-
-        // Bootstrap width-2 step proof: proof-shaped values for the wrap
-        // witness, and — as a byproduct — the real recursive-step index whose
-        // structure seeds the placeholder branch data below.
-        let bootstrap = crate::recursive_step::prepare_recursive_step_with_state::<
-            RecordedProgramTemplateApp,
-            16,
-            RECORDED_BASE_WRAP_ROUNDS,
-            40,
-            RECORDED_N1_STEP_STMT_LEN,
-        >(
-            &template,
-            bootstrap_vk,
-            vec![Fp::from(0u64)],
-            vec![Fp::from(0u64)],
-        );
-        let bootstrap = crate::recursive_step::normalize_program_recursive_step(bootstrap);
-        let bootstrap = crate::recursive_step::prepare_recursive_step_n0::<
-            RECORDED_BASE_WRAP_ROUNDS,
-            RECORDED_N1_STEP_STMT_LEN,
-            RECORDED_N2_STEP_STMT_LEN,
-        >(bootstrap, vec![Fp::from(0u64)]);
-        let bootstrap_step = phase!(
-            "bootstrap N2 step prove",
-            crate::recursive_step::prove_recursive_step_width2::<
-                RECORDED_N1_STEP_ROUNDS,
-                RECORDED_BASE_WRAP_ROUNDS,
-                RECORDED_N1_STEP_STMT_LEN,
-                RECORDED_N2_STEP_STMT_LEN,
-            >(bootstrap)
+        // Template base cycle + bootstrap width-2 step proof: proof-shaped
+        // values for every preparation below (and, as a byproduct, the real
+        // recursive-step index whose structure seeds the placeholder branch
+        // data). Their concrete values never reach a circuit constant, so the
+        // embedded dummies (OCaml `Pickles.Dummy` parity) are equivalent to
+        // proving live — the live manufacture only remains as the fallback
+        // and the blob generator.
+        let (template, bootstrap_step) = phase!(
+            "template dummies",
+            match crate::template_dummy::decode_embedded().and_then(assemble_template_dummies) {
+                Some(pair) => pair,
+                None => manufacture_template_dummies(),
+            }
         );
 
         // Structure-donor wrap: compiled from branch data whose VALUES are
