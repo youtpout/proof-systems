@@ -5253,3 +5253,47 @@ LOCAL, puis diff python vs la référence jsoo.
   (17 permutations step + 7 wrap en trop + les rows Generic des témoins
   de pad). Chantier : hash_messages / step-side m4nwrap replay et wrap
   côté sortie — démarrer par la boucle flat-emit rodée avec labels.
+
+## ★ W1 DIVERGENCE LOCALISÉE — Wrap_hack CONFIRMÉ dans l'OCaml (plan de fix)
+
+`src/mina/src/lib/crypto/pickles/wrap_hack.ml` (lu au littéral) :
+`Checked.hash_messages_for_next_wrap_proof max_proofs_verified` démarre la
+sponge depuis `dummy_messages_for_next_wrap_proof_sponge_states[2 − max_pv]`
+(états PRÉCALCULÉS après absorption de 0/1/2 vecteurs dummy en CONSTANTES)
+puis n'absorbe QUE les données réelles width-n. Notre
+`hash_messages_for_next_wrap_proof` (hash_messages.rs:170) A DÉJÀ le
+mécanisme (`dummy_challenges` pré-absorbés hors circuit) — le problème est
+que les APPELANTS passent, pour W1, les 2 vecteurs paddés EN circuit
+(`hash_dummy_challenges` vide + `hash_old` len 2).
+
+**Fix wrap (prev + new digests), neutre W2 par construction** :
+1. `normalize_program_unfinalized` (recursive_step.rs:272) : ajouter
+   `active: usize` ; `pad = MAX − active` ;
+   `hash_dummy_challenges = old[..pad]` (constantes — la séquence absorbée
+   NE CHANGE PAS, donc TOUTES les valeurs de digest restent identiques),
+   `hash_old_bulletproof_challenges = old[pad..]`.
+   `data.old_bulletproof_challenges` reste la liste MAX (replay finalize).
+   6 call sites (recursive_step.rs:3226,3272,3277,3355,3421,3460) — tous
+   connaissent ACTIVE.
+2. `new_acc_dummy_challenges` (wrap_main.rs:114, digest du NOUVEL
+   accumulateur, :361-369) : pour W1 doit valoir `vec![dummy_wrap_chals]`
+   (1 vecteur) — trouver le producteur dans api.rs (WrapWitnessData) et le
+   brancher sur la largeur du programme.
+3. ⚠ PIÈGE var-sharing : api.rs:~976 (`cross_shared` + le test
+   `hash_old == old_bulletproof_challenges` → réutilise les cvars du
+   finalize pour le hash, iso OCaml). Le split modifie ces égalités pour
+   W1 — vérifier ce que jsoo partage à largeur 1 (probablement : le hash
+   du slot absorbe les MÊMES cvars que son finalize, sans le préfixe).
+4. STEP (+17 permutations ≈ 34 éléments = 15+2+15+2) : le step hashe
+   probablement les DEUX groupes m4n à largeur physique 2 — m4nstep
+   (hash_messages_for_next_step_proof_opt, commitments+chals à [;2]) ET le
+   replay m4nwrap — à passer à 0..ACTIVE. + l'excès Generic (+64 avant le
+   1er Poseidon = témoins du pad devenus inutiles).
+
+**Boucle de validation** : après chaque sous-fix, rebuild
+`PROOF_SYSTEMS_ROOT=… npm run build:native` (SEUL le kimchi_napi sert au
+dump !) puis `MODE=rust ./run src/tests/tmp-w1-gates-diff.ts` ; garde-fou
+W2 : `MODE=rust ./run src/tests/tmp-bench-gates-diff.ts` = FULL MATCH, et
+recorded 22/22 (dont two_field = e2e W1 prove+verify). État courant : W1
+init FULL MATCH ; update +514 Generic +187 Poseidon ; wrap +21 Generic
++77 Poseidon.
