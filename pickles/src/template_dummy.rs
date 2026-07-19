@@ -158,7 +158,7 @@ fn m4n_from_dto(dto: &M4nStepDto) -> Option<StepMessagesForNextProofV1> {
 /// SRS handle, endo scalar, and the linearization (derived from the presence
 /// of the optional-gate commitments, which the serialization does carry).
 /// The `OnceLock` fields self-heal through their `get_or_init` accessors.
-fn fixup_vi<G>(vi: &mut VerifierIndex<FULL_ROUNDS, G, SRS<G>>, srs: Arc<SRS<G>>)
+pub(crate) fn fixup_vi<G>(vi: &mut VerifierIndex<FULL_ROUNDS, G, SRS<G>>, srs: Arc<SRS<G>>)
 where
     G: KimchiCurve<FULL_ROUNDS>,
 {

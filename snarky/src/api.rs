@@ -156,6 +156,50 @@ where
         ))
     }
 
+    /// Builds a prover index from a CACHED verifier index: the circuit is
+    /// re-synthesized and the prover index created in lazy mode (column
+    /// evaluations deferred to the first prove), while the expensive
+    /// verifier commitments come from the cache.
+    pub fn from_cached_verifier(
+        circuit: Circuit,
+        srs_log2: Option<u32>,
+        verifier: kimchi::verifier_index::VerifierIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
+    ) -> Result<(Self, VerifierIndexWrapper<Circuit>), String>
+    where
+        <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
+    {
+        let compiled_circuit = compile(circuit).map_err(|err| err.to_string())?;
+        let cs = ConstraintSystem::create(compiled_circuit.gates.clone())
+            .public(compiled_circuit.public_input_size)
+            .prev_challenges(Circuit::PREV_CHALLENGES)
+            .build()
+            .map_err(|err| format!("failed to rebuild cached constraint system: {err}"))?;
+        if cs.domain.d1.log_size_of_group != verifier.domain.log_size_of_group {
+            return Err("cached verifier index domain does not match the circuit".into());
+        }
+        let srs_size = match srs_log2 {
+            Some(log2) => 1usize << log2,
+            None => cs.domain.d1.size as usize,
+        };
+        let srs = Circuit::srs(srs_size);
+        srs.get_lagrange_basis(cs.domain.d1);
+        let endo_q =
+            <<Circuit as SnarkyCircuit>::Curve as KimchiCurve<FULL_ROUNDS>>::other_curve_endo();
+        let mut prover_index = kimchi::prover_index::ProverIndex::<
+            FULL_ROUNDS,
+            Circuit::Curve,
+            SrsOf<Circuit>,
+        >::create(cs, *endo_q, srs, true);
+        prover_index.verifier_index = Some(verifier.clone());
+        Ok((
+            Self {
+                compiled_circuit,
+                index: prover_index,
+            },
+            VerifierIndexWrapper { index: verifier },
+        ))
+    }
+
     /// Debug-only: per-gate emission labels aligned 1:1 with the compiled
     /// gates (and hence with `self.index.cs.gates`), for parity tooling.
     pub fn gate_labels(&self) -> &[String] {

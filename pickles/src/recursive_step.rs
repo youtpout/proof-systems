@@ -2603,6 +2603,70 @@ pub fn domain_log2_prepared_recursive_step_width2<
 /// [`compile_prepared_recursive_step_width2_with_min_domain`] generic over
 /// the program arity (`ACTIVE_PROOFS` = 2 for width-2 programs, 1 for the
 /// width-1 shape OCaml gives a max-pv-1 program).
+/// [`compile_prepared_recursive_step_width2_arity`], but restoring a CACHED
+/// prover index: the constraint system is re-synthesized (cheap) and the
+/// expensive committed polynomials come from the cache.
+pub fn restore_prepared_recursive_step_width2_arity<
+    const PREV_ROUNDS: usize,
+    const WRAP_ROUNDS: usize,
+    const WIDTH1_INPUT_LEN: usize,
+    const PUBLIC_INPUT_LEN: usize,
+    const ACTIVE_PROOFS: usize,
+>(
+    prepared: &PreparedRecursiveStepWidth2<WIDTH1_INPUT_LEN, PUBLIC_INPUT_LEN>,
+    app: Option<EmbeddedAppMain>,
+    cached: kimchi::verifier_index::VerifierIndex<
+        FULL_ROUNDS,
+        Vesta,
+        poly_commitment::ipa::SRS<Vesta>,
+    >,
+) -> Result<
+    RecursiveStepWidth2Indexes<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        PUBLIC_INPUT_LEN,
+        ACTIVE_PROOFS,
+    >,
+    String,
+> {
+    snarky::api::ProverIndexWrapper::from_cached_verifier(
+        RecursiveStepWidth2Circuit::<
+            PREV_ROUNDS,
+            WRAP_ROUNDS,
+            WIDTH1_INPUT_LEN,
+            PUBLIC_INPUT_LEN,
+            ACTIVE_PROOFS,
+        > {
+            proofs: prepared.proofs.clone(),
+            dummy_slots: prepared.dummy_slots,
+            app_state: prepared.app_state.clone(),
+            app,
+            messages_for_next_step_vk_pts: prepared.messages_for_next_step_vk_pts.clone(),
+        },
+        Some(crate::common::TICK_ROUNDS as u32),
+        cached,
+    )
+}
+
+/// [`compile_prepared_recursive_wrap`] from a CACHED verifier index.
+pub fn restore_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
+    prepared: &PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
+    cached: kimchi::verifier_index::VerifierIndex<
+        FULL_ROUNDS,
+        Pallas,
+        poly_commitment::ipa::SRS<Pallas>,
+    >,
+) -> Result<RecursiveWrapIndexes<STEP_ROUNDS, WRAP_STMT_LEN>, String> {
+    snarky::api::ProverIndexWrapper::from_cached_verifier(
+        WrapCircuit::<STEP_ROUNDS, WRAP_STMT_LEN> {
+            w: Some(prepared.data.clone()),
+        },
+        Some(crate::common::TOCK_ROUNDS as u32),
+        cached,
+    )
+}
+
 pub fn compile_prepared_recursive_step_width2_arity<
     const PREV_ROUNDS: usize,
     const WRAP_ROUNDS: usize,

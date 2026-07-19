@@ -28,6 +28,70 @@ fn square_circuit() -> RecordedCircuit {
 /// Two-field app state: 56 VK coordinates + 2 fields fill the Poseidon rate
 /// exactly (the o1js Add program shape) — regression for the full-pending-
 /// rate messages digest through a real recursive cycle.
+/// The prover-key cache round-trip: compile -> to_cache_bytes ->
+/// from_cache_bytes must preserve the VK and produce a program that still
+/// PROVES (the restored prover indexes rebuild their column evaluations
+/// lazily on first use).
+#[test]
+fn recorded_program_cache_roundtrip_proves() {
+    use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};
+
+    let circuit = RecordedCircuit {
+        previous_state_slots: vec![],
+        previous_proof_widths: vec![],
+        aux_count: 2,
+        output: vec![LinComb::var(0), LinComb::var(1)],
+        constraints: vec![RecordedConstraint::Square {
+            v: LinComb::var(0),
+            square: LinComb::var(1),
+        }],
+    };
+    let branches: Vec<RecordedProgramBranch> = (0..=1)
+        .map(|proofs_verified| RecordedProgramBranch {
+            circuit: circuit.clone(),
+            witness: vec![Fp::from(6u64), Fp::from(36u64)],
+            proofs_verified,
+        })
+        .collect();
+    let compiled = RecordedCompiledProgram::compile(branches.clone()).unwrap();
+    let vk_cold = compiled.verification_key_envelope().unwrap();
+    let bytes = compiled.to_cache_bytes().unwrap();
+    drop(compiled);
+
+    let mut program = RecordedCompiledProgram::from_cache_bytes(branches, &bytes).unwrap();
+    assert_eq!(
+        program.verification_key_envelope().unwrap(),
+        vk_cold,
+        "cache round-trip changed the VK"
+    );
+    let n0 = program
+        .prove_n0(0, vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    {
+        let (accumulators, challenges, vk) = n0.program_verification_messages().unwrap();
+        pickles::verify::verify_side_loaded_with_step_vk(
+            &n0.app_state,
+            Some(&vk),
+            &accumulators,
+            &challenges,
+            &n0.to_recorded_proof().proof,
+        )
+        .unwrap();
+    }
+    let n1 = program
+        .prove_n1(0 + 1, &n0, vec![Fp::from(6u64), Fp::from(36u64)])
+        .unwrap();
+    let (accumulators, challenges, vk) = n1.program_verification_messages().unwrap();
+    pickles::verify::verify_side_loaded_with_step_vk(
+        &n1.app_state,
+        Some(&vk),
+        &accumulators,
+        &challenges,
+        &n1.to_recorded_proof().proof,
+    )
+    .unwrap();
+}
+
 #[test]
 fn recorded_program_two_field_state_proves_n0_then_n1() {
     use pickles::recorded::{RecordedCompiledProgram, RecordedProgramBranch};

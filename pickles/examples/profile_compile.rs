@@ -48,6 +48,48 @@ fn main() {
         return;
     }
 
+    if mode == "cache" {
+        // Round-trip + timing of the prover-key cache:
+        // compile -> to_cache_bytes -> from_cache_bytes, comparing VKs.
+        let path = std::env::args().nth(2).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let t = Instant::now();
+        let compiled =
+            pickles::recorded::RecordedCompiledProgram::compile(branches.clone()).expect("compile");
+        let cold = t.elapsed();
+        let bytes = compiled.to_cache_bytes().expect("cache bytes");
+        let vk_cold = compiled.verification_key_envelope().expect("vk");
+        drop(compiled);
+        let t = Instant::now();
+        let restored =
+            pickles::recorded::RecordedCompiledProgram::from_cache_bytes(branches, &bytes)
+                .expect("restore");
+        let warm = t.elapsed();
+        let vk_warm = restored.verification_key_envelope().expect("vk");
+        assert_eq!(vk_cold, vk_warm, "cache round-trip changed the VK");
+        eprintln!(
+            "cache OK: cold {cold:.2?}, warm {warm:.2?}, payload {:.1} MB, vk {}",
+            bytes.len() as f64 / 1e6,
+            vk_warm.1
+        );
+        return;
+    }
+
     if mode == "wrap-labels" {
         let branches = vec![
             pickles::recorded::RecordedProgramBranch {

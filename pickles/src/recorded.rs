@@ -2991,6 +2991,50 @@ fn recorded_slot_local_max(branches: &[RecordedProgramBranch], active: usize) ->
         .collect()
 }
 
+const RECORDED_PROGRAM_CACHE_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecordedProgramIndexCache {
+    version: u32,
+    branches_digest: [u8; 32],
+    /// Per-branch step VERIFIER indexes (rmp) — the prover indexes are
+    /// rebuilt lazily from the re-synthesized circuits.
+    step_verifiers: Vec<Vec<u8>>,
+    /// The shared wrap VERIFIER index (rmp).
+    wrap_verifier: Vec<u8>,
+}
+
+type RecordedRawStepVerifier = kimchi::verifier_index::VerifierIndex<
+    { snarky::FULL_ROUNDS },
+    Vesta,
+    poly_commitment::ipa::SRS<Vesta>,
+>;
+type RecordedRawWrapVerifier = kimchi::verifier_index::VerifierIndex<
+    { snarky::FULL_ROUNDS },
+    Pallas,
+    poly_commitment::ipa::SRS<Pallas>,
+>;
+
+fn restore_step_verifier(mut vi: RecordedRawStepVerifier) -> RecordedRawStepVerifier {
+    crate::template_dummy::fixup_vi(&mut vi, crate::common::tick_srs(1 << crate::common::TICK_ROUNDS));
+    vi
+}
+
+fn restore_wrap_verifier(mut vi: RecordedRawWrapVerifier) -> RecordedRawWrapVerifier {
+    crate::template_dummy::fixup_vi(&mut vi, crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS));
+    vi
+}
+
+fn recorded_program_branches_digest(branches: &[RecordedProgramBranch]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for branch in branches {
+        hasher.update([branch.proofs_verified]);
+        hasher.update(serde_json::to_vec(&branch.circuit).expect("circuit serializes"));
+    }
+    hasher.finalize().into()
+}
+
 fn recorded_program_wrap_branches<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
     indexes: &[Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>],
@@ -3385,6 +3429,45 @@ impl RecordedCompiledProgram {
             branches,
         )
         .map(Self::W2)
+    }
+
+    /// A stable cache key for a program's prover indexes (the o1js Cache
+    /// header id), covering every branch circuit, width and this format's
+    /// version.
+    pub fn cache_key(branches: &[RecordedProgramBranch]) -> String {
+        let digest = recorded_program_branches_digest(branches);
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("recorded-program-v{RECORDED_PROGRAM_CACHE_VERSION}-{hex}")
+    }
+
+    /// Serializes the compiled prover indexes (per-branch steps + shared
+    /// wrap) for the o1js prover-key cache — everything else is
+    /// reconstructed cheaply at [`Self::from_cache_bytes`].
+    pub fn to_cache_bytes(&self) -> Result<Vec<u8>, String> {
+        with_program_shape!(self, p => p.to_cache_bytes())
+    }
+
+    /// Rebuilds a compiled program from cached prover indexes: the
+    /// constraint systems are re-synthesized (cheap) and the committed
+    /// polynomials come from the cache — the jsoo warm-compile shape.
+    pub fn from_cache_bytes(
+        branches: Vec<RecordedProgramBranch>,
+        bytes: &[u8],
+    ) -> Result<Self, RecordedProveError> {
+        if Self::shape_width(&branches) <= 1 {
+            RecordedCompiledProgramShaped::<RECORDED_N1_STEP_STMT_LEN, 1>::from_cache_bytes(
+                branches, bytes,
+            )
+            .map(Self::W1)
+        } else {
+            RecordedCompiledProgramShaped::<RECORDED_N2_STEP_STMT_LEN, 2>::from_cache_bytes(
+                branches, bytes,
+            )
+            .map(Self::W2)
+        }
     }
 
     #[doc(hidden)]
@@ -4035,7 +4118,207 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
 impl<const STEP_PI: usize, const ACTIVE: usize> RecordedCompiledProgramShaped<STEP_PI, ACTIVE>
 where
     RecordedProgramCycleShaped<STEP_PI, ACTIVE>: ProgramCycleSlot,
+    RecordedBootstrapStepShaped<STEP_PI, ACTIVE>: ProgramTemplateDummies,
 {
+    pub fn to_cache_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut step_verifiers = Vec::with_capacity(self.step_indexes.len());
+        for indexes in &self.step_indexes {
+            let pair = indexes
+                .as_ref()
+                .ok_or_else(|| "compiled Step index is temporarily in use".to_string())?;
+            step_verifiers.push(rmp_serde::to_vec(&pair.1.index).map_err(|err| err.to_string())?);
+        }
+        let wrap = self
+            .wrap_indexes
+            .as_ref()
+            .ok_or_else(|| "compiled Wrap index is temporarily in use".to_string())?;
+        let wrap_verifier = rmp_serde::to_vec(&wrap.1.index).map_err(|err| err.to_string())?;
+        rmp_serde::to_vec(&RecordedProgramIndexCache {
+            version: RECORDED_PROGRAM_CACHE_VERSION,
+            branches_digest: recorded_program_branches_digest(&self.branches),
+            step_verifiers,
+            wrap_verifier,
+        })
+        .map_err(|err| err.to_string())
+    }
+
+    /// The warm-compile path: constraint systems are re-synthesized against
+    /// the SAME preparation flow as [`Self::compile`], and the cached
+    /// committed polynomials replace the expensive index builds.
+    pub fn from_cache_bytes(
+        branches: Vec<RecordedProgramBranch>,
+        bytes: &[u8],
+    ) -> Result<Self, RecordedProveError> {
+        let fail = |message: String| RecordedProveError::Program(message);
+        for branch in &branches {
+            branch.circuit.validate()?;
+            if branch.witness.len() != branch.circuit.aux_count as usize {
+                return Err(RecordedProveError::Circuit(
+                    RecordedCircuitError::WrongWitnessLength(branch.witness.len()),
+                ));
+            }
+            if usize::from(branch.proofs_verified) > ACTIVE {
+                return Err(fail(format!(
+                    "branch proofs_verified {} exceeds the program shape width {ACTIVE}",
+                    branch.proofs_verified
+                )));
+            }
+        }
+        let cache: RecordedProgramIndexCache =
+            rmp_serde::from_slice(bytes).map_err(|err| fail(err.to_string()))?;
+        if cache.version != RECORDED_PROGRAM_CACHE_VERSION
+            || cache.branches_digest != recorded_program_branches_digest(&branches)
+        {
+            return Err(fail(
+                "cached indexes belong to a different program or version".into(),
+            ));
+        }
+        if cache.step_verifiers.len() != branches.len() {
+            return Err(fail("cached step index count mismatch".into()));
+        }
+
+        let (template, bootstrap_step) =
+            <RecordedBootstrapStepShaped<STEP_PI, ACTIVE> as ProgramTemplateDummies>::template_dummies();
+
+        // Restore the raw kimchi verifier indexes.
+        let mut step_raws = Vec::with_capacity(cache.step_verifiers.len());
+        for bytes in &cache.step_verifiers {
+            let raw: RecordedRawStepVerifier =
+                rmp_serde::from_slice(bytes).map_err(|err| fail(err.to_string()))?;
+            step_raws.push(restore_step_verifier(raw));
+        }
+        let wrap_raw: RecordedRawWrapVerifier =
+            rmp_serde::from_slice(&cache.wrap_verifier).map_err(|err| fail(err.to_string()))?;
+        let wrap_raw = restore_wrap_verifier(wrap_raw);
+
+        // Structural donor at the cached wrap domain (same alignment source
+        // as the single-pass compile).
+        let wrap_domain_log2 = wrap_raw.domain.log_size_of_group;
+        let structure_wrap = synthetic_structure_wrap_index(wrap_domain_log2);
+        // The steps re-synthesize against the SAME donor values as the
+        // single-pass compile (wrap keys are witness-only; matching the
+        // compile keeps the gate stream byte-identical to the cached one).
+        let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap);
+        let branch_domain_log2s: Vec<u32> = step_raws
+            .iter()
+            .map(|raw| raw.domain.log_size_of_group)
+            .collect();
+        let finalize_domain_log2s: Vec<u32> = {
+            let mut list = branch_domain_log2s.clone();
+            list.sort_unstable();
+            list.dedup();
+            list
+        };
+
+
+        // Steps: first N0 (its restored verifier is the finalize alignment
+        // index for the rest), then the others — the SAME preparation flow
+        // as `compile_recorded_program_steps_single_pass`.
+        let mut step_raws: Vec<Option<RecordedRawStepVerifier>> =
+            step_raws.into_iter().map(Some).collect();
+        let mut step_indexes: Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>> =
+            (0..branches.len()).map(|_| None).collect();
+        let first_n0 = branches.iter().position(|b| b.proofs_verified == 0);
+        let restore_branch = |branch: &RecordedProgramBranch,
+                              finalize_index: Option<&StepFinalizeIndex>,
+                              raw: RecordedRawStepVerifier|
+         -> Result<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>, RecordedProveError> {
+            let (prepared, main) = build_recorded_program_step_prepared::<STEP_PI, ACTIVE>(
+                branch,
+                &template,
+                &structure_vk,
+                &structure_wrap.index,
+                finalize_index,
+                &finalize_domain_log2s,
+            );
+            crate::recursive_step::restore_prepared_recursive_step_width2_arity::<
+                RECORDED_N1_STEP_ROUNDS,
+                RECORDED_BASE_WRAP_ROUNDS,
+                RECORDED_N1_STEP_STMT_LEN,
+                STEP_PI,
+                ACTIVE,
+            >(&prepared, Some(main), raw)
+            .map_err(RecordedProveError::Program)
+        };
+        if let Some(i) = first_n0 {
+            let raw = step_raws[i].take().expect("raw present");
+            step_indexes[i] = Some(restore_branch(&branches[i], None, raw)?);
+        }
+        let finalize_holder = first_n0.map(|i| step_indexes[i].as_ref().expect("set").1.clone());
+        let finalize_index = finalize_holder.as_ref().map(|v| &v.index);
+        for i in 0..branches.len() {
+            if Some(i) == first_n0 {
+                continue;
+            }
+            let raw = step_raws[i].take().expect("raw present");
+            step_indexes[i] = Some(restore_branch(&branches[i], finalize_index, raw)?);
+        }
+        for (i, indexes) in step_indexes.iter().enumerate() {
+            let restored_log2 = indexes
+                .as_ref()
+                .expect("restored branch step")
+                .1
+                .index
+                .domain
+                .log_size_of_group;
+            if restored_log2 != branch_domain_log2s[i] {
+                return Err(fail(format!(
+                    "branch {i}: restored step domain diverged from the cache"
+                )));
+            }
+        }
+
+        // Final wrap, prepared exactly like the single-pass compile.
+        let wrap_branches = recorded_program_wrap_branches(&branches, &step_indexes);
+        let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0_arity::<
+            RecordedProgramTemplateApp,
+            16,
+            40,
+            RECORDED_N1_STEP_ROUNDS,
+            RECORDED_BASE_WRAP_ROUNDS,
+            RECORDED_N1_STEP_STMT_LEN,
+            STEP_PI,
+            RECORDED_N2_STEP_ROUNDS,
+            RECORDED_N2_WRAP_STMT_LEN,
+            ACTIVE,
+        >(
+            &template,
+            &bootstrap_step,
+            &recorded_slot_local_max(&branches, ACTIVE),
+        );
+        prepared_wrap.data.which_branch = 0;
+        prepared_wrap.data.branches = wrap_branches.clone();
+        prepared_wrap.domain_log2 = 0;
+        let wrap_statement_lagranges: Vec<Vec<_>> = branch_domain_log2s
+            .iter()
+            .map(|&log2| {
+                crate::recursive_step::step_statement_lagranges_for_domain(
+                    log2,
+                    &prepared_wrap.data.step_statement,
+                )
+            })
+            .collect();
+        prepared_wrap.data.step_statement_lagranges = wrap_statement_lagranges.clone();
+        let prepared_wrap = crate::recursive_step::align_program_recursive_wrap_finalize_index(
+            prepared_wrap,
+            &structure_wrap.index,
+        );
+        let wrap_indexes =
+            crate::recursive_step::restore_prepared_recursive_wrap(&prepared_wrap, wrap_raw)
+                .map_err(RecordedProveError::Program)?;
+
+
+        Ok(Self {
+            branches,
+            wrap_branches,
+            wrap_statement_lagranges,
+            finalize_domain_log2s,
+            step_indexes,
+            wrap_indexes: Some(wrap_indexes),
+            template,
+        })
+    }
+
     /// The per-branch step verification key data embedded in the shared
     /// wrap. Exposed for the single-pass/multi-pass equivalence test.
     #[doc(hidden)]
