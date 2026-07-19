@@ -466,6 +466,49 @@ pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
     }
 }
 
+/// Micro-bench of raw field-multiplication cost inside this wasm module.
+/// Returns milliseconds for `iters` multiplications: `mode = 0` chains
+/// dependent multiplications (latency), `mode = 1` runs 4 independent
+/// accumulators (throughput — the headroom SIMD 2-lane batching can tap).
+/// Bench-protocol tool (BENCHMARKS.md): isolates the field backend from
+/// MSM/FFT/allocator effects.
+#[wasm_bindgen]
+pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
+    use ark_ff::{Field as _, One as _, Zero as _};
+    use mina_curves::pasta::Fp;
+    let y = Fp::from(0x9e3779b97f4a7c15u64);
+    let t0 = js_sys::Date::now();
+    let sink = match mode {
+        0 => {
+            let mut x = Fp::one() + y;
+            for _ in 0..iters {
+                x *= y;
+            }
+            x
+        }
+        _ => {
+            let mut a = Fp::one() + y;
+            let mut b = a + y;
+            let mut c = b + y;
+            let mut d = c + y;
+            for _ in 0..iters / 4 {
+                a *= y;
+                b *= y;
+                c *= y;
+                d *= y;
+            }
+            a + b + c + d
+        }
+    };
+    let elapsed = js_sys::Date::now() - t0;
+    // A field element is never zero after multiplying nonzero values —
+    // this keeps the loop out of reach of dead-code elimination.
+    if sink.is_zero() {
+        return -1.0;
+    }
+    elapsed
+}
+
 /// Seeds every SRS/Lagrange cache entry in ONE wasm call: entering the
 /// rayon pool costs ~200ms of worker coordination per call, so the per-entry
 /// bindings above are only a fallback. `entries_json` is
