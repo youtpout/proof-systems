@@ -5824,3 +5824,16 @@ sous cette forme. Seule voie SIMD restante : batching vertical 2 lanes
 représentation 29/30 bits si chantier lourd un jour).
 Outil pérenne : rust_pickles_bench_field_mul(iters, mode) dans le blob.
 Flag et sonde retirés (8b6cb0a689) ; tout consigné dans BENCHMARKS.md.
+
+## Addendum #17 — batching vertical (restructuration des calculs) : NON aussi
+
+Eddy a demandé la forme restructurée (2 muls indépendantes en lanes).
+Sondes auto-vérifiées : verticale 387 ns/mul, déroulée main 184 ns/mul,
+vs scalaire 44. PLANCHER mesuré : 2,7 ns par instruction v128 en chaîne
+dépendante (~8-10 cycles) vs ~0,3 ns scalaire → parité au MIEUX, toutes
+formulations exclues sur V8/x64 actuel. SIMD backend de corps = DOSSIER
+CLOS (re-mesurer seulement si les moteurs changent ; sondes dans
+l'historique git de kimchi-wasm/src/pickles.rs, outil bench modes 0/1
+pérenne). Leviers restants à rendement documenté : restore pk ~1,1 s
+(warm compile), analyzeMethods TS 442 ms, représentation 29/30 bits
+(chantier lourd, seul espoir wasm >10 %).
