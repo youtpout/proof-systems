@@ -35,27 +35,56 @@ pub fn mul_assign_u32_digits<T: MontConfig<N>, const N: usize>(
         p32[2 * i + 1] = (T::MODULUS.0[i] >> 32) as u32;
     }
     // The 64-bit no-carry CIOS above, digit width halved: every product
-    // fits a u64 natively, and both carry chains stay in u64.
+    // fits a u64 natively, and both carry chains stay in u64. The digit
+    // count is passed as a literal-boundable closure so the loops fully
+    // unroll for the N = 4 (pasta) case — `unroll_for_loops` cannot unroll
+    // `2 * N` expression bounds.
     let mut t = [0u32; 24];
-    for i in 0..(2 * N) {
-        let bi = b32[i] as u64;
-        let r0 = t[0] as u64 + a32[0] as u64 * bi;
-        let mut carry1 = r0 >> 32;
-        let m = (r0 as u32).wrapping_mul(inv32) as u64;
-        // Low 32 bits of r0 + m*p[0] vanish by construction of m.
-        let mut carry2 = ((r0 as u32 as u64) + m * p32[0] as u64) >> 32;
-        for j in 1..(2 * N) {
-            let v1 = t[j] as u64 + a32[j] as u64 * bi + carry1;
-            carry1 = v1 >> 32;
-            let v2 = (v1 as u32 as u64) + m * p32[j] as u64 + carry2;
-            carry2 = v2 >> 32;
-            t[j - 1] = v2 as u32;
+    macro_rules! cios_rounds {
+        ($digits:literal) => {
+            for i in 0..$digits {
+                let bi = b32[i] as u64;
+                let r0 = t[0] as u64 + a32[0] as u64 * bi;
+                let mut carry1 = r0 >> 32;
+                let m = (r0 as u32).wrapping_mul(inv32) as u64;
+                // Low 32 bits of r0 + m*p[0] vanish by construction of m.
+                let mut carry2 = ((r0 as u32 as u64) + m * p32[0] as u64) >> 32;
+                for j in 1..$digits {
+                    let v1 = t[j] as u64 + a32[j] as u64 * bi + carry1;
+                    carry1 = v1 >> 32;
+                    let v2 = (v1 as u32 as u64) + m * p32[j] as u64 + carry2;
+                    carry2 = v2 >> 32;
+                    t[j - 1] = v2 as u32;
+                }
+                // No-carry optimization: the top digit absorbs both carries
+                // (the 64-bit condition CAN_USE_NO_CARRY_MUL_OPT tests the
+                // same top bit, so the guarantee holds at half width).
+                debug_assert!(carry1 + carry2 <= u32::MAX as u64);
+                t[$digits - 1] = (carry1 + carry2) as u32;
+            }
+        };
+    }
+    match N {
+        4 => cios_rounds!(8),
+        6 => cios_rounds!(12),
+        _ => {
+            for i in 0..(2 * N) {
+                let bi = b32[i] as u64;
+                let r0 = t[0] as u64 + a32[0] as u64 * bi;
+                let mut carry1 = r0 >> 32;
+                let m = (r0 as u32).wrapping_mul(inv32) as u64;
+                let mut carry2 = ((r0 as u32 as u64) + m * p32[0] as u64) >> 32;
+                for j in 1..(2 * N) {
+                    let v1 = t[j] as u64 + a32[j] as u64 * bi + carry1;
+                    carry1 = v1 >> 32;
+                    let v2 = (v1 as u32 as u64) + m * p32[j] as u64 + carry2;
+                    carry2 = v2 >> 32;
+                    t[j - 1] = v2 as u32;
+                }
+                debug_assert!(carry1 + carry2 <= u32::MAX as u64);
+                t[2 * N - 1] = (carry1 + carry2) as u32;
+            }
         }
-        // No-carry optimization: the top digit absorbs both carries (the
-        // 64-bit condition CAN_USE_NO_CARRY_MUL_OPT tests exactly the same
-        // top bit, so the guarantee carries over to half-width digits).
-        debug_assert!(carry1 + carry2 <= u32::MAX as u64);
-        t[2 * N - 1] = (carry1 + carry2) as u32;
     }
     for i in 0..N {
         (a.0).0[i] = t[2 * i] as u64 | ((t[2 * i + 1] as u64) << 32);
@@ -285,6 +314,14 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             // We default to multiplying with `a` using the `Mul` impl
             // for the N == 1 case
             *a *= *a;
+            return;
+        }
+        // wasm patch: route squaring through the 32-bit-digit CIOS too —
+        // the generic squaring below is built on the same emulated
+        // 64x64->128 products.
+        if cfg!(target_arch = "wasm32") && Self::CAN_USE_NO_CARRY_MUL_OPT && 2 * N <= 24 {
+            let b = *a;
+            mul_assign_u32_digits::<Self, N>(a, &b);
             return;
         }
         if Self::CAN_USE_NO_CARRY_SQUARE_OPT
