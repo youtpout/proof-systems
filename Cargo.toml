@@ -156,11 +156,17 @@ zeroize = "1"
 
 [patch.crates-io]
 bcs = { git = "https://github.com/o1-labs/bcs", rev = "d9c996b0" }
-# Vendored ark-ff 0.5.0 with a wasm32-only Montgomery multiplication in
-# 32-bit digits (wasm has native 32x32->64 multiply but must emulate
-# 64x64->128). Same [u64; N] layout and API — native targets compile the
-# identical upstream code paths. See vendor/ark-ff/WASM-PATCH.md.
-ark-ff = { path = "vendor/ark-ff" }
+# ark-ff 0.5.0 + wasm32-only Montgomery multiplication in 32-bit digits
+# (wasm has native 32x32->64 multiply but must emulate 64x64->128). Same
+# [u64; N] layout and results — native targets compile the identical
+# upstream code paths. Lives in eddy's arkworks fork; the master-based
+# `wasm-mont-mul-32` branch there is the upstream-PR candidate.
+ark-ff = { git = "https://github.com/youtpout/algebra", branch = "wasm-mont-mul-32-v0.5" }
+# The repo's ark-ff pulls its sibling crates by path, so the whole family
+# must come from the same source or trait impls split into two instances.
+ark-ec = { git = "https://github.com/youtpout/algebra", branch = "wasm-mont-mul-32-v0.5" }
+ark-poly = { git = "https://github.com/youtpout/algebra", branch = "wasm-mont-mul-32-v0.5" }
+ark-serialize = { git = "https://github.com/youtpout/algebra", branch = "wasm-mont-mul-32-v0.5" }
 
 [profile.release]
 lto = true
