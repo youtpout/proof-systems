@@ -639,6 +639,65 @@ pub fn rust_pickles_compile_recorded_program_shared(
     Ok(WasmRecordedProgram(program))
 }
 
+fn parse_program_branches(
+    branches_json: &str,
+) -> Result<Vec<pickles::recorded::RecordedProgramBranch>, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(branches_json)
+        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let mut parsed = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let witness = parse_fp_decimals(branch.witness, "witness")?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit: branch.circuit,
+            witness,
+            proofs_verified: branch.proofs_verified,
+        });
+    }
+    Ok(parsed)
+}
+
+/// The prover-key cache id of a program (the o1js Cache persistentId).
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_program_cache_key(branches_json: String) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
+    let parsed = parse_program_branches(&branches_json)?;
+    Ok(pickles::recorded::RecordedCompiledProgram::cache_key(&parsed))
+}
+
+/// Serializes a compiled program's prover-key cache payload.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_program_cache_bytes(
+    program: &WasmRecordedProgram,
+) -> Result<Vec<u8>, JsError> {
+    program
+        .0
+        .to_cache_bytes()
+        .map_err(|err| JsError::new(&format!("program cache encode failed: {err}")))
+}
+
+/// Restores a compiled program from a prover-key cache payload (the jsoo
+/// warm-compile shape: circuits re-synthesized, verifiers from the cache).
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_program_from_cache_bytes(
+    branches_json: String,
+    cache_bytes: Vec<u8>,
+) -> Result<WasmRecordedProgram, JsError> {
+    console_error_panic_hook::set_once();
+    let parsed = parse_program_branches(&branches_json)?;
+    let program = crate::rayon::run_in_pool(|| {
+        pickles::recorded::RecordedCompiledProgram::from_cache_bytes(parsed, &cache_bytes)
+    })
+    .map_err(|err| JsError::new(&format!("program cache restore failed: {err:?}")))?;
+    Ok(WasmRecordedProgram(program))
+}
+
 /// Debug bisection of the shared program compile: runs up to phase `stage`
 /// and returns the accumulated timings. For locating wasm hangs.
 #[wasm_bindgen]

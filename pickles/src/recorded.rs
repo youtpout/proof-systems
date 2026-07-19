@@ -4246,12 +4246,21 @@ where
         }
         let finalize_holder = first_n0.map(|i| step_indexes[i].as_ref().expect("set").1.clone());
         let finalize_index = finalize_holder.as_ref().map(|v| &v.index);
-        for i in 0..branches.len() {
-            if Some(i) == first_n0 {
-                continue;
-            }
-            let raw = step_raws[i].take().expect("raw present");
-            step_indexes[i] = Some(restore_branch(&branches[i], finalize_index, raw)?);
+        let rest: Vec<usize> = (0..branches.len()).filter(|&i| Some(i) != first_n0).collect();
+        let mut raws: Vec<(usize, RecordedRawStepVerifier)> = rest
+            .iter()
+            .map(|&i| (i, step_raws[i].take().expect("raw present")))
+            .collect();
+        // Restore the remaining branches in parallel, like the single-pass
+        // compile's step phase.
+        let restored: Vec<(usize, Result<_, RecordedProveError>)> = {
+            use rayon::prelude::*;
+            raws.par_drain(..)
+                .map(|(i, raw)| (i, restore_branch(&branches[i], finalize_index, raw)))
+                .collect()
+        };
+        for (i, result) in restored {
+            step_indexes[i] = Some(result?);
         }
         for (i, indexes) in step_indexes.iter().enumerate() {
             let restored_log2 = indexes

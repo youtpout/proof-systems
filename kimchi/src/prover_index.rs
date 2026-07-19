@@ -75,12 +75,14 @@ where
         // pre-compute the linearization
         let (linearization, powers_of_alpha) = expr_linearization(Some(&cs.feature_flags), true);
 
-        let evaluated_column_coefficients = cs.evaluated_column_coefficients();
-
         let cs = Arc::new(cs);
         let cs_clone = Arc::clone(&cs);
-        let column_evaluations =
-            LazyCache::new(move || cs_clone.column_evaluations(&evaluated_column_coefficients));
+        // The coefficient evaluation is deferred INTO the lazy cache: in
+        // lazy mode nothing runs until the first prove.
+        let column_evaluations = LazyCache::new(move || {
+            let evaluated_column_coefficients = cs_clone.evaluated_column_coefficients();
+            cs_clone.column_evaluations(&evaluated_column_coefficients)
+        });
         if !lazy_mode {
             // precompute the values
             column_evaluations.get();
