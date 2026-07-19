@@ -5837,3 +5837,16 @@ l'historique git de kimchi-wasm/src/pickles.rs, outil bench modes 0/1
 pérenne). Leviers restants à rendement documenté : restore pk ~1,1 s
 (warm compile), analyzeMethods TS 442 ms, représentation 29/30 bits
 (chantier lourd, seul espoir wasm >10 %).
+
+## #18 — lazy-carry 29 bits : sonde GO (1,6× en débit) (2026-07-19)
+
+Enfin un GO mesuré côté champ wasm : 9 limbs 29 bits, colonnes u64 sans
+propagation de retenues (18 produits/colonne max, < 2^62,5). Sonde
+pérenne = modes 6/7 de rust_pickles_bench_field_mul (1b10d392a4),
+auto-vérifiée via domaine Montgomery 2^261 (PIÈGE : entrer/sortir par
+into_bigint(), PAS .0.0 qui est la repr interne R64 ; DCE : black_box
+obligatoire sur la boucle chronométrée).
+Chiffres : latence 37,1 vs 42,8 ; DÉBIT 26,9 vs 42,5 ns/mul (−37 %).
+Intégration à cadrer (PAS drop-in) : par kernel, conversion de tableaux
+aux frontières — ordre : FFT (amortit log n:1) → Poseidon → MSM (ark-ec,
+lourd). Chaque étape : sonde → intégration → protocole bench complet.
