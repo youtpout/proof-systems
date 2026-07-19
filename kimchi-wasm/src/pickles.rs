@@ -466,6 +466,104 @@ pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
     }
 }
 
+/// Lazy-carry probe (bench mode 6): Montgomery multiplication for pasta
+/// Fp in NINE 29-BIT LIMBS. Products are < 2^58, so a u64 column can
+/// absorb the whole multiplication's 18 products WITHOUT propagating
+/// carries — the inner loop has no dependency chain (the 32-bit CIOS
+/// spends most of its time waiting on serial carries). One carry per
+/// round, one propagation pass at the end. This is the ZPRIZE-style
+/// design; the probe measures the kernel before any integration debate.
+#[cfg(target_arch = "wasm32")]
+mod lazy29_probe {
+    /// Pasta Fp modulus in 29-bit little-endian limbs.
+    pub const P29: [u64; 9] = [
+        0x1, 0x9698768, 0x133e46e6, 0xd31f812, 0x224, 0, 0, 0, 0x400000,
+    ];
+    /// -p^{-1} mod 2^29.
+    const INV29: u64 = 0x1fff_ffff;
+    const MASK29: u64 = (1 << 29) - 1;
+
+    /// `a * b * 2^-261 mod p`, limbs < 2^29 in, limbs < 2^29 out.
+    #[inline(always)]
+    pub fn mont_mul(a: &[u64; 9], b: &[u64; 9]) -> [u64; 9] {
+        let mut t = [0u64; 9];
+        for i in 0..9 {
+            let ai = a[i];
+            // Column 0 of this round: resolve m and its exact carry.
+            let t0 = t[0] + ai * b[0];
+            let m = ((t0 & MASK29) * INV29) & MASK29;
+            let c = (t0 + m * P29[0]) >> 29;
+            // Everything else: TWO mul-adds per column, no carries.
+            t[0] = t[1] + ai * b[1] + m * P29[1] + c;
+            t[1] = t[2] + ai * b[2] + m * P29[2];
+            t[2] = t[3] + ai * b[3] + m * P29[3];
+            t[3] = t[4] + ai * b[4] + m * P29[4];
+            t[4] = t[5] + ai * b[5] + m * P29[5];
+            t[5] = t[6] + ai * b[6] + m * P29[6];
+            t[6] = t[7] + ai * b[7] + m * P29[7];
+            t[7] = t[8] + ai * b[8] + m * P29[8];
+            t[8] = 0;
+        }
+        // Single deferred carry propagation.
+        let mut out = [0u64; 9];
+        let mut carry = 0u64;
+        for j in 0..9 {
+            let v = t[j] + carry;
+            out[j] = v & MASK29;
+            carry = v >> 29;
+        }
+        debug_assert_eq!(carry, 0);
+        // The lazy bound leaves out < few*p: subtract until < p.
+        while ge(&out, &P29) {
+            let mut borrow = 0i64;
+            for j in 0..9 {
+                let v = out[j] as i64 - P29[j] as i64 + borrow;
+                out[j] = (v & MASK29 as i64) as u64;
+                borrow = v >> 63;
+            }
+        }
+        out
+    }
+
+    fn ge(a: &[u64; 9], p: &[u64; 9]) -> bool {
+        for j in (0..9).rev() {
+            if a[j] != p[j] {
+                return a[j] > p[j];
+            }
+        }
+        true
+    }
+
+    /// 256-bit little-endian u64 limbs -> nine 29-bit limbs.
+    pub fn from_u64x4(l: &[u64; 4]) -> [u64; 9] {
+        let mut out = [0u64; 9];
+        for j in 0..9 {
+            let bit = 29 * j;
+            let (w, off) = (bit / 64, bit % 64);
+            let mut v = l[w] >> off;
+            if off > 35 && w + 1 < 4 {
+                v |= l[w + 1] << (64 - off);
+            }
+            out[j] = v & MASK29;
+        }
+        out
+    }
+
+    /// Nine 29-bit limbs -> 256-bit little-endian u64 limbs.
+    pub fn to_u64x4(l: &[u64; 9]) -> [u64; 4] {
+        let mut out = [0u64; 4];
+        for j in 0..9 {
+            let bit = 29 * j;
+            let (w, off) = (bit / 64, bit % 64);
+            out[w] |= l[j] << off;
+            if off > 35 && w + 1 < 4 {
+                out[w + 1] |= l[j] >> (64 - off);
+            }
+        }
+        out
+    }
+}
+
 /// Micro-bench of raw field-multiplication cost inside this wasm module.
 /// Returns milliseconds for `iters` multiplications: `mode = 0` chains
 /// dependent multiplications (latency), `mode = 1` runs 4 independent
@@ -485,6 +583,61 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
                 x *= y;
             }
             x
+        }
+        6 => {
+            use lazy29_probe as lz;
+            // Enter the 2^261 Montgomery domain through ark itself:
+            // x29 = to29(raw(x * R261)); then mont_mul stays in-domain and
+            // raw results compare against ark's field multiplication.
+            let r261 = Fp::from(2u64).pow([261u64]);
+            use ark_ff::PrimeField as _;
+            let enter = |v: Fp| lz::from_u64x4(&(v * r261).into_bigint().0);
+            let mut x = Fp::one() + y;
+            let mut x29 = enter(x);
+            let y29 = enter(y);
+            for step in 0..256 {
+                let expected = x * y;
+                let got = lz::mont_mul(&x29, &y29);
+                if lz::to_u64x4(&got) != (expected * r261).into_bigint().0 {
+                    return -2.0 - step as f64;
+                }
+                x = expected;
+                x29 = got;
+            }
+            let y29 = core::hint::black_box(y29);
+            let t0 = js_sys::Date::now();
+            for _ in 0..iters {
+                x29 = lz::mont_mul(&core::hint::black_box(x29), &y29);
+            }
+            let elapsed = js_sys::Date::now() - t0;
+            if lz::to_u64x4(&core::hint::black_box(x29)) == [0u64; 4] {
+                return -1.0;
+            }
+            return elapsed;
+        }
+        7 => {
+            use lazy29_probe as lz;
+            let r261 = Fp::from(2u64).pow([261u64]);
+            use ark_ff::PrimeField as _;
+            let enter = |v: Fp| lz::from_u64x4(&(v * r261).into_bigint().0);
+            let y29 = core::hint::black_box(enter(y));
+            let mut a = core::hint::black_box(enter(Fp::one() + y));
+            let mut b = core::hint::black_box(enter(y + y));
+            let mut c = core::hint::black_box(enter(y * y));
+            let mut d = core::hint::black_box(enter(y * y + y));
+            let t0 = js_sys::Date::now();
+            for _ in 0..iters / 4 {
+                a = lz::mont_mul(&a, &y29);
+                b = lz::mont_mul(&b, &y29);
+                c = lz::mont_mul(&c, &y29);
+                d = lz::mont_mul(&d, &y29);
+            }
+            let elapsed = js_sys::Date::now() - t0;
+            let sink = core::hint::black_box((a, b, c, d));
+            if lz::to_u64x4(&sink.0) == [0u64; 4] {
+                return -1.0;
+            }
+            return elapsed;
         }
         _ => {
             let mut a = Fp::one() + y;
