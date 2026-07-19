@@ -134,6 +134,227 @@ pub fn export_tock_srs_raw() -> Option<Vec<u8>> {
     encode_srs_raw(&srs.g, &srs.h)
 }
 
+// ---------------------------------------------------------------------------
+// jsoo-format cache payloads (o1js `Cache` entries, shared with jsoo)
+// ---------------------------------------------------------------------------
+//
+// o1js persists the SRS and Lagrange bases through its `Cache` object using
+// JSON payloads (`OrInfinityJson` points with decimal coordinates). The rust
+// backends read and write those exact entries — `srs-fp-65536`,
+// `srs-fq-32768`, `lagrange-basis-{f}-{domain}` — so a cache warmed by jsoo
+// warms rust and vice versa, and the o1js gating (`Cache.None`, `canWrite`)
+// applies identically to both.
+
+/// One point in o1js's jsoo cache JSON: `"Infinity"` or `{x, y}` with
+/// decimal-string coordinates.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum JsooPointJson {
+    Infinity(String),
+    Point { x: String, y: String },
+}
+
+fn point_from_jsoo<G>(point: &JsooPointJson) -> Option<G>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    use ark_ff::PrimeField;
+    use std::str::FromStr as _;
+    match point {
+        JsooPointJson::Infinity(tag) => (tag == "Infinity").then(G::zero),
+        JsooPointJson::Point { x, y } => {
+            let modulus: num_bigint::BigUint = <G::BaseField as PrimeField>::MODULUS.into();
+            let x = num_bigint::BigUint::from_str(x).ok()?;
+            let y = num_bigint::BigUint::from_str(y).ok()?;
+            if x >= modulus || y >= modulus {
+                return None;
+            }
+            // Trusted local cache state: points load unvalidated, like jsoo's.
+            Some(G::of_coordinates(x.into(), y.into()))
+        }
+    }
+}
+
+fn point_to_jsoo<G>(point: &G) -> JsooPointJson
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    use ark_ff::PrimeField as _;
+    match point.to_coordinates() {
+        None => JsooPointJson::Infinity("Infinity".into()),
+        Some((x, y)) => JsooPointJson::Point {
+            x: x.into_bigint().to_string(),
+            y: y.into_bigint().to_string(),
+        },
+    }
+}
+
+fn decode_srs_jsoo<G>(bytes: &[u8]) -> Option<(Vec<G>, G)>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    // jsoo's `caml_srs_get` payload: `[h, ...g]`.
+    let points: Vec<JsooPointJson> = serde_json::from_slice(bytes).ok()?;
+    let mut iter = points.iter();
+    let h = point_from_jsoo(iter.next()?)?;
+    let g: Option<Vec<G>> = iter.map(point_from_jsoo).collect();
+    Some((g?, h))
+}
+
+fn encode_srs_jsoo<G>(g: &[G], h: &G) -> Option<Vec<u8>>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    let mut points = Vec::with_capacity(g.len() + 1);
+    points.push(point_to_jsoo(h));
+    points.extend(g.iter().map(point_to_jsoo));
+    serde_json::to_vec(&points).ok()
+}
+
+/// Seeds the process-global Tick SRS from a jsoo cache payload (`[h, ...g]`
+/// JSON). Returns `false` (leaving any existing SRS untouched) on a malformed
+/// or wrong-size payload.
+pub fn seed_tick_srs_jsoo(bytes: &[u8]) -> bool {
+    if TICK_SRS.get().is_some() {
+        return true;
+    }
+    match decode_srs_jsoo::<Vesta>(bytes) {
+        Some((g, h)) if g.len() == 1 << TICK_ROUNDS => {
+            let _ = TICK_SRS.set(Arc::new(SRS::new(g, h)));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Seeds the process-global Tock SRS from a jsoo cache payload.
+pub fn seed_tock_srs_jsoo(bytes: &[u8]) -> bool {
+    if TOCK_SRS.get().is_some() {
+        return true;
+    }
+    match decode_srs_jsoo::<Pallas>(bytes) {
+        Some((g, h)) if g.len() == 1 << TOCK_ROUNDS => {
+            let _ = TOCK_SRS.set(Arc::new(SRS::new(g, h)));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Exports the Tick SRS as the jsoo cache payload, when the SRS exists.
+pub fn export_tick_srs_jsoo() -> Option<Vec<u8>> {
+    let srs = TICK_SRS.get()?;
+    encode_srs_jsoo(&srs.g, &srs.h)
+}
+
+/// Exports the Tock SRS as the jsoo cache payload, when the SRS exists.
+pub fn export_tock_srs_jsoo() -> Option<Vec<u8>> {
+    let srs = TOCK_SRS.get()?;
+    encode_srs_jsoo(&srs.g, &srs.h)
+}
+
+/// One commitment in o1js's jsoo Lagrange cache JSON. The single-chunk
+/// commitment lives under the (historically misnamed) `shifted` key.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JsooCommJson {
+    shifted: Vec<JsooPointJson>,
+}
+
+/// Decodes a jsoo Lagrange-basis cache payload; `None` on any shape mismatch.
+pub fn decode_lagrange_basis_jsoo<G>(
+    bytes: &[u8],
+    expected_len: usize,
+) -> Option<Vec<poly_commitment::commitment::PolyComm<G>>>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    let comms: Vec<JsooCommJson> = serde_json::from_slice(bytes).ok()?;
+    if comms.len() != expected_len {
+        return None;
+    }
+    comms
+        .iter()
+        .map(|comm| {
+            let chunks: Option<Vec<G>> = comm.shifted.iter().map(point_from_jsoo).collect();
+            Some(poly_commitment::commitment::PolyComm { chunks: chunks? })
+        })
+        .collect()
+}
+
+/// Encodes a Lagrange basis as the jsoo cache payload.
+pub fn encode_lagrange_basis_jsoo<G>(
+    basis: &[poly_commitment::commitment::PolyComm<G>],
+) -> Option<Vec<u8>>
+where
+    G: poly_commitment::commitment::CommitmentCurve,
+    G::BaseField: ark_ff::PrimeField,
+{
+    let comms: Vec<JsooCommJson> = basis
+        .iter()
+        .map(|comm| JsooCommJson {
+            shifted: comm.chunks.iter().map(point_to_jsoo).collect(),
+        })
+        .collect();
+    serde_json::to_vec(&comms).ok()
+}
+
+/// Seeds the in-memory Lagrange-basis cache for `curve` ("vesta"/"pallas")
+/// and `2^domain_log2` from a jsoo cache payload. Returns `false` on any
+/// mismatch (the basis is then recomputed on demand).
+pub fn seed_lagrange_basis_jsoo(curve: &str, domain_log2: u32, bytes: &[u8]) -> bool {
+    let domain_size = 1usize << domain_log2;
+    match curve {
+        "vesta" => {
+            let Some(basis) = decode_lagrange_basis_jsoo::<Vesta>(bytes, domain_size) else {
+                return false;
+            };
+            tick_srs(1 << TICK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        "pallas" => {
+            let Some(basis) = decode_lagrange_basis_jsoo::<Pallas>(bytes, domain_size) else {
+                return false;
+            };
+            tock_srs(1 << TOCK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Exports a computed Lagrange basis as the jsoo cache payload; `None` when
+/// the basis is not (yet) in the in-memory cache.
+pub fn export_lagrange_basis_jsoo(curve: &str, domain_log2: u32) -> Option<Vec<u8>> {
+    let domain_size = 1usize << domain_log2;
+    fn export<G>(srs: &SRS<G>, domain_size: usize) -> Option<Vec<u8>>
+    where
+        G: poly_commitment::commitment::CommitmentCurve,
+        G::BaseField: ark_ff::PrimeField,
+    {
+        if !srs.lagrange_bases().contains_key(&domain_size) {
+            return None;
+        }
+        let basis = srs
+            .lagrange_bases()
+            .get_or_generate(domain_size, || unreachable!("checked contains_key"));
+        encode_lagrange_basis_jsoo(&basis)
+    }
+    match curve {
+        "vesta" => export(&tick_srs(1 << TICK_ROUNDS), domain_size),
+        "pallas" => export(&tock_srs(1 << TOCK_ROUNDS), domain_size),
+        _ => None,
+    }
+}
+
 /// The Poseidon full-rounds constant shared with the snarky crate.
 pub const FULL_ROUNDS: usize = snarky::FULL_ROUNDS;
 
@@ -185,6 +406,33 @@ mod tests {
     #[should_panic(expected = "proofs_verified must be 0, 1 or 2")]
     fn wrap_domain_log2_rejects_width_3() {
         let _ = wrap_domain_log2(3);
+    }
+
+    /// The jsoo SRS/Lagrange payload codecs round-trip, and the JSON matches
+    /// the o1js shape (`[h, ...g]` decimal points, `{"shifted": [...]}`
+    /// commitments) so entries are interchangeable with jsoo's.
+    #[test]
+    fn jsoo_cache_payloads_round_trip() {
+        let tiny = SRS::<Vesta>::create(4);
+        let (g, h) = (tiny.g.clone(), tiny.h);
+        let bytes = encode_srs_jsoo(&g, &h).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 5);
+        assert!(json[0]["x"].as_str().unwrap().parse::<num_bigint::BigUint>().is_ok());
+        let (g2, h2) = decode_srs_jsoo::<Vesta>(&bytes).unwrap();
+        assert_eq!(g, g2);
+        assert_eq!(h, h2);
+
+        let basis: Vec<poly_commitment::commitment::PolyComm<Vesta>> = g
+            .iter()
+            .map(|p| poly_commitment::commitment::PolyComm { chunks: vec![*p] })
+            .collect();
+        let bytes = encode_lagrange_basis_jsoo(&basis).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json[0]["shifted"].is_array());
+        let basis2 = decode_lagrange_basis_jsoo::<Vesta>(&bytes, 4).unwrap();
+        assert_eq!(basis, basis2);
+        assert!(decode_lagrange_basis_jsoo::<Vesta>(&bytes, 5).is_none());
     }
 
     /// `actual_wrap_domain_size` reproduces `Common.actual_wrap_domain_size`.
@@ -318,7 +566,22 @@ where
     }
 }
 
+/// Whether the crate-internal disk cache (`cache_dir`) is active. Hosts that
+/// drive persistence through their own cache — o1js routes SRS/Lagrange
+/// payloads through its `Cache` object, gated by `Cache.None`/`canWrite`
+/// exactly like jsoo — disable it so no un-gated filesystem access remains.
+/// Defaults to enabled for standalone (cargo test/CLI) use.
+static DISK_CACHE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Enables or disables the crate-internal SRS/Lagrange disk cache.
+pub fn set_disk_cache_enabled(enabled: bool) {
+    DISK_CACHE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn cache_dir() -> Option<std::path::PathBuf> {
+    if !DISK_CACHE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
     if let Some(dir) = std::env::var_os("PICKLES_CACHE_DIR") {
         return Some(std::path::PathBuf::from(dir));
     }
