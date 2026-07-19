@@ -6010,3 +6010,16 @@ update BLOQUÉ >8 min dans le Chromium embarqué (récursion ; retester
 Chrome normal). Autres pièges : cache .next rassis après changement de
 dist (rm -rf .next + restart) ; pkill -f matche sa propre commande
 (fuser -k PORT/tcp) ; les 43 Mo de chunk worker = dev non minifié.
+
+## #23 — fork arkworks RETIRÉ (2026-07-19)
+
+Sur demande d'eddy : [patch.crates-io] supprimé, crates.io ark 0.5
+partout. Purgés : sondes lazy29 (modes 6-9/13/14), A/B batch-affine
+(17), interrupteurs set_lazy_fft/set_batch_affine, compteurs census
+MSM/FFT (census = poseidon cfg-gated + phases). Restent : modes 0/1/11/
+15/16. mina-rust n'a jamais vu le fork (patch non propagé). Coût mesuré
+(machine calme) : wasm +8-10 % proves, natif inchangé, VK/gates verts.
+PIÈGE : un onglet du navigateur embarqué avec du jsoo bloqué spinnait à
+10 cœurs → 2 runs pollués (+35 % fantômes) ; vérifier top avant bench.
+Si les gains MSM doivent revenir : implémentation côté proof-systems
+(poly-commitment/kimchi-msm), pas de fork.
