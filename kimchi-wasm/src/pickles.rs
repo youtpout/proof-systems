@@ -564,6 +564,70 @@ mod lazy29_probe {
     }
 }
 
+/// Lazy29 FFT probe (bench modes 8/9): a complete radix-2 DIT FFT whose
+/// butterflies run in the lazy-carry 29-bit domain (`ark_ff::lazy29`),
+/// data converted at the boundaries — measured against ark-poly's FFT on
+/// the same input. Twiddles are converted once (cached per domain in a
+/// real integration). Self-checked element-wise against ark's result.
+#[cfg(target_arch = "wasm32")]
+mod lazy_fft_probe {
+    use ark_ff::lazy29;
+    use mina_curves::pasta::fields::FqConfig;
+
+    pub type L = [u64; lazy29::LIMBS];
+
+    fn bit_reverse(a: &mut [L]) {
+        let n = a.len();
+        let bits = n.trailing_zeros();
+        for i in 0..n {
+            let j = ((i as u32).reverse_bits() >> (32 - bits)) as usize;
+            if j > i {
+                a.swap(i, j);
+            }
+        }
+    }
+
+    /// Stage twiddles for a size-n FFT: `tw[s][j] = (omega^(n/2^(s+1)))^j`.
+    pub fn twiddles(omega: mina_curves::pasta::Fp, n: usize, entry: &L) -> Vec<Vec<L>> {
+        use ark_ff::Field as _;
+        let stages = n.trailing_zeros() as usize;
+        let mut out = Vec::with_capacity(stages);
+        for s in 0..stages {
+            let len = 1usize << (s + 1);
+            let w = omega.pow([(n / len) as u64]);
+            let mut acc = mina_curves::pasta::Fp::ONE;
+            let mut tws = Vec::with_capacity(len / 2);
+            for _ in 0..len / 2 {
+                tws.push(lazy29::enter::<FqConfig>(&acc.0, entry));
+                acc *= w;
+            }
+            out.push(tws);
+        }
+        out
+    }
+
+    /// In-place natural-order DIT radix-2 FFT, all arithmetic lazy29.
+    pub fn fft_in_place(a: &mut [L], twiddles: &[Vec<L>]) {
+        bit_reverse(a);
+        let n = a.len();
+        let (mut len, mut stage) = (2usize, 0usize);
+        while len <= n {
+            let tw = &twiddles[stage];
+            for block in a.chunks_mut(len) {
+                let (lo, hi) = block.split_at_mut(len / 2);
+                for j in 0..len / 2 {
+                    let t = lazy29::mont_mul::<FqConfig>(&hi[j], &tw[j]);
+                    let u = lo[j];
+                    lo[j] = lazy29::add::<FqConfig>(&u, &t);
+                    hi[j] = lazy29::sub::<FqConfig>(&u, &t);
+                }
+            }
+            len <<= 1;
+            stage += 1;
+        }
+    }
+}
+
 /// Micro-bench of raw field-multiplication cost inside this wasm module.
 /// Returns milliseconds for `iters` multiplications: `mode = 0` chains
 /// dependent multiplications (latency), `mode = 1` runs 4 independent
@@ -638,6 +702,59 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
                 return -1.0;
             }
             return elapsed;
+        }
+        8 | 9 => {
+            use ark_ff::lazy29;
+            use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
+            use lazy_fft_probe as lf;
+            use mina_curves::pasta::fields::FqConfig;
+            const N: usize = 1 << 16;
+            let domain = Radix2EvaluationDomain::<Fp>::new(N).unwrap();
+            // Varied input via a squaring chain.
+            let mut coeffs = Vec::with_capacity(N);
+            let mut x = Fp::one() + y;
+            for _ in 0..N {
+                x.square_in_place();
+                x += y;
+                coeffs.push(x);
+            }
+            let entry = lazy29::entry_constant::<FqConfig>();
+            let tw = lf::twiddles(domain.group_gen, N, &entry);
+            // Self-check: lazy FFT == ark FFT, element-wise. ark-poly is
+            // built with the parallel feature: its FFT must run inside the
+            // worker pool (that is also the production configuration).
+            let expected = crate::rayon::run_in_pool(|| domain.fft(&coeffs));
+            let mut d: Vec<lf::L> = coeffs
+                .iter()
+                .map(|c| lazy29::enter::<FqConfig>(&c.0, &entry))
+                .collect();
+            lf::fft_in_place(&mut d, &tw);
+            for (i, (got, want)) in d.iter().zip(&expected).enumerate() {
+                if lazy29::exit::<FqConfig>(got) != (want.0) {
+                    return -2.0 - i as f64;
+                }
+            }
+            let reps = iters.max(1);
+            return crate::rayon::run_in_pool(|| {
+                let t0 = js_sys::Date::now();
+                if mode == 8 {
+                    for _ in 0..reps {
+                        let out = domain.fft(core::hint::black_box(&coeffs));
+                        core::hint::black_box(out);
+                    }
+                } else {
+                    for _ in 0..reps {
+                        let mut d: Vec<lf::L> = core::hint::black_box(&coeffs)
+                            .iter()
+                            .map(|c| lazy29::enter::<FqConfig>(&c.0, &entry))
+                            .collect();
+                        lf::fft_in_place(&mut d, &tw);
+                        let out: Vec<_> = d.iter().map(lazy29::exit::<FqConfig>).collect();
+                        core::hint::black_box(out);
+                    }
+                }
+                js_sys::Date::now() - t0
+            });
         }
         _ => {
             let mut a = Fp::one() + y;
