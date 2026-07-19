@@ -5883,3 +5883,54 @@ tomber les modes 8/9 dans le bras _ ⇒ mesures fantômes 0 ms) ;
 (2) ark-poly feature parallel ⇒ fft DOIT tourner dans run_in_pool ;
 (3) sonde via o1js dist : exporter rustPicklesBindings temporairement et
 lancer depuis dist/node (chemins cwd-relatifs du loader jsoo).
+
+## #18 FFT — CORRECTION du GO + verdict final : NO-GO du dispatch (2026-07-19)
+
+DÉCOUVERTE CRITIQUE : le harnais de sonde (rustPicklesBindings appelé
+directement) tournait avec un pool rayon à **1 THREAD** — la prod passe
+par withThreadPool (bindings.js) qui initialise numWorkers =
+availableParallelism-1. Les « 34,5 ms ark PARALLÈLE 16 workers » du GO
+précédent étaient de l'ark SÉRIE. Règle : toute sonde perf doit tourner
+DANS withThreadPool et vérifier rayon::current_num_threads() (mode 11,
+iters=0 → nb threads ; région parallèle vide ≈ 3-4 µs, jamais le goulot).
+
+L'intégration a été menée au bout puis mesurée honnêtement : dispatch
+générique dans le fork ark-poly (radix2::lazy, entonnoir io/oi_helper,
+downcast T==F via TypeId — DomainCoeff gagne 'static —, sonde runtime
+repr(1)==R/repr(2)==2R depuis characteristic() seul, Params runtime dans
+ff::lazy29 dérivés du module), réseaux de papillons et découpage
+parallèle identiques à ark, racines contiguës par étage, stockage u32
+36 B/élément. Correction PROUVÉE (tests différentiels natifs + A/B
+auto-vérifié dans le blob). Perf, pool réel (V8/x64, 16c/32t) :
+
+threads:      2      4      8      15     31    (ms/fft 2^16)
+lazy:      18,4    9,7    7,9    6,0    7,1
+ark:       17,8    9,8    6,7    5,5    5,2
+(2^12 : ark gagne partout aussi ; à 1 thread le chemin intégré fait
+37 ms — les surcoûts par appel mangent même l'avantage série)
+
+CAUSE DE FOND (à retenir pour les prochains kernels) : la FFT a une
+intensité arithmétique très faible (1 mul par paire d'éléments par
+étage). Parallélisée, elle est bornée par le système mémoire, pas par
+les multiplications : l'avantage de débit mul du lazy29 (26,9 vs
+42,5 ns/mul, réel) s'évapore, et les conversions aux frontières
+(~2,5n muls) + racines par appel restent en pur surcoût. Le u32-packing
+(2,25× → 1,12× le trafic d'ark) n'a rien changé — pas la bande passante
+brute, le niveau caches/latence. L'ark 32 bits borné latence profite en
+plus du SMT.
+
+DÉCISION : dispatch DEFAULT OFF derrière ark_poly set_wasm_lazy_fft
+(kill-switch runtime, binding wasm rust_pickles_set_lazy_fft) — la prod
+= ark inchangé ; la plomberie complète reste testée (tests différentiels
+sur master du fork) et mesurable en A/B un-seul-blob (modes 8/13 avec
+bascule). Réactivable si un hôte à pool étroit le justifie un jour.
+
+CE QUI RESTE VALIDE de #18 : le kernel mul lazy29 (1,6× débit, modes
+6/7) et le module ff::lazy29 (+ Params runtime). Cibles où l'avantage
+survit au parallélisme = kernels à FORTE intensité arithmétique :
+1) POSEIDON (chaînes mul/square séquentielles par permutation, état de
+3 éléments en registres, zéro inflation mémoire, le gain par op tient) ;
+2) MSM (add de groupe ≈ 12 muls sur 3-4 éléments, compute-bound même
+large ; recette Yrrid : GLV, digits signés, batch-affine).
+Sondes : fft-probe3/fft-crossover.mjs (scratchpad session) — schéma :
+import withThreadPool + setNumberOfWorkers AVANT rustPicklesBindings.

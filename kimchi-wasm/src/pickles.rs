@@ -628,6 +628,14 @@ mod lazy_fft_probe {
     }
 }
 
+/// Runtime switch for the ark-poly wasm lazy-carry FFT dispatch
+/// (measurement harnesses compare both paths in one build; also a
+/// production kill-switch).
+#[wasm_bindgen]
+pub fn rust_pickles_set_lazy_fft(enabled: bool) {
+    ark_poly::domain::radix2::set_wasm_lazy_fft(enabled);
+}
+
 /// Micro-bench of raw field-multiplication cost inside this wasm module.
 /// Returns milliseconds for `iters` multiplications: `mode = 0` chains
 /// dependent multiplications (latency), `mode = 1` runs 4 independent
@@ -703,12 +711,34 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
             }
             return elapsed;
         }
-        8 | 9 => {
+        // Fixed cost of one rayon parallel region in this pool (ms total
+        // for `iters` empty regions).
+        11 => {
+            return crate::rayon::run_in_pool(|| {
+                use rayon::prelude::*;
+                if iters == 0 {
+                    return rayon::current_num_threads() as f64;
+                }
+                (0..16usize).into_par_iter().for_each(|_| {});
+                let t0 = js_sys::Date::now();
+                for _ in 0..iters {
+                    (0..16usize).into_par_iter().for_each(|i| {
+                        core::hint::black_box(i);
+                    });
+                }
+                js_sys::Date::now() - t0
+            });
+        }
+        // 8/9 at 2^16 (tick domain), 13/14 the same pair at 2^12: the
+        // integrated-vs-serial delta across sizes separates fixed overhead
+        // from per-element cost.
+        8 | 9 | 13 | 14 => {
             use ark_ff::lazy29;
             use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
             use lazy_fft_probe as lf;
             use mina_curves::pasta::fields::FqConfig;
-            const N: usize = 1 << 16;
+            #[allow(non_snake_case)]
+            let N: usize = if mode >= 13 { 1 << 12 } else { 1 << 16 };
             let domain = Radix2EvaluationDomain::<Fp>::new(N).unwrap();
             // Varied input via a squaring chain.
             let mut coeffs = Vec::with_capacity(N);
@@ -737,7 +767,7 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
             let reps = iters.max(1);
             return crate::rayon::run_in_pool(|| {
                 let t0 = js_sys::Date::now();
-                if mode == 8 {
+                if mode == 8 || mode == 13 {
                     for _ in 0..reps {
                         let out = domain.fft(core::hint::black_box(&coeffs));
                         core::hint::black_box(out);
