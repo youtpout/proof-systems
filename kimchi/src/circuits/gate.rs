@@ -86,6 +86,15 @@ pub enum GateType {
     EndoMulScalar,
     // Lookup
     Lookup,
+    // Cairo gates are unused in Mina zkApp circuits, but o1js / upstream kimchi
+    // keep them in the GateType enum. We keep the four variants here purely so
+    // the discriminants stay in parity across the wasm boundary: without them,
+    // every gate from RangeCheck0 onward shifts by 4 and o1js sends indices the
+    // wasm rejects (e.g. Xor16 = 16). They are never constructed.
+    CairoClaim,
+    CairoInstruction,
+    CairoFlags,
+    CairoTransition,
     /// Range check
     RangeCheck0,
     RangeCheck1,
@@ -192,6 +201,8 @@ impl<F: PrimeField> CircuitGate<F> {
             Rot64 => self
                 .verify_witness::<FULL_ROUNDS, G>(row, witness, cs, public)
                 .map_err(|e| e.to_string()),
+            // Cairo gates are never constructed in Mina circuits.
+            CairoClaim | CairoInstruction | CairoFlags | CairoTransition => Ok(()),
         }
     }
 
@@ -275,6 +286,11 @@ impl<F: PrimeField> CircuitGate<F> {
                 // See https://github.com/MinaProtocol/mina/issues/14011
                 vec![]
             }
+            // Cairo gates are never constructed in Mina circuits.
+            GateType::CairoClaim
+            | GateType::CairoInstruction
+            | GateType::CairoFlags
+            | GateType::CairoTransition => vec![],
             GateType::RangeCheck0 => {
                 range_check::circuitgates::RangeCheck0::constraint_checks(&env, &mut cache)
             }

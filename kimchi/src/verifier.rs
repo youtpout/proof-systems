@@ -102,6 +102,8 @@ impl<
                     ForeignFieldMul => Some(self.verifier_index.foreign_field_mul_comm.as_ref()?),
                     Xor16 => Some(self.verifier_index.xor_comm.as_ref()?),
                     Rot64 => Some(self.verifier_index.rot_comm.as_ref()?),
+                    // Cairo gates are never constructed in Mina circuits.
+                    CairoClaim | CairoInstruction | CairoFlags | CairoTransition => None,
                 }
             }
         }
