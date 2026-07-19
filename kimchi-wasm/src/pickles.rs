@@ -732,10 +732,14 @@ pub fn rust_pickles_compile_recorded_program(
         Option<pickles::recorded::RecordedCompiledN1>,
         Option<pickles::recorded::RecordedCompiledN2>,
     );
+    // Compile branches sequentially: each branch's own compile already uses
+    // the rayon pool internally (MSM/FFT/Lagrange), so iterating the branches
+    // in parallel too nests parallelism on a bounded pool and deadlocks under
+    // thread contention (reliably for 6+ mid-size branches, e.g. a token
+    // contract). One branch at a time still saturates the pool per branch.
     let compiled: Vec<Result<Compiled, String>> = crate::rayon::run_in_pool(|| {
-        use rayon::prelude::*;
         parsed
-            .into_par_iter()
+            .into_iter()
             .map(|(circuit, witness, proofs_verified)| {
                 let base = pickles::recorded::RecordedCompiledBase::compile(
                     circuit.clone(),

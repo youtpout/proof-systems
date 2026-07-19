@@ -2515,8 +2515,8 @@ fn compile_recorded_program_steps<const STEP_PI: usize, const ACTIVE: usize>(
 
 /// Compiles the step indexes of every branch in one pass: the first N0
 /// branch first (its index is the program's shared finalize index; aligning
-/// it to itself is a no-op), then every other branch — in parallel — aligned
-/// to it.
+/// it to itself is a no-op), then every other branch — sequentially — aligned
+/// to it (each branch already parallelizes internally over the pool).
 fn compile_recorded_program_steps_single_pass<const STEP_PI: usize, const ACTIVE: usize>(
     branches: &[RecordedProgramBranch],
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
@@ -2544,8 +2544,11 @@ fn compile_recorded_program_steps_single_pass<const STEP_PI: usize, const ACTIVE
     let rest: Vec<usize> = (0..branches.len())
         .filter(|&i| Some(i) != first_n0)
         .collect();
+    // Sequential: each branch's step compile already parallelizes internally
+    // over the rayon pool, so iterating branches in parallel too nests
+    // parallelism on a bounded pool and deadlocks under contention.
     let compiled: Vec<(usize, RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>)> = rest
-        .into_par_iter()
+        .into_iter()
         .map(|i| {
             (
                 i,
