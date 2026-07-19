@@ -5717,3 +5717,29 @@ Commits : proof-systems 9979f35d23, o1js 839bce8ee.
 Reste (mineur) : premier prove après restore paie la matérialisation
 lazy des column evaluations (~1-2 s/index) ; prove side-loaded réel
 toujours à câbler (compile/VK ok).
+
+## Audit perf compile (contrôle "d'où vient la vitesse ?", 2026-07-19)
+
+Question : les chiffres de compile rust sont-ils gonflés par des données
+pré-embarquées ? Réponse : **rien n'est embarqué dans les binaires**
+(le plan SRS-rkyv est parké, non implémenté). Deux caches DISQUE existent :
+`~/.cache/o1js` (Cache o1js standard : clés prover `recorded-program-v1-*`,
+gaté par Cache.None — inactif dans les benchs) et `~/.cache/pickles-rs`
+(SRS brut + bases de Lagrange, `PICKLES_CACHE_DIR` pour dérouter).
+
+Mesures à froid RÉEL (cache dir vide/absent, Cache.None, AddZkProgram) :
+- rust-native 6,1 s • jsoo-native 8,5 s
+- rust-wasm 14,5 s • jsoo-wasm 17,1 s
+→ rust bat jsoo même 100 % à froid. Avec le cache disque SRS/Lagrange
+chaud, rust-wasm descend à ~8,8 s (~5,7 s économisés : group-map série).
+
+Constats structurels (vérifiés empiriquement, dir déplacé) :
+1. Le backend NATIF n'utilise PAS le cache disque du tout : le compile
+   shaped (`RecordedCompiledProgramShaped::compile`) n'appelle jamais
+   `warm_recursion_caches` — seuls les chemins legacy Base/N1/N2 et les
+   tests cargo le font. Ses 6,1 s sont un recalcul complet à chaque run.
+2. Côté WASM, c'est l'hôte o1js qui seed/persiste ~/.cache/pickles-rs
+   (readLagrangeCacheFiles/persistLagrangeCaches) SANS respecter
+   Cache.None — contrairement à jsoo dont le cache SRS passe par l'objet
+   Cache. Écart de gating assumé (données publiques déterministes,
+   neutres pour les VK) mais à documenter dans toute comparaison de bench.
