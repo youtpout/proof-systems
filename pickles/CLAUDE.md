@@ -5680,3 +5680,23 @@ NE PAS revenir à la sérialisation du prover index.
    Brancher les DEUX chemins (wasm bindings + minaRuntime). Puis mesurer
    warm wasm (attendu ≪ jsoo 6 s) via BENCH_CACHE=default
    tmp-bench-wasm.ts, et valider VkParity+zkapp-rust inchangés.
+
+## ✅ #12 CÂBLÉ BOUT-EN-BOUT (wasm) — cache fonctionnel iso jsoo
+
+o1js compileRecordedProgram passe par le Cache standard (kind step-pk,
+programName 'rust-pickles-program', best-effort, invalidation par digest
+des branches). kimchi: coefficient-evaluation déférée dans la LazyCache
+(un index lazy ne paie RIEN avant le premier prove) ; restore des
+branches non-N0 en parallèle. Mesures bench wasm : cold 12,5 s → warm
+7,8 s (VK identique) ; jsoo warm 5,5 s. Natif (exemple) : warm 0,5-0,9 s.
+Commits : proof-systems 9979f35d23, o1js 839bce8ee.
+
+### Restes #12 (polish)
+1. −2,3 s wasm vs jsoo : cacher les BASES SRS brutes sur disque (codec
+   v2 comme les lagranges — jsoo a un cache SRS ⇒ iso-jsoo légitime) ;
+   la création parallèle wasm coûte ~2,5-3 s au seed.
+2. Chemin NATIF (minaRuntime/backend.rs) : ops program_cache_key /
+   program_cache_bytes / compile_program_from_cache dans BackendRequest +
+   branchement o1js du chemin useMinaRuntimeBackend (le wasm est fait).
+3. Le premier PROVE après restore paie la matérialisation lazy des
+   column evaluations (~1-2 s par index) — mesurer et documenter.
