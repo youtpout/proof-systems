@@ -5850,3 +5850,19 @@ Chiffres : latence 37,1 vs 42,8 ; DÉBIT 26,9 vs 42,5 ns/mul (−37 %).
 Intégration à cadrer (PAS drop-in) : par kernel, conversion de tableaux
 aux frontières — ordre : FFT (amortit log n:1) → Poseidon → MSM (ark-ec,
 lourd). Chaque étape : sonde → intégration → protocole bench complet.
+
+## #18 suite — fondation lazy29 dans le fork algebra (2026-07-19)
+
+Module générique `ark_ff::lazy29` (fork youtpout/algebra, branches master
+2505d565 + v0.5 d4672bdc) : mont_mul/add/sub sous invariant < 2p (pas de
+réduction finale en chaîne), enter/exit sur la REPR INTERNE (.0, PAS
+into_bigint — piège qui a mordu deux fois), entry_constant = 2^266 mod p
+runtime, exit via mont_mul par R (const). Constantes 29 bits const fn
+depuis MODULUS. Tests différentiels : chaînes mixtes 200 étapes sur bls
+(fork) + les deux champs pasta (pickles). Bornes démontrées dans les
+doc-comments (T < p/16 + p). Yrrid (1er prix ZPRIZE) = catalogue pour le
+futur kernel MSM : GLV racine-cubique (pasta l'a), digits signés,
+fenêtres 10-16, batch-affine Aztec ; code C non réutilisable tel quel.
+PROCHAINE ÉTAPE : câbler la FFT d'ark-poly (fork) sur lazy29 sous
+cfg(wasm32) — conversion des tableaux aux frontières, papillons en
+domaine < 2p, sonde par taille de domaine PUIS protocole bench complet.
