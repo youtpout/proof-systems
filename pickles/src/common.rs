@@ -462,6 +462,40 @@ mod tests {
         assert!(decode_lagrange_basis_jsoo::<Vesta>(&bytes, 5).is_none());
     }
 
+    /// The vendored ark-ff wasm multiplication path (32-bit-digit CIOS)
+    /// agrees with the stock 64-bit path on both pasta fields — squaring
+    /// chains for varied values plus 0/1/-1/near-modulus edge cases.
+    #[test]
+    fn wasm_mont_mul_32_matches_64bit_path() {
+        use ark_ff::{AdditiveGroup as _, Field as _};
+        fn check<T, const N: usize>()
+        where
+            T: ark_ff::MontConfig<N>,
+        {
+            type F<T, const N: usize> = ark_ff::Fp<ark_ff::MontBackend<T, N>, N>;
+            let minus_one = -F::<T, N>::ONE;
+            let mut values = vec![F::<T, N>::ZERO, F::<T, N>::ONE, minus_one];
+            let mut x = F::<T, N>::from(3u64);
+            for _ in 0..32 {
+                x.square_in_place();
+                values.push(x);
+                values.push(x + minus_one);
+            }
+            for &a in &values {
+                for &b in &values {
+                    let expected = a * b;
+                    let mut got = a;
+                    ark_ff::mul_assign_u32_digits::<T, N>(&mut got, &b);
+                    assert_eq!(got, expected, "32-bit CIOS diverges");
+                }
+            }
+        }
+        // Historical naming swap in mina_curves: FqConfig backs Fp (Vesta
+        // scalar field) and FrConfig backs Fq.
+        check::<mina_curves::pasta::fields::FqConfig, 4>();
+        check::<mina_curves::pasta::fields::FrConfig, 4>();
+    }
+
     /// `actual_wrap_domain_size` reproduces `Common.actual_wrap_domain_size`.
     #[test]
     fn actual_wrap_domain_size_matches_ocaml() {
