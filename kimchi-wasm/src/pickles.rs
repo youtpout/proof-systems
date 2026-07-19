@@ -986,6 +986,24 @@ pub fn rust_pickles_recorded_program_vk_envelope(
         .map_err(|err| JsError::new(&format!("VK envelope encoding failed: {err}")))
 }
 
+/// The single canonical side-loaded VK of a NON-RECURSIVE program: one shared
+/// width-0 wrap over every branch's Step verifier (OCaml `Pickles.compile`
+/// shape for `max_proofs_verified = 0`), rather than one wrap per branch.
+/// Returns `{ base64, hash }`.
+#[wasm_bindgen]
+pub fn rust_pickles_compile_recorded_program_base_shared_vk(
+    branches_json: String,
+) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
+    let branches = parse_program_branches(&branches_json)?;
+    let (base64, hash) = crate::rayon::run_in_pool(|| {
+        pickles::recorded::compile_recorded_program_base_shared_vk(branches)
+    })
+    .map_err(|err| JsError::new(&format!("shared base VK compile failed: {err:?}")))?;
+    serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
+        .map_err(|err| JsError::new(&format!("VK envelope encoding failed: {err}")))
+}
+
 #[wasm_bindgen]
 pub fn rust_pickles_program_prove_n0_bytes(
     program: &mut WasmRecordedProgram,

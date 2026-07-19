@@ -1828,6 +1828,109 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     }
 }
 
+/// The kimchi Step verifier index shape shared by every recorded branch.
+pub(crate) type SharedStepVerifierIndex =
+    kimchi::verifier_index::VerifierIndex<FULL_ROUNDS, Vesta, poly_commitment::ipa::SRS<Vesta>>;
+
+/// Build the SHARED width-0 wrap verifier over EVERY branch's Step verifier,
+/// as OCaml `Pickles.compile` does for a `max_proofs_verified = 0` program:
+/// ONE wrap circuit bakes all branch step-domains/VKs (selected at prove time
+/// by a witnessed `which_branch` one-hot), so the whole program has a single
+/// canonical side-loaded verification key instead of one wrap VK per branch.
+///
+/// Only the wrap VK shape is produced — no step proof is needed — which is all
+/// the compile-only zkApp milestone requires. The wrap constraint system, and
+/// therefore its 28 verification-key commitments, depends solely on the set of
+/// branch Step verifier indexes, not on any witness.
+pub(crate) fn build_shared_base_wrap(
+    step_verifiers: &[&SharedStepVerifierIndex],
+) -> snarky::api::VerifierIndexWrapper<WrapCircuit<16, 40>> {
+    use ark_ec::{AffineRepr, CurveGroup};
+    assert!(
+        !step_verifiers.is_empty(),
+        "a compiled program has at least one branch"
+    );
+    let co = |p: &Vesta| (p.x, p.y);
+    // One `WrapBranchData` per branch (its Step VK commitments + domain). The
+    // wrap folds them through the `which_branch` one-hot.
+    let branches: Vec<WrapBranchData> = step_verifiers
+        .iter()
+        .map(|svi| WrapBranchData::from_step_verifier(svi, 0))
+        .collect();
+    // The step public-input statement layout is shared by every branch (all
+    // Steps expose the same public-input type); only the x_hat Lagrange
+    // constants differ, per the branch's Step domain.
+    let step_statement = vec![WrapStepStatementSlot::Packed {
+        value: Fq::from(0u64),
+        num_bits: 255,
+    }];
+    // One x_hat Lagrange constant set per branch, built with the SAME helper
+    // the recursive shared-wrap path uses (so the base program's wrap matches
+    // jsoo's per-slot construction rather than a hand-rolled single pair).
+    let step_statement_lagranges: Vec<Vec<((Fq, Fq), (Fq, Fq))>> = step_verifiers
+        .iter()
+        .map(|svi| {
+            crate::recursive_step::step_statement_lagranges_for_domain(
+                svi.domain.log_size_of_group as u32,
+                &step_statement,
+            )
+        })
+        .collect();
+
+    // Proof-shaped values stay dummy (they are witness-only). Branch-zero's
+    // top-level Step VK fields keep the historical single-branch layout for
+    // `which_branch = 0`; the baked constants come from `branches`.
+    let svi0 = step_verifiers[0];
+    let generator = Vesta::generator().into_group().into_affine();
+    let point = (generator.x, generator.y);
+    let dummy_wrap_chals = {
+        let endo_wrap = <Pallas as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        let endo_step = <Vesta as KimchiCurve<FULL_ROUNDS>>::endos().1;
+        crate::dummy::pad_wrap_challenges::<Fq, Fp>(&[], endo_wrap, endo_step)
+    };
+    let wdata = WrapWitnessData {
+        which_branch: 0,
+        branches,
+        step_domain_log2: svi0.domain.log_size_of_group as u8,
+        step_vk_digest: svi0.digest::<VestaBase>(),
+        generic: co(&svi0.generic_comm.chunks[0]),
+        psm: co(&svi0.psm_comm.chunks[0]),
+        complete_add: co(&svi0.complete_add_comm.chunks[0]),
+        mul: co(&svi0.mul_comm.chunks[0]),
+        emul: co(&svi0.emul_comm.chunks[0]),
+        endomul_scalar: co(&svi0.endomul_scalar_comm.chunks[0]),
+        coefficients: svi0
+            .coefficients_comm
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_init: svi0.sigma_comm[..PERMUTS - 1]
+            .iter()
+            .map(|c| co(&c.chunks[0]))
+            .collect(),
+        sigma_last: vec![co(&svi0.sigma_comm[PERMUTS - 1].chunks[0])],
+        w_comm: vec![point; COLUMNS],
+        z_comm: point,
+        t_comm: vec![point; 7],
+        lr: vec![(point, point); crate::common::TICK_ROUNDS],
+        delta: point,
+        sg: point,
+        z1_repr: Fq::from(0u64),
+        z2_repr: Fq::from(0u64),
+        sg_olds: vec![],
+        unfinalized: vec![],
+        step_statement,
+        step_statement_lagranges,
+        h: (svi0.srs().h.x, svi0.srs().h.y),
+        new_acc_dummies: dummy_wrap_chals,
+    };
+    let circuit = WrapCircuit::<16, 40> { w: Some(wdata) };
+    let (_wrap_prover, wrap_verifier) = circuit
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
+        .unwrap();
+    wrap_verifier
+}
+
 pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     app: A,
     witness: A::Witness,

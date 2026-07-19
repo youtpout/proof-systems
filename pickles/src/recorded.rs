@@ -1611,6 +1611,73 @@ impl RecordedCompiledBase {
     }
 }
 
+/// Compile-only shared verification key for a non-recursive program (every
+/// branch has `proofs_verified == 0`). OCaml `Pickles.compile` gives such a
+/// program ONE width-0 wrap that bakes all branch Step domains/VKs, so the
+/// zkApp has a single canonical side-loaded verification key. The per-branch
+/// width-0 path instead builds one wrap per branch (each baking only its own
+/// domain), yielding a different VK per method; this routine produces the
+/// shared VK jsoo does.
+///
+/// Returns `(base64 VK data, Mina account-level hash)`. Proving over this
+/// program shape is not wired here — the compile-only zkApp milestone needs
+/// only the VK.
+pub fn compile_recorded_program_base_shared_vk(
+    branches: Vec<RecordedProgramBranch>,
+) -> Result<(String, String), RecordedProveError> {
+    use base64::prelude::*;
+    if branches.is_empty() {
+        return Err(RecordedProveError::Program(
+            "a program has at least one branch".into(),
+        ));
+    }
+    if branches.iter().any(|branch| branch.proofs_verified != 0) {
+        return Err(RecordedProveError::Program(
+            "shared width-0 VK requires every branch to be non-recursive".into(),
+        ));
+    }
+    // Compile each branch's Step circuit (the Step verifier index is all the
+    // shared wrap needs). `RecordedCompiledBase::compile` also builds a
+    // per-branch wrap we discard, but Step compilation dominates and the VK
+    // only depends on the Step verifier indexes.
+    let bases: Vec<RecordedCompiledBase> = branches
+        .into_iter()
+        .map(|branch| RecordedCompiledBase::compile(branch.circuit, branch.witness))
+        .collect::<Result<_, _>>()?;
+    let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = bases
+        .iter()
+        .map(|base| {
+            &base
+                .compiled
+                .step_indexes
+                .as_ref()
+                .expect("compiled Step indexes")
+                .1
+                .index
+        })
+        .collect();
+    let wrap_verifier = crate::api::build_shared_base_wrap(&step_verifiers);
+    // `step_domain_log2` is metadata only (never serialized into the VK); use
+    // the largest branch Step domain so it validates against TICK_ROUNDS.
+    let step_domain_log2 = step_verifiers
+        .iter()
+        .map(|svi| svi.domain.log_size_of_group as u8)
+        .max()
+        .expect("at least one branch");
+    let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+        step_domain_log2,
+        &wrap_verifier,
+    )
+    .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
+    let stable = key.to_stable_v2();
+    let base64 = BASE64_STANDARD.encode(
+        stable
+            .to_bin_prot()
+            .map_err(|err| RecordedProveError::Program(format!("VK encoding: {err:?}")))?,
+    );
+    Ok((base64, stable.mina_hash().to_string()))
+}
+
 /// Reusable indexes for the first N1 transition over a retained base proof.
 pub struct RecordedCompiledN1 {
     circuit: RecordedCircuit,
