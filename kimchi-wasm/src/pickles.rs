@@ -628,6 +628,13 @@ mod lazy_fft_probe {
     }
 }
 
+/// Runtime switch for the wasm batched-affine MSM dispatch (one-build
+/// A/B measurement + production kill-switch, like the lazy-FFT one).
+#[wasm_bindgen]
+pub fn rust_pickles_set_batch_affine_msm(enabled: bool) {
+    ark_ec::scalar_mul::variable_base::batch_affine::set_wasm_batch_affine_msm(enabled);
+}
+
 /// Kernel census: counters incremented inside the hot kernels (patched
 /// ark fork: MSM calls/points and FFT calls/sizes; mina-poseidon:
 /// permutations). Read after a real compile/prove to map where the
@@ -639,10 +646,12 @@ pub fn rust_pickles_kernel_census(reset: bool) -> String {
     use core::sync::atomic::Ordering::Relaxed;
     use mina_poseidon::permutation::wasm_stats as pos;
     let out = format!(
-        "{{\"poseidon_permutations\":{},\"msm_calls\":{},\"msm_points\":{},\"fft_calls\":{},\"fft_elems\":{},\"fft_work\":{}}}",
+        "{{\"poseidon_permutations\":{},\"msm_calls\":{},\"msm_points\":{},\"msm_calls_big\":{},\"msm_points_big\":{},\"fft_calls\":{},\"fft_elems\":{},\"fft_work\":{}}}",
         pos::PERMUTATIONS.load(Relaxed),
         msm::MSM_CALLS.load(Relaxed),
         msm::MSM_POINTS.load(Relaxed),
+        msm::MSM_CALLS_BIG.load(Relaxed),
+        msm::MSM_POINTS_BIG.load(Relaxed),
         fft::FFT_CALLS.load(Relaxed),
         fft::FFT_ELEMS.load(Relaxed),
         fft::FFT_WORK.load(Relaxed),
@@ -652,6 +661,8 @@ pub fn rust_pickles_kernel_census(reset: bool) -> String {
             &pos::PERMUTATIONS,
             &msm::MSM_CALLS,
             &msm::MSM_POINTS,
+            &msm::MSM_CALLS_BIG,
+            &msm::MSM_POINTS_BIG,
             &fft::FFT_CALLS,
             &fft::FFT_ELEMS,
             &fft::FFT_WORK,
@@ -749,7 +760,7 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
         // for Fp circuits) with 2^iters pseudo-random points and scalars.
         // Returns ms per MSM (reps sized for ~1s total); self-checked at
         // size 64 against the naive sum.
-        16 => {
+        16 | 17 => {
             use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
             use ark_ff::AdditiveGroup as _;
             use ark_ff::PrimeField as _;
@@ -779,19 +790,31 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
                 .zip(&scalars[..m])
                 .map(|(b, s)| b.mul_bigint(*s))
                 .sum::<mina_curves::pasta::ProjectiveVesta>();
+            use ark_ec::scalar_mul::variable_base::batch_affine::msm_bigint_batch_affine;
+            use mina_curves::pasta::curves::vesta::VestaParameters;
             return crate::rayon::run_in_pool(|| {
-                let got =
-                    mina_curves::pasta::ProjectiveVesta::msm_bigint(&bases[..m], &scalars[..m]);
+                let got = if mode == 16 {
+                    mina_curves::pasta::ProjectiveVesta::msm_bigint(&bases[..m], &scalars[..m])
+                } else {
+                    msm_bigint_batch_affine::<VestaParameters>(&bases[..m], &scalars[..m])
+                };
                 if got != want {
                     return -2.0;
                 }
                 let reps = ((1usize << 21) / n).max(1) as u32;
                 let t0 = js_sys::Date::now();
                 for _ in 0..reps {
-                    let out = mina_curves::pasta::ProjectiveVesta::msm_bigint(
-                        core::hint::black_box(&bases),
-                        core::hint::black_box(&scalars),
-                    );
+                    let out = if mode == 16 {
+                        mina_curves::pasta::ProjectiveVesta::msm_bigint(
+                            core::hint::black_box(&bases),
+                            core::hint::black_box(&scalars),
+                        )
+                    } else {
+                        msm_bigint_batch_affine::<VestaParameters>(
+                            core::hint::black_box(&bases),
+                            core::hint::black_box(&scalars),
+                        )
+                    };
                     core::hint::black_box(out);
                 }
                 (js_sys::Date::now() - t0) / reps as f64

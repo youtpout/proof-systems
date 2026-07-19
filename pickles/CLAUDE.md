@@ -5960,3 +5960,22 @@ recette Yrrid/Mitscha-Baude) ; v2 = GLV (impl GLVConfig pour pasta dans
 mina-curves : endo racine cubique, décomposition lattice). Rappel pièges :
 sondes DANS withThreadPool ; cp blob vers dist/node après build ;
 export temporaire rustPicklesBindings restauré (.bak) après usage.
+
+## #20 — MSM batch-affine : kernel −17,5 %, e2e −3 à −5 % proves wasm (2026-07-19)
+
+Kernel dans le fork ark-ec (batch_affine.rs) : arbres par bucket,
+additions affines, une inversion batch par niveau, cas dégénérés
+classifiés (tests différentiels auto-contenus sur master — corps local +
+courbe y²=x³+3 germée en (1,2), COEFF_B placebo car les formules a=0 ne
+le lisent pas). PIÈGES : dernier digit wnaf non recentré ⇒ 2^c buckets
+pleins ; v1 perdait tout dans la matérialisation des paires (~160 o/add)
+— in-place sûr par ordre des paires ; petites tailles dominées par le
+verrou dlmalloc ⇒ scratch par thread (map_init). Crossover : 2^13 +6 %,
+2^14 −13 %, 2^16 −17,5 % ⇒ seuil 2^14, override SW msm_bigint
+cfg(wasm32), interrupteur set_wasm_batch_affine_msm (défaut ON).
+Census v2 (classes de taille) : 67 % des points au-dessus du seuil.
+E2E : proves rust-wasm 3428/4494/5800 (−3 à −5 %), gates verts.
+SUITE : GLV (constantes d'endo pasta dans mina-curves, GLVConfig),
+fenêtres adaptées au coût affine. Rappel : cargo update après CHAQUE
+push du fork (une fois il a silencieusement gardé l'ancien rev — tail
+la sortie, vérifier le rev dans Cargo.lock).
