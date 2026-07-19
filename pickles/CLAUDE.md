@@ -5810,3 +5810,17 @@ compilation », chemin upstream intact ailleurs.
   micro-bench débit mul, puis noyau product-scanning i64x2.extmul sous
   cfg(target_feature = "simd128") dans la même branche. Arrêt si le
   micro-bench dit non-profitable (verdict à consigner).
+
+## #17 — SIMD128 : NON-PROFITABLE, clos chiffres en main (2026-07-19)
+
+Protocole en 3 étapes, arrêt au verdict (règle d'eddy) :
+flag +simd128 seul = rien ; micro-bench champ : wasm 44 ns/mul vs natif
+13,2 (3,3×), latence=débit ; sonde SIMD réelle (SOS extmul auto-vérifiée)
+= 316 ns/mul, 7× PIRE. Cause : le scalaire wasm fait déjà 1 produit
+32×32→64/instruction en registres ; la formulation SIMD paie splits
+lo/hi + trafic mémoire colonnes pour un plafond ~15 %. NE PAS retenter
+sous cette forme. Seule voie SIMD restante : batching vertical 2 lanes
+(exige sites d'appel appariés MSM/FFT = chirurgie d'API, à coupler à la
+représentation 29/30 bits si chantier lourd un jour).
+Outil pérenne : rust_pickles_bench_field_mul(iters, mode) dans le blob.
+Flag et sonde retirés (8b6cb0a689) ; tout consigné dans BENCHMARKS.md.
