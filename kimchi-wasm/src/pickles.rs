@@ -466,6 +466,57 @@ pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
     }
 }
 
+/// Seeds every SRS/Lagrange cache entry in ONE wasm call: entering the
+/// rayon pool costs ~200ms of worker coordination per call, so the per-entry
+/// bindings above are only a fallback. `entries_json` is
+/// `[{"curve": "vesta"|"pallas", "domainLog2": -1|n}, ...]` aligned with
+/// `payloads` (jsoo JSON bytes); SRS entries (`domainLog2 = -1`) must come
+/// first, exactly like the per-entry protocol. Returns the number of entries
+/// accepted (a malformed payload just means recomputation).
+#[wasm_bindgen]
+pub fn rust_pickles_seed_srs_cache_batch(
+    entries_json: String,
+    payloads: js_sys::Array,
+) -> Result<u32, JsError> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        curve: String,
+        #[serde(rename = "domainLog2")]
+        domain_log2: i32,
+    }
+    let entries: Vec<Entry> = serde_json::from_str(&entries_json)
+        .map_err(|err| JsError::new(&format!("invalid seed entries JSON: {err}")))?;
+    if entries.len() != payloads.length() as usize {
+        return Err(JsError::new("seed entries/payloads length mismatch"));
+    }
+    let payloads: Vec<Vec<u8>> = payloads
+        .iter()
+        .map(|value| js_sys::Uint8Array::new(&value).to_vec())
+        .collect();
+    Ok(crate::rayon::run_in_pool(move || {
+        let mut seeded = 0u32;
+        for (entry, bytes) in entries.iter().zip(&payloads) {
+            let ok = if entry.domain_log2 < 0 {
+                match entry.curve.as_str() {
+                    "vesta" => pickles::common::seed_tick_srs_jsoo(bytes),
+                    "pallas" => pickles::common::seed_tock_srs_jsoo(bytes),
+                    _ => false,
+                }
+            } else {
+                pickles::common::seed_lagrange_basis_jsoo(
+                    &entry.curve,
+                    entry.domain_log2 as u32,
+                    bytes,
+                )
+            };
+            if ok {
+                seeded += 1;
+            }
+        }
+        seeded
+    }))
+}
+
 /// Exports the process-global SRS as the jsoo cache payload for the JS host
 /// to persist through its `Cache` object (empty when the SRS has not been
 /// created yet).

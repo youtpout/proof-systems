@@ -154,24 +154,47 @@ enum JsooPointJson {
     Point { x: String, y: String },
 }
 
+/// Parses a decimal string into a field element without heap allocation.
+/// wasm's allocator takes a single global lock, so `BigUint`-based parsing
+/// SERIALIZES across the worker pool (measured: parallel decode 3x slower
+/// than serial); stack-only limb arithmetic keeps the fan-out real.
+/// Returns `None` on empty input, invalid digits, or values >= the modulus.
+fn field_from_decimal<F: ark_ff::PrimeField>(s: &str) -> Option<F> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut limbs = F::BigInt::default();
+    for byte in s.bytes() {
+        let digit = byte.wrapping_sub(b'0');
+        if digit > 9 {
+            return None;
+        }
+        // limbs = limbs * 10 + digit, rejecting overflow past the top limb.
+        let mut carry = digit as u128;
+        for limb in limbs.as_mut() {
+            let value = (*limb as u128) * 10 + carry;
+            *limb = value as u64;
+            carry = value >> 64;
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    F::from_bigint(limbs)
+}
+
 fn point_from_jsoo<G>(point: &JsooPointJson) -> Option<G>
 where
     G: poly_commitment::commitment::CommitmentCurve,
     G::BaseField: ark_ff::PrimeField,
 {
-    use ark_ff::PrimeField;
-    use std::str::FromStr as _;
     match point {
         JsooPointJson::Infinity(tag) => (tag == "Infinity").then(G::zero),
         JsooPointJson::Point { x, y } => {
-            let modulus: num_bigint::BigUint = <G::BaseField as PrimeField>::MODULUS.into();
-            let x = num_bigint::BigUint::from_str(x).ok()?;
-            let y = num_bigint::BigUint::from_str(y).ok()?;
-            if x >= modulus || y >= modulus {
-                return None;
-            }
+            let x = field_from_decimal::<G::BaseField>(x)?;
+            let y = field_from_decimal::<G::BaseField>(y)?;
             // Trusted local cache state: points load unvalidated, like jsoo's.
-            Some(G::of_coordinates(x.into(), y.into()))
+            Some(G::of_coordinates(x, y))
         }
     }
 }
