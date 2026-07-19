@@ -170,7 +170,7 @@ dependencies = [
 [[package]]
 name = "ark-ec"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "ahash",
  "ark-ff",
@@ -191,7 +191,7 @@ dependencies = [
 [[package]]
 name = "ark-ff"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "ark-ff-asm",
  "ark-ff-macros",
@@ -211,7 +211,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-asm"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "quote",
  "syn 2.0.100",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-macros"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "ark-poly"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "ahash",
  "ark-ff",
@@ -247,7 +247,7 @@ dependencies = [
 [[package]]
 name = "ark-serialize"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "ark-serialize-derive",
  "ark-std",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "ark-serialize-derive"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#de3923ebd7b84b08c911a25a3d4c403576f111d1"
+source = "git+https://github.com/youtpout/algebra?branch=wasm-mont-mul-32-v0.5#d4672bdc602032ef173823934271ac09dad5c459"
 dependencies = [
  "proc-macro2",
  "quote",

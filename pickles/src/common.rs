@@ -496,6 +496,50 @@ mod tests {
         check::<mina_curves::pasta::fields::FrConfig, 4>();
     }
 
+    /// The lazy-carry 29-bit module (wasm hot-kernel arithmetic) agrees
+    /// with the field on both pasta fields — mixed op chains + edges.
+    #[test]
+    fn lazy29_matches_field_on_pasta() {
+        use ark_ff::{lazy29, AdditiveGroup as _, Field as _};
+        fn check<T: ark_ff::MontConfig<4>>() {
+            type F<T> = ark_ff::Fp<ark_ff::MontBackend<T, 4>, 4>;
+            let entry = lazy29::entry_constant::<T>();
+            let y = F::<T>::from(0x9e3779b97f4a7c15u64);
+            // enter/exit contract: INTERNAL Montgomery representation
+            // (`.0`), not the value (`into_bigint()`).
+            let dy = lazy29::enter::<T>(&y.0, &entry);
+            let mut mirror = F::<T>::from(3u64);
+            let mut d = lazy29::enter::<T>(&mirror.0, &entry);
+            for step in 0..200 {
+                match step % 4 {
+                    0 => {
+                        mirror *= y;
+                        d = lazy29::mont_mul::<T>(&d, &dy);
+                    }
+                    1 => {
+                        mirror += y;
+                        d = lazy29::add::<T>(&d, &dy);
+                    }
+                    2 => {
+                        mirror -= y;
+                        d = lazy29::sub::<T>(&d, &dy);
+                    }
+                    _ => {
+                        mirror.square_in_place();
+                        d = lazy29::mont_mul::<T>(&d, &d.clone());
+                    }
+                }
+                assert_eq!(lazy29::exit::<T>(&d), mirror.0, "step {step}");
+            }
+            for v in [F::<T>::ZERO, F::<T>::ONE, -F::<T>::ONE] {
+                let d = lazy29::enter::<T>(&v.0, &entry);
+                assert_eq!(lazy29::exit::<T>(&d), v.0);
+            }
+        }
+        check::<mina_curves::pasta::fields::FqConfig>();
+        check::<mina_curves::pasta::fields::FrConfig>();
+    }
+
     /// `actual_wrap_domain_size` reproduces `Common.actual_wrap_domain_size`.
     #[test]
     fn actual_wrap_domain_size_matches_ocaml() {
