@@ -799,6 +799,15 @@ fn live_trace_to_console(message: &str) {
     crate::console_log(message);
 }
 
+/// Opt-in: routes live-trace phase checkpoints to the browser console.
+/// Off by default so proving stays silent; call once from JS to re-enable
+/// the kernel-census trace for a diagnostic run.
+#[wasm_bindgen]
+pub fn rust_pickles_debug_enable_console_trace() {
+    kimchi::live_trace::set_hook(live_trace_to_console);
+    kimchi::live_trace::set_clock(js_sys::Date::now);
+}
+
 /// One compiled shared-wrap program (OCaml `Pickles.compile` shape): every
 /// branch shares a single wrap index and canonical verification key.
 #[wasm_bindgen]
@@ -994,9 +1003,6 @@ pub fn rust_pickles_program_prove_n1_bytes(
     witness_bytes: &[u8],
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
-    kimchi::live_trace::set_hook(live_trace_to_console);
-    kimchi::live_trace::set_clock(js_sys::Date::now);
-    kimchi::live_trace::checkpoint("wasm: n1 entry");
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {
         program

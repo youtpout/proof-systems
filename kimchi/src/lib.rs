@@ -68,6 +68,14 @@ macro_rules! loc {
 /// returns, so hosts (kimchi-wasm) can install a console-backed hook to see
 /// prover phases in real time. No-op unless a hook is installed.
 pub mod live_trace {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Master switch: `checkpoint` is a single relaxed atomic load and an
+    /// early return until a hook or clock is installed. This keeps the ~19
+    /// prover checkpoints off the hot path (no mutex locks, no `String`
+    /// allocations) in the default proving build.
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
     static HOOK: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
     /// Recorded checkpoints, readable from another thread over the shared
     /// wasm memory while the main thread is blocked inside a call.
@@ -84,10 +92,12 @@ pub mod live_trace {
 
     pub fn set_hook(hook: fn(&str)) {
         *HOOK.lock().unwrap() = Some(hook);
+        ENABLED.store(true, Ordering::Relaxed);
     }
 
     pub fn set_clock(clock: fn() -> f64) {
         *CLOCK.lock().unwrap() = Some(clock);
+        ENABLED.store(true, Ordering::Relaxed);
     }
 
     /// Drains the accumulated per-phase wall times: (phase, total ms, count).
@@ -125,6 +135,10 @@ pub mod live_trace {
     }
 
     pub fn checkpoint(name: &str) {
+        // Hot-path fast exit: nothing installed -> no locks, no allocation.
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
         mark_phase(name);
         if let Ok(mut record) = RECORD.lock() {
             record.push(name.to_string());
