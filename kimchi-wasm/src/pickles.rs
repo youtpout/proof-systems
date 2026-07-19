@@ -489,6 +489,29 @@ pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: 
     }
 }
 
+/// Seeds the process-global SRS from a raw disk-cache payload — MUST run
+/// before any Lagrange seeding or compile (those create the SRS if absent,
+/// which is the expensive serial group map in wasm).
+#[wasm_bindgen]
+pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
+    match curve.as_str() {
+        "vesta" => pickles::common::seed_tick_srs_raw(bytes),
+        "pallas" => pickles::common::seed_tock_srs_raw(bytes),
+        _ => false,
+    }
+}
+
+/// Exports the process-global SRS raw payload for the JS host to persist
+/// (empty when the SRS has not been created yet).
+#[wasm_bindgen]
+pub fn rust_pickles_export_srs(curve: String) -> Vec<u8> {
+    match curve.as_str() {
+        "vesta" => pickles::common::export_tick_srs_raw().unwrap_or_default(),
+        "pallas" => pickles::common::export_tock_srs_raw().unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Exports a computed Lagrange basis as the same rmp encoding, so the JS host
 /// can persist it for the next process. Returns an empty vector if the basis
 /// is not (yet) in the cache.

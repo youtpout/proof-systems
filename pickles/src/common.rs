@@ -25,8 +25,10 @@ pub const TOCK_ROUNDS: usize = 15;
 /// `SnarkyCircuit` passes the circuit domain size here. That domain can be
 /// smaller than Mina's fixed proof SRS (for example the 512-row base Step
 /// circuit), so it must not be used as the SRS size or asserted to equal it.
+static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
+static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
+
 pub fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
-    static TICK_SRS: OnceLock<Arc<SRS<Vesta>>> = OnceLock::new();
     // wasm32: the ~1<<16 serial group maps dominate the first compile, and the
     // one compile call sits alone in the worker pool, so parallel creation is
     // a pure win. Native keeps the serial create: many tests hit this
@@ -41,13 +43,95 @@ pub fn tick_srs(_domain_size: usize) -> Arc<SRS<Vesta>> {
 
 /// Returns Mina's full Tock SRS independently of the circuit domain size.
 pub fn tock_srs(_domain_size: usize) -> Arc<SRS<Pallas>> {
-    static TOCK_SRS: OnceLock<Arc<SRS<Pallas>>> = OnceLock::new();
     // See `tick_srs` for the wasm32/native split rationale.
     #[cfg(target_arch = "wasm32")]
     let create = || Arc::new(SRS::<Pallas>::create_parallel(1 << TOCK_ROUNDS));
     #[cfg(not(target_arch = "wasm32"))]
     let create = || Arc::new(SRS::<Pallas>::create(1 << TOCK_ROUNDS));
     TOCK_SRS.get_or_init(create).clone()
+}
+
+/// Raw SRS cache format: `SRS2` magic, u64-LE point count, the blinding
+/// point `h`, then the `g` vector — uncompressed, unvalidated points (the
+/// jsoo-parity disk cache: jsoo persists its SRS too).
+pub const SRS_RAW_MAGIC: [u8; 4] = *b"SRS2";
+
+fn encode_srs_raw<G>(g: &[G], h: &G) -> Option<Vec<u8>>
+where
+    G: ark_serialize::CanonicalSerialize,
+{
+    let point_size = h.uncompressed_size();
+    let mut out = Vec::with_capacity(12 + (g.len() + 1) * point_size);
+    out.extend_from_slice(&SRS_RAW_MAGIC);
+    out.extend_from_slice(&(g.len() as u64).to_le_bytes());
+    h.serialize_uncompressed(&mut out).ok()?;
+    for point in g {
+        point.serialize_uncompressed(&mut out).ok()?;
+    }
+    Some(out)
+}
+
+fn decode_srs_raw<G>(bytes: &[u8]) -> Option<(Vec<G>, G)>
+where
+    G: ark_serialize::CanonicalDeserialize + Send,
+{
+    use rayon::prelude::*;
+    if bytes.len() < 12 || bytes[..4] != SRS_RAW_MAGIC {
+        return None;
+    }
+    let count = u64::from_le_bytes(bytes[4..12].try_into().ok()?) as usize;
+    let body = &bytes[12..];
+    if count == 0 || body.is_empty() || body.len() % (count + 1) != 0 {
+        return None;
+    }
+    let point_size = body.len() / (count + 1);
+    let h = G::deserialize_uncompressed_unchecked(&body[..point_size]).ok()?;
+    let g: Option<Vec<G>> = body[point_size..]
+        .par_chunks_exact(point_size)
+        .map(|chunk| G::deserialize_uncompressed_unchecked(chunk).ok())
+        .collect();
+    Some((g?, h))
+}
+
+/// Seeds the process-global Tick SRS from a raw cache payload. Returns
+/// `false` (and leaves any existing SRS untouched) on a malformed payload.
+pub fn seed_tick_srs_raw(bytes: &[u8]) -> bool {
+    if TICK_SRS.get().is_some() {
+        return true;
+    }
+    match decode_srs_raw::<Vesta>(bytes) {
+        Some((g, h)) if g.len() == 1 << TICK_ROUNDS => {
+            let _ = TICK_SRS.set(Arc::new(SRS::new(g, h)));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Seeds the process-global Tock SRS from a raw cache payload.
+pub fn seed_tock_srs_raw(bytes: &[u8]) -> bool {
+    if TOCK_SRS.get().is_some() {
+        return true;
+    }
+    match decode_srs_raw::<Pallas>(bytes) {
+        Some((g, h)) if g.len() == 1 << TOCK_ROUNDS => {
+            let _ = TOCK_SRS.set(Arc::new(SRS::new(g, h)));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Exports the Tick SRS raw cache payload, when the SRS exists.
+pub fn export_tick_srs_raw() -> Option<Vec<u8>> {
+    let srs = TICK_SRS.get()?;
+    encode_srs_raw(&srs.g, &srs.h)
+}
+
+/// Exports the Tock SRS raw cache payload, when the SRS exists.
+pub fn export_tock_srs_raw() -> Option<Vec<u8>> {
+    let srs = TOCK_SRS.get()?;
+    encode_srs_raw(&srs.g, &srs.h)
 }
 
 /// The Poseidon full-rounds constant shared with the snarky crate.
