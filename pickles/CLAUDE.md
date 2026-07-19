@@ -5647,3 +5647,36 @@ RecordedCompiledProgram : exports napi+wasm (program_cache_key,
 program_cache_bytes, compile_program_from_cache_bytes), sérialisation
 des index (rmp comme le blob template), branchement o1js dans
 compileRecordedProgram avec le Cache o1js standard.
+
+## ✅ #12 CŒUR RUST LANDÉ (8c5f980543) — cache clés prover : warm 0,5-0,9 s natif
+
+`RecordedCompiledProgram::{cache_key, to_cache_bytes, from_cache_bytes}` :
+payload = index VÉRIFIEURS seulement (step par branche + wrap, rmp,
+fixup via template_dummy::fixup_vi rendu pub(crate)) ; restore =
+resynthèse via le MÊME flux single-pass (valeurs DONOR — impératif :
+from_cached_verifier compare les domaines, et la resynthèse doit être
+byte-identique au compile → utiliser structure_vk du donor synthétique,
+PAS la vraie clé wrap) + ProverIndex::create(lazy) (column evals
+différées au premier prove) + verifier CACHÉ attaché (zéro MSM).
+snarky::ProverIndexWrapper::from_cached_verifier. Mesures natives :
+bench 5,6→0,54 s, sideloaded 5,3→0,85 s, w1 4,5→0,90 s, VK identiques ;
+test prove+verify après restore dans la suite (23/23).
+⚠ v1 ProverIndex-payload = 683 MB (column_evaluations sérialisées) —
+NE PAS revenir à la sérialisation du prover index.
+
+### RESTE #12 — branchement o1js (mécanique)
+1. kimchi-wasm/src/pickles.rs (modèle base ~330-360) :
+   rust_pickles_recorded_program_cache_key(branches_json),
+   rust_pickles_recorded_program_cache_bytes(&WasmRecordedProgram),
+   rust_pickles_compile_recorded_program_from_cache_bytes(branches_json,
+   bytes) (run_in_pool).
+2. mina-rust backend.rs : ops équivalentes dans l'enum BackendRequest
+   (compile_program_from_cache / program_cache_bytes / program_cache_key)
+   + napi passthrough.
+3. o1js compileRecordedProgram (rust-pickles-recorded.ts ~1500s) : autour
+   du compile partagé — cache_key → cache.read (kind 'step-pk'-like
+   header custom persistentId=programCacheKey) → hit :
+   from_cache_bytes ; miss : compile puis cache_bytes → cache.write.
+   Brancher les DEUX chemins (wasm bindings + minaRuntime). Puis mesurer
+   warm wasm (attendu ≪ jsoo 6 s) via BENCH_CACHE=default
+   tmp-bench-wasm.ts, et valider VkParity+zkapp-rust inchangés.
