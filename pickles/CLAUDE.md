@@ -5790,3 +5790,23 @@ Baseline versionnée : zkapp-rust/contracts/BENCHMARKS.md (froid + chaud,
 - Levier majeur restant (prove wasm 2× natif) : backend de corps wasm
   (limbs 32 bits ± SIMD128 ; build actuel SANS +simd128, ark-ff 0.5
   vanilla, wasm-opt -O4 web seulement — vérifier le blob node).
+
+## #16 — Montgomery 32 bits wasm (fork youtpout/algebra) (2026-07-19)
+
+Patch DÉPLACÉ du vendor/ (erreur : fork ~/Projects/algebra existait) vers
+le fork : branche `wasm-mont-mul-32-v0.5` (tag v0.5.0 + patch, consommée
+par [patch.crates-io] de proof-systems — TOUTE la famille ark doit venir
+du même git sinon deux instances de traits) ; branche `wasm-mont-mul-32`
+(master 0.6-pre + test différentiel local NoCarry255) = candidate PR
+upstream arkworks. cfg(target_arch = "wasm32") = le « mot-clé de
+compilation », chemin upstream intact ailleurs.
+- Gain e2e : −5-8 % proves wasm (smokes dos-à-dos), bruit machine ±5-10 %
+  du même ordre — voir BENCHMARKS.md. VK/preuves inchangées, gates verts.
+- PIÈGES BUILD : (1) sans #[inline(always)] sur la routine, l'inlining
+  LTO bascule ±10 % selon la provenance path/git des crates (sources
+  identiques !) ; (2) codegen-units=1 : PIRE, reverté ; (3) l'addon natif
+  mina_runtime se construit depuis le SUBMODULE o1js/src/mina-rust.
+- Prochain (#17, demandé par eddy) : SIMD128 — flag seul d'abord (mesuré),
+  micro-bench débit mul, puis noyau product-scanning i64x2.extmul sous
+  cfg(target_feature = "simd128") dans la même branche. Arrêt si le
+  micro-bench dit non-profitable (verdict à consigner).
