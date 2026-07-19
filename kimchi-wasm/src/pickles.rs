@@ -449,9 +449,7 @@ pub fn rust_pickles_recorded_base_vk_envelope(
 /// false on any mismatch (the basis is then recomputed on demand).
 #[wasm_bindgen]
 pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: &[u8]) -> bool {
-    // The decimal decode fans out in rayon — enter the pool, like the other
-    // parallel entry points (a bare call runs it serially on this worker).
-    crate::rayon::run_in_pool(|| pickles::common::seed_lagrange_basis_jsoo(&curve, domain_log2, bytes))
+    pickles::common::seed_lagrange_basis_jsoo(&curve, domain_log2, bytes)
 }
 
 /// Seeds the process-global SRS from an o1js `Cache` entry payload
@@ -461,11 +459,11 @@ pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: 
 /// group map in wasm).
 #[wasm_bindgen]
 pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
-    crate::rayon::run_in_pool(|| match curve.as_str() {
+    match curve.as_str() {
         "vesta" => pickles::common::seed_tick_srs_jsoo(bytes),
         "pallas" => pickles::common::seed_tock_srs_jsoo(bytes),
         _ => false,
-    })
+    }
 }
 
 /// Exports the process-global SRS as the jsoo cache payload for the JS host
@@ -473,11 +471,11 @@ pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
 /// created yet).
 #[wasm_bindgen]
 pub fn rust_pickles_export_srs(curve: String) -> Vec<u8> {
-    crate::rayon::run_in_pool(|| match curve.as_str() {
+    match curve.as_str() {
         "vesta" => pickles::common::export_tick_srs_jsoo().unwrap_or_default(),
         "pallas" => pickles::common::export_tock_srs_jsoo().unwrap_or_default(),
         _ => Vec::new(),
-    })
+    }
 }
 
 /// Exports a computed Lagrange basis as the jsoo cache payload, so the JS
