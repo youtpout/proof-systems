@@ -5992,3 +5992,21 @@ idéal : forte intensité, tableaux d8, conversions amorties sur des
 dizaines d'ops/élément) ; 2) GLV ; 3) décomposer create_aggregated_ipa
 (folding vectoriel vs MSMs). Roots-cache FFT rétrogradé (0,55 s
 visibles).
+
+## #22 — backend rust-wasm en NAVIGATEUR : opérationnel (2026-07-19)
+
+o1js : build:wasm:web:rust (make build-web de proof-systems, target web,
+blob commun caml_*+rust_pickles_* comme node) ; build-web.js stubbe les
+imports node du bundle web (PIÈGES : esbuild inline les imports
+dynamiques EAGERLY → le top-level de native.js exécute createRequire →
+le stub doit RETOURNER une fonction qui ne lève qu'à l'appel ;
+node:fs/node:module en scheme non géré par webpack → stubs esbuild, pas
+external) ; web-backend.js : mémoire initiale 20→32 pages (blob rust en
+déclare 24). UIs : zkapp-rust/ui-rust (3010) + ui-jsoo (3020, npm
+2.15.0), même code, workers comlink, COOP/COEP. RÉSULTAT : chaîne
+récursive complète en navigateur — compile 17,1 s, init 6,0 s, update
+7,5 s, merge 9,3 s, VK == npm 2.15 (10959…5723), 5+6=11 ✓. jsoo npm :
+update BLOQUÉ >8 min dans le Chromium embarqué (récursion ; retester
+Chrome normal). Autres pièges : cache .next rassis après changement de
+dist (rm -rf .next + restart) ; pkill -f matche sa propre commande
+(fuser -k PORT/tcp) ; les 43 Mo de chunk worker = dev non minifié.
