@@ -196,11 +196,14 @@ where
     G: poly_commitment::commitment::CommitmentCurve,
     G::BaseField: ark_ff::PrimeField,
 {
-    // jsoo's `caml_srs_get` payload: `[h, ...g]`.
+    use rayon::prelude::*;
+    // jsoo's `caml_srs_get` payload: `[h, ...g]`. The JSON parse is fast;
+    // the decimal-string -> field conversions dominate, so they run in
+    // parallel (the wasm host seeds inside the worker pool).
     let points: Vec<JsooPointJson> = serde_json::from_slice(bytes).ok()?;
-    let mut iter = points.iter();
-    let h = point_from_jsoo(iter.next()?)?;
-    let g: Option<Vec<G>> = iter.map(point_from_jsoo).collect();
+    let (h_point, g_points) = points.split_first()?;
+    let h = point_from_jsoo(h_point)?;
+    let g: Option<Vec<G>> = g_points.par_iter().map(point_from_jsoo).collect();
     Some((g?, h))
 }
 
@@ -273,12 +276,13 @@ where
     G: poly_commitment::commitment::CommitmentCurve,
     G::BaseField: ark_ff::PrimeField,
 {
+    use rayon::prelude::*;
     let comms: Vec<JsooCommJson> = serde_json::from_slice(bytes).ok()?;
     if comms.len() != expected_len {
         return None;
     }
     comms
-        .iter()
+        .par_iter()
         .map(|comm| {
             let chunks: Option<Vec<G>> = comm.shifted.iter().map(point_from_jsoo).collect();
             Some(poly_commitment::commitment::PolyComm { chunks: chunks? })
