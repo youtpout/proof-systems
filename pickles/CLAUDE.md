@@ -5934,3 +5934,29 @@ survit au parallélisme = kernels à FORTE intensité arithmétique :
 large ; recette Yrrid : GLV, digits signés, batch-affine).
 Sondes : fft-probe3/fft-crossover.mjs (scratchpad session) — schéma :
 import withThreadPool + setNumberOfWorkers AVANT rustPicklesBindings.
+
+## Recensement kernels (2026-07-19) — Poseidon abandonné, cap sur MSM (#20)
+
+Compteurs wasm (fork ec/poly + mina-poseidon, binding
+rust_pickles_kernel_census) sur le bench chaud rust-wasm complet :
+Poseidon 7 594 permutations ≈ 0,42 s (~2,5 % — kernel SANS intérêt e2e,
+verdict mesuré, mode 15 = 56 µs/permutation) ; MSM 500 appels /
+3,80 M points (~35 %) ; FFT 584 appels / 33,6 M éléments (~25 %,
+lazy exclu). #20 = kernel MSM dans le fork ark-ec sous cfg(wasm32) :
+GLV racine-cubique (pasta), digits signés, batch-affine (Aztec) ;
+lazy29 pour les coordonnées seulement si l'intensité arithmétique le
+justifie (leçon FFT : parallèle + faible intensité ⇒ borné mémoire).
+Piste FFT classique restante : cache de racines par domaine
+(~17 M muls/run recalculées). Sonde baseline MSM = mode 16.
+
+## #20 — sonde baseline MSM posée (2026-07-19)
+
+Mode 16 (iters = log2 n, Vesta/Fp, self-check somme naïve, run_in_pool) :
+2751/2103/1602 ns/point à 2^12/2^14/2^16, pool 31 threads. ark 0.5 fait
+DÉJÀ wnaf signé (msm_bigint_wnaf via NEGATION_IS_CHEAP). Chantier v1 =
+batch-affine buckets sous cfg(wasm32) dans le fork ark-ec (inversion
+amortie Montgomery-batch, ordonnanceur anti-collision — cœur de la
+recette Yrrid/Mitscha-Baude) ; v2 = GLV (impl GLVConfig pour pasta dans
+mina-curves : endo racine cubique, décomposition lattice). Rappel pièges :
+sondes DANS withThreadPool ; cp blob vers dist/node après build ;
+export temporaire rustPicklesBindings restauré (.bak) après usage.

@@ -52,6 +52,14 @@ fn apply_mds_matrix<F: Field, SC: SpongeConstants>(
 /// - Add the round constants to the state.
 ///
 /// The function has side-effect and the parameter state is modified.
+/// wasm32 kernel census: permutation counter read by measurement
+/// harnesses (kimchi-wasm bench bindings).
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_stats {
+    use core::sync::atomic::AtomicU64;
+    pub static PERMUTATIONS: AtomicU64 = AtomicU64::new(0);
+}
+
 pub fn full_round<F: Field, SC: SpongeConstants, const FULL_ROUNDS: usize>(
     params: &ArithmeticSpongeParams<F, FULL_ROUNDS>,
     state: &mut [F],
@@ -138,6 +146,8 @@ pub fn poseidon_block_cipher<F: Field, SC: SpongeConstants, const FULL_ROUNDS: u
     params: &ArithmeticSpongeParams<F, FULL_ROUNDS>,
     state: &mut [F],
 ) {
+    #[cfg(target_arch = "wasm32")]
+    wasm_stats::PERMUTATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     assert_eq!(state.len(), SC::SPONGE_WIDTH);
 
     if SC::PERM_HALF_ROUNDS_FULL == 0 {

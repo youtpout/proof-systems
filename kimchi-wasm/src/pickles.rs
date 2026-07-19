@@ -628,6 +628,40 @@ mod lazy_fft_probe {
     }
 }
 
+/// Kernel census: counters incremented inside the hot kernels (patched
+/// ark fork: MSM calls/points and FFT calls/sizes; mina-poseidon:
+/// permutations). Read after a real compile/prove to map where the
+/// multiplications go. `reset` zeroes the counters after reading.
+#[wasm_bindgen]
+pub fn rust_pickles_kernel_census(reset: bool) -> String {
+    use ark_ec::scalar_mul::variable_base::wasm_stats as msm;
+    use ark_poly::domain::radix2::wasm_stats as fft;
+    use core::sync::atomic::Ordering::Relaxed;
+    use mina_poseidon::permutation::wasm_stats as pos;
+    let out = format!(
+        "{{\"poseidon_permutations\":{},\"msm_calls\":{},\"msm_points\":{},\"fft_calls\":{},\"fft_elems\":{},\"fft_work\":{}}}",
+        pos::PERMUTATIONS.load(Relaxed),
+        msm::MSM_CALLS.load(Relaxed),
+        msm::MSM_POINTS.load(Relaxed),
+        fft::FFT_CALLS.load(Relaxed),
+        fft::FFT_ELEMS.load(Relaxed),
+        fft::FFT_WORK.load(Relaxed),
+    );
+    if reset {
+        for c in [
+            &pos::PERMUTATIONS,
+            &msm::MSM_CALLS,
+            &msm::MSM_POINTS,
+            &fft::FFT_CALLS,
+            &fft::FFT_ELEMS,
+            &fft::FFT_WORK,
+        ] {
+            c.store(0, Relaxed);
+        }
+    }
+    out
+}
+
 /// Runtime switch for the ark-poly wasm lazy-carry FFT dispatch
 /// (measurement harnesses compare both paths in one build; also a
 /// production kill-switch).
@@ -707,6 +741,80 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
             let elapsed = js_sys::Date::now() - t0;
             let sink = core::hint::black_box((a, b, c, d));
             if lz::to_u64x4(&sink.0) == [0u64; 4] {
+                return -1.0;
+            }
+            return elapsed;
+        }
+        // MSM baseline micro-bench: ark msm_bigint on Vesta (the SRS curve
+        // for Fp circuits) with 2^iters pseudo-random points and scalars.
+        // Returns ms per MSM (reps sized for ~1s total); self-checked at
+        // size 64 against the naive sum.
+        16 => {
+            use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
+            use ark_ff::AdditiveGroup as _;
+            use ark_ff::PrimeField as _;
+            use mina_curves::pasta::Vesta;
+            let n = 1usize << iters.min(18);
+            let mut acc = Vesta::generator().into_group();
+            let step = acc.double();
+            let mut proj = Vec::with_capacity(n);
+            for _ in 0..n {
+                proj.push(acc);
+                acc += step;
+                acc.double_in_place();
+            }
+            let bases = ark_ec::CurveGroup::normalize_batch(&proj);
+            let mut sc = Fp::one() + y;
+            let scalars: Vec<_> = (0..n)
+                .map(|_| {
+                    sc.square_in_place();
+                    sc += y;
+                    sc.into_bigint()
+                })
+                .collect();
+            // Self-check on a small prefix.
+            let m = 64.min(n);
+            let want = bases[..m]
+                .iter()
+                .zip(&scalars[..m])
+                .map(|(b, s)| b.mul_bigint(*s))
+                .sum::<mina_curves::pasta::ProjectiveVesta>();
+            return crate::rayon::run_in_pool(|| {
+                let got =
+                    mina_curves::pasta::ProjectiveVesta::msm_bigint(&bases[..m], &scalars[..m]);
+                if got != want {
+                    return -2.0;
+                }
+                let reps = ((1usize << 21) / n).max(1) as u32;
+                let t0 = js_sys::Date::now();
+                for _ in 0..reps {
+                    let out = mina_curves::pasta::ProjectiveVesta::msm_bigint(
+                        core::hint::black_box(&bases),
+                        core::hint::black_box(&scalars),
+                    );
+                    core::hint::black_box(out);
+                }
+                (js_sys::Date::now() - t0) / reps as f64
+            });
+        }
+        // Poseidon permutation micro-bench (kimchi constants, pasta Fp):
+        // ms total for `iters` permutations.
+        15 => {
+            use mina_poseidon::{
+                constants::PlonkSpongeConstantsKimchi, pasta::FULL_ROUNDS,
+                permutation::poseidon_block_cipher,
+            };
+            let params = mina_poseidon::pasta::fp_kimchi::static_params();
+            let mut state = vec![Fp::one() + y, y, Fp::one()];
+            let t0 = js_sys::Date::now();
+            for _ in 0..iters {
+                poseidon_block_cipher::<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>(
+                    params,
+                    core::hint::black_box(&mut state),
+                );
+            }
+            let elapsed = js_sys::Date::now() - t0;
+            if core::hint::black_box(&state)[0] == Fp::one() {
                 return -1.0;
             }
             return elapsed;
