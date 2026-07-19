@@ -656,6 +656,15 @@ pub fn rust_pickles_kernel_census(reset: bool) -> String {
         fft::FFT_ELEMS.load(Relaxed),
         fft::FFT_WORK.load(Relaxed),
     );
+    // Splice the prover phase wall-times (live_trace clock) into the JSON.
+    let phases = kimchi::live_trace::take_phase_times();
+    let items: Vec<String> = phases
+        .iter()
+        .map(|(n, ms, c)| format!("\"{}\":[{:.1},{}]", n, ms, c))
+        .collect();
+    let mut out = out;
+    out.truncate(out.len() - 1);
+    out.push_str(&format!(",\"phases\":{{{}}}}}", items.join(",")));
     if reset {
         for c in [
             &pos::PERMUTATIONS,
@@ -1303,6 +1312,7 @@ pub fn rust_pickles_program_prove_n1_bytes(
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
     kimchi::live_trace::set_hook(live_trace_to_console);
+    kimchi::live_trace::set_clock(js_sys::Date::now);
     kimchi::live_trace::checkpoint("wasm: n1 entry");
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
     let handle = crate::rayon::run_in_pool(|| {

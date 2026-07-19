@@ -5979,3 +5979,16 @@ SUITE : GLV (constantes d'endo pasta dans mina-curves, GLVConfig),
 fenêtres adaptées au coût affine. Rappel : cargo update après CHAQUE
 push du fork (une fois il a silencieusement gardé l'ancien rev — tail
 la sortie, vérifier le rev dans Cargo.lock).
+
+## Recensement v3 — chronos de phase (2026-07-19)
+
+live_trace gagne set_clock/take_phase_times (intervalle attribué au
+checkpoint OUVRANT ; `_done` ferme sans ouvrir) ; census expose
+"phases". Run chaud rust-wasm : IPA 2,84 s / QUOTIENT 2,51 s / commits
+témoins 1,73 s / witness gen 1,23 s / FFT témoins 0,55 s (sur ~9,8 s
+instrumentées, ~4,3 s hors chronos — wrap sous-instrumenté, 4 counts
+pour 3 proves : à éclaircir). STEERING : 1) quotient en lazy29 (profil
+idéal : forte intensité, tableaux d8, conversions amorties sur des
+dizaines d'ops/élément) ; 2) GLV ; 3) décomposer create_aggregated_ipa
+(folding vectoriel vs MSMs). Roots-cache FFT rétrogradé (0,55 s
+visibles).

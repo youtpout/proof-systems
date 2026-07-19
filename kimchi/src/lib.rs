@@ -73,11 +73,59 @@ pub mod live_trace {
     /// wasm memory while the main thread is blocked inside a call.
     static RECORD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+    /// Host-installed wall clock in milliseconds (js Date.now on wasm).
+    /// While installed, the time between two consecutive checkpoints is
+    /// accumulated under the FIRST one's name — phase profiling for free
+    /// from the existing checkpoint markers. A name ending in `_done`
+    /// closes the last interval without opening one.
+    static CLOCK: std::sync::Mutex<Option<fn() -> f64>> = std::sync::Mutex::new(None);
+    static LAST_MARK: std::sync::Mutex<Option<(String, f64)>> = std::sync::Mutex::new(None);
+    static PHASE_MS: std::sync::Mutex<Vec<(String, f64, u32)>> = std::sync::Mutex::new(Vec::new());
+
     pub fn set_hook(hook: fn(&str)) {
         *HOOK.lock().unwrap() = Some(hook);
     }
 
+    pub fn set_clock(clock: fn() -> f64) {
+        *CLOCK.lock().unwrap() = Some(clock);
+    }
+
+    /// Drains the accumulated per-phase wall times: (phase, total ms, count).
+    pub fn take_phase_times() -> Vec<(String, f64, u32)> {
+        PHASE_MS
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    fn mark_phase(name: &str) {
+        let now = match CLOCK.lock().ok().and_then(|c| *c) {
+            Some(clock) => clock(),
+            None => return,
+        };
+        let closing = name.ends_with("_done");
+        let prev = match LAST_MARK.lock() {
+            Ok(mut last) => last.replace((name.to_string(), now)).map(|(n, t)| {
+                if closing {
+                    *last = None;
+                }
+                (n, now - t)
+            }),
+            Err(_) => return,
+        };
+        if let (Some((prev_name, dt)), Ok(mut acc)) = (prev, PHASE_MS.lock()) {
+            match acc.iter_mut().find(|(n, _, _)| *n == prev_name) {
+                Some((_, total, count)) => {
+                    *total += dt;
+                    *count += 1;
+                },
+                None => acc.push((prev_name, dt, 1)),
+            }
+        }
+    }
+
     pub fn checkpoint(name: &str) {
+        mark_phase(name);
         if let Ok(mut record) = RECORD.lock() {
             record.push(name.to_string());
             if record.len() > 512 {
