@@ -5700,3 +5700,20 @@ Commits : proof-systems 9979f35d23, o1js 839bce8ee.
    branchement o1js du chemin useMinaRuntimeBackend (le wasm est fait).
 3. Le premier PROVE après restore paie la matérialisation lazy des
    column evaluations (~1-2 s par index) — mesurer et documenter.
+
+## ✅✅ #12 TERMINÉ — cache iso-jsoo sur LES DEUX backends, plus rapide que jsoo
+
+- Chemin natif (minaRuntime) : CompileProgramRequest transporte le
+  payload de cache (restore avec repli silencieux) + le renvoie sur
+  demande ; op ProgramCacheKey. o1js branche via le Cache standard
+  (mina-rust e0874da7, o1js …).
+- Cache SRS brut (parité jsoo) : codec SRS2 (h + g uncompressed, décode
+  parallèle non-validé), seed/export (`rust_pickles_seed_srs/export_srs`),
+  fichiers `srs-{curve}-{n}.v2.bin` dans ~/.cache/pickles-rs, seedés
+  AVANT tout lagrange (proof-systems 2a18eef5d2).
+- Mesures warm (bench 3 méthodes, VK identiques partout) :
+  natif 4,7 s • wasm 4,5 s • jsoo 5,5 s → rust warm < jsoo warm ✓.
+- Garde-fous : recorded 23/23, triple FULL MATCH gates, VkParity 3/3.
+Reste (mineur) : premier prove après restore paie la matérialisation
+lazy des column evaluations (~1-2 s/index) ; prove side-loaded réel
+toujours à câbler (compile/VK ok).
