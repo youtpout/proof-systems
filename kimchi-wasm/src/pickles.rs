@@ -466,228 +466,36 @@ pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
     }
 }
 
-/// Lazy-carry probe (bench mode 6): Montgomery multiplication for pasta
-/// Fp in NINE 29-BIT LIMBS. Products are < 2^58, so a u64 column can
-/// absorb the whole multiplication's 18 products WITHOUT propagating
-/// carries — the inner loop has no dependency chain (the 32-bit CIOS
-/// spends most of its time waiting on serial carries). One carry per
-/// round, one propagation pass at the end. This is the ZPRIZE-style
-/// design; the probe measures the kernel before any integration debate.
-#[cfg(target_arch = "wasm32")]
-mod lazy29_probe {
-    /// Pasta Fp modulus in 29-bit little-endian limbs.
-    pub const P29: [u64; 9] = [
-        0x1, 0x9698768, 0x133e46e6, 0xd31f812, 0x224, 0, 0, 0, 0x400000,
-    ];
-    /// -p^{-1} mod 2^29.
-    const INV29: u64 = 0x1fff_ffff;
-    const MASK29: u64 = (1 << 29) - 1;
-
-    /// `a * b * 2^-261 mod p`, limbs < 2^29 in, limbs < 2^29 out.
-    #[inline(always)]
-    pub fn mont_mul(a: &[u64; 9], b: &[u64; 9]) -> [u64; 9] {
-        let mut t = [0u64; 9];
-        for i in 0..9 {
-            let ai = a[i];
-            // Column 0 of this round: resolve m and its exact carry.
-            let t0 = t[0] + ai * b[0];
-            let m = ((t0 & MASK29) * INV29) & MASK29;
-            let c = (t0 + m * P29[0]) >> 29;
-            // Everything else: TWO mul-adds per column, no carries.
-            t[0] = t[1] + ai * b[1] + m * P29[1] + c;
-            t[1] = t[2] + ai * b[2] + m * P29[2];
-            t[2] = t[3] + ai * b[3] + m * P29[3];
-            t[3] = t[4] + ai * b[4] + m * P29[4];
-            t[4] = t[5] + ai * b[5] + m * P29[5];
-            t[5] = t[6] + ai * b[6] + m * P29[6];
-            t[6] = t[7] + ai * b[7] + m * P29[7];
-            t[7] = t[8] + ai * b[8] + m * P29[8];
-            t[8] = 0;
-        }
-        // Single deferred carry propagation.
-        let mut out = [0u64; 9];
-        let mut carry = 0u64;
-        for j in 0..9 {
-            let v = t[j] + carry;
-            out[j] = v & MASK29;
-            carry = v >> 29;
-        }
-        debug_assert_eq!(carry, 0);
-        // The lazy bound leaves out < few*p: subtract until < p.
-        while ge(&out, &P29) {
-            let mut borrow = 0i64;
-            for j in 0..9 {
-                let v = out[j] as i64 - P29[j] as i64 + borrow;
-                out[j] = (v & MASK29 as i64) as u64;
-                borrow = v >> 63;
-            }
-        }
-        out
-    }
-
-    fn ge(a: &[u64; 9], p: &[u64; 9]) -> bool {
-        for j in (0..9).rev() {
-            if a[j] != p[j] {
-                return a[j] > p[j];
-            }
-        }
-        true
-    }
-
-    /// 256-bit little-endian u64 limbs -> nine 29-bit limbs.
-    pub fn from_u64x4(l: &[u64; 4]) -> [u64; 9] {
-        let mut out = [0u64; 9];
-        for j in 0..9 {
-            let bit = 29 * j;
-            let (w, off) = (bit / 64, bit % 64);
-            let mut v = l[w] >> off;
-            if off > 35 && w + 1 < 4 {
-                v |= l[w + 1] << (64 - off);
-            }
-            out[j] = v & MASK29;
-        }
-        out
-    }
-
-    /// Nine 29-bit limbs -> 256-bit little-endian u64 limbs.
-    pub fn to_u64x4(l: &[u64; 9]) -> [u64; 4] {
-        let mut out = [0u64; 4];
-        for j in 0..9 {
-            let bit = 29 * j;
-            let (w, off) = (bit / 64, bit % 64);
-            out[w] |= l[j] << off;
-            if off > 35 && w + 1 < 4 {
-                out[w + 1] |= l[j] >> (64 - off);
-            }
-        }
-        out
-    }
-}
-
-/// Lazy29 FFT probe (bench modes 8/9): a complete radix-2 DIT FFT whose
-/// butterflies run in the lazy-carry 29-bit domain (`ark_ff::lazy29`),
-/// data converted at the boundaries — measured against ark-poly's FFT on
-/// the same input. Twiddles are converted once (cached per domain in a
-/// real integration). Self-checked element-wise against ark's result.
-#[cfg(target_arch = "wasm32")]
-mod lazy_fft_probe {
-    use ark_ff::lazy29;
-    use mina_curves::pasta::fields::FqConfig;
-
-    pub type L = [u64; lazy29::LIMBS];
-
-    fn bit_reverse(a: &mut [L]) {
-        let n = a.len();
-        let bits = n.trailing_zeros();
-        for i in 0..n {
-            let j = ((i as u32).reverse_bits() >> (32 - bits)) as usize;
-            if j > i {
-                a.swap(i, j);
-            }
-        }
-    }
-
-    /// Stage twiddles for a size-n FFT: `tw[s][j] = (omega^(n/2^(s+1)))^j`.
-    pub fn twiddles(omega: mina_curves::pasta::Fp, n: usize, entry: &L) -> Vec<Vec<L>> {
-        use ark_ff::Field as _;
-        let stages = n.trailing_zeros() as usize;
-        let mut out = Vec::with_capacity(stages);
-        for s in 0..stages {
-            let len = 1usize << (s + 1);
-            let w = omega.pow([(n / len) as u64]);
-            let mut acc = mina_curves::pasta::Fp::ONE;
-            let mut tws = Vec::with_capacity(len / 2);
-            for _ in 0..len / 2 {
-                tws.push(lazy29::enter::<FqConfig>(&acc.0, entry));
-                acc *= w;
-            }
-            out.push(tws);
-        }
-        out
-    }
-
-    /// In-place natural-order DIT radix-2 FFT, all arithmetic lazy29.
-    pub fn fft_in_place(a: &mut [L], twiddles: &[Vec<L>]) {
-        bit_reverse(a);
-        let n = a.len();
-        let (mut len, mut stage) = (2usize, 0usize);
-        while len <= n {
-            let tw = &twiddles[stage];
-            for block in a.chunks_mut(len) {
-                let (lo, hi) = block.split_at_mut(len / 2);
-                for j in 0..len / 2 {
-                    let t = lazy29::mont_mul::<FqConfig>(&hi[j], &tw[j]);
-                    let u = lo[j];
-                    lo[j] = lazy29::add::<FqConfig>(&u, &t);
-                    hi[j] = lazy29::sub::<FqConfig>(&u, &t);
-                }
-            }
-            len <<= 1;
-            stage += 1;
-        }
-    }
-}
-
-/// Runtime switch for the wasm batched-affine MSM dispatch (one-build
-/// A/B measurement + production kill-switch, like the lazy-FFT one).
-#[wasm_bindgen]
-pub fn rust_pickles_set_batch_affine_msm(enabled: bool) {
-    ark_ec::scalar_mul::variable_base::batch_affine::set_wasm_batch_affine_msm(enabled);
-}
-
-/// Kernel census: counters incremented inside the hot kernels (patched
-/// ark fork: MSM calls/points and FFT calls/sizes; mina-poseidon:
-/// permutations). Read after a real compile/prove to map where the
-/// multiplications go. `reset` zeroes the counters after reading.
+/// Kernel census: Poseidon permutation counter (mina-poseidon) and the
+/// prover phase wall-times (live_trace clock). Read after a real
+/// compile/prove; `reset` zeroes the counters after reading.
 #[wasm_bindgen]
 pub fn rust_pickles_kernel_census(reset: bool) -> String {
-    use ark_ec::scalar_mul::variable_base::wasm_stats as msm;
-    use ark_poly::domain::radix2::wasm_stats as fft;
-    use core::sync::atomic::Ordering::Relaxed;
-    use mina_poseidon::permutation::wasm_stats as pos;
-    let out = format!(
-        "{{\"poseidon_permutations\":{},\"msm_calls\":{},\"msm_points\":{},\"msm_calls_big\":{},\"msm_points_big\":{},\"fft_calls\":{},\"fft_elems\":{},\"fft_work\":{}}}",
-        pos::PERMUTATIONS.load(Relaxed),
-        msm::MSM_CALLS.load(Relaxed),
-        msm::MSM_POINTS.load(Relaxed),
-        msm::MSM_CALLS_BIG.load(Relaxed),
-        msm::MSM_POINTS_BIG.load(Relaxed),
-        fft::FFT_CALLS.load(Relaxed),
-        fft::FFT_ELEMS.load(Relaxed),
-        fft::FFT_WORK.load(Relaxed),
-    );
-    // Splice the prover phase wall-times (live_trace clock) into the JSON.
     let phases = kimchi::live_trace::take_phase_times();
     let items: Vec<String> = phases
         .iter()
         .map(|(n, ms, c)| format!("\"{}\":[{:.1},{}]", n, ms, c))
         .collect();
-    let mut out = out;
-    out.truncate(out.len() - 1);
-    out.push_str(&format!(",\"phases\":{{{}}}}}", items.join(",")));
-    if reset {
-        for c in [
-            &pos::PERMUTATIONS,
-            &msm::MSM_CALLS,
-            &msm::MSM_POINTS,
-            &msm::MSM_CALLS_BIG,
-            &msm::MSM_POINTS_BIG,
-            &fft::FFT_CALLS,
-            &fft::FFT_ELEMS,
-            &fft::FFT_WORK,
-        ] {
-            c.store(0, Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let permutations = {
+        use core::sync::atomic::Ordering::Relaxed;
+        use mina_poseidon::permutation::wasm_stats as pos;
+        let count = pos::PERMUTATIONS.load(Relaxed);
+        if reset {
+            pos::PERMUTATIONS.store(0, Relaxed);
         }
-    }
-    out
-}
-
-/// Runtime switch for the ark-poly wasm lazy-carry FFT dispatch
-/// (measurement harnesses compare both paths in one build; also a
-/// production kill-switch).
-#[wasm_bindgen]
-pub fn rust_pickles_set_lazy_fft(enabled: bool) {
-    ark_poly::domain::radix2::set_wasm_lazy_fft(enabled);
+        count
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let permutations = {
+        let _ = reset;
+        0u64
+    };
+    format!(
+        "{{\"poseidon_permutations\":{},\"phases\":{{{}}}}}",
+        permutations,
+        items.join(","),
+    )
 }
 
 /// Micro-bench of raw field-multiplication cost inside this wasm module.
@@ -710,66 +518,11 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
             }
             x
         }
-        6 => {
-            use lazy29_probe as lz;
-            // Enter the 2^261 Montgomery domain through ark itself:
-            // x29 = to29(raw(x * R261)); then mont_mul stays in-domain and
-            // raw results compare against ark's field multiplication.
-            let r261 = Fp::from(2u64).pow([261u64]);
-            use ark_ff::PrimeField as _;
-            let enter = |v: Fp| lz::from_u64x4(&(v * r261).into_bigint().0);
-            let mut x = Fp::one() + y;
-            let mut x29 = enter(x);
-            let y29 = enter(y);
-            for step in 0..256 {
-                let expected = x * y;
-                let got = lz::mont_mul(&x29, &y29);
-                if lz::to_u64x4(&got) != (expected * r261).into_bigint().0 {
-                    return -2.0 - step as f64;
-                }
-                x = expected;
-                x29 = got;
-            }
-            let y29 = core::hint::black_box(y29);
-            let t0 = js_sys::Date::now();
-            for _ in 0..iters {
-                x29 = lz::mont_mul(&core::hint::black_box(x29), &y29);
-            }
-            let elapsed = js_sys::Date::now() - t0;
-            if lz::to_u64x4(&core::hint::black_box(x29)) == [0u64; 4] {
-                return -1.0;
-            }
-            return elapsed;
-        }
-        7 => {
-            use lazy29_probe as lz;
-            let r261 = Fp::from(2u64).pow([261u64]);
-            use ark_ff::PrimeField as _;
-            let enter = |v: Fp| lz::from_u64x4(&(v * r261).into_bigint().0);
-            let y29 = core::hint::black_box(enter(y));
-            let mut a = core::hint::black_box(enter(Fp::one() + y));
-            let mut b = core::hint::black_box(enter(y + y));
-            let mut c = core::hint::black_box(enter(y * y));
-            let mut d = core::hint::black_box(enter(y * y + y));
-            let t0 = js_sys::Date::now();
-            for _ in 0..iters / 4 {
-                a = lz::mont_mul(&a, &y29);
-                b = lz::mont_mul(&b, &y29);
-                c = lz::mont_mul(&c, &y29);
-                d = lz::mont_mul(&d, &y29);
-            }
-            let elapsed = js_sys::Date::now() - t0;
-            let sink = core::hint::black_box((a, b, c, d));
-            if lz::to_u64x4(&sink.0) == [0u64; 4] {
-                return -1.0;
-            }
-            return elapsed;
-        }
         // MSM baseline micro-bench: ark msm_bigint on Vesta (the SRS curve
         // for Fp circuits) with 2^iters pseudo-random points and scalars.
         // Returns ms per MSM (reps sized for ~1s total); self-checked at
         // size 64 against the naive sum.
-        16 | 17 => {
+        16 => {
             use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
             use ark_ff::AdditiveGroup as _;
             use ark_ff::PrimeField as _;
@@ -799,31 +552,18 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
                 .zip(&scalars[..m])
                 .map(|(b, s)| b.mul_bigint(*s))
                 .sum::<mina_curves::pasta::ProjectiveVesta>();
-            use ark_ec::scalar_mul::variable_base::batch_affine::msm_bigint_batch_affine;
-            use mina_curves::pasta::curves::vesta::VestaParameters;
             return crate::rayon::run_in_pool(|| {
-                let got = if mode == 16 {
-                    mina_curves::pasta::ProjectiveVesta::msm_bigint(&bases[..m], &scalars[..m])
-                } else {
-                    msm_bigint_batch_affine::<VestaParameters>(&bases[..m], &scalars[..m])
-                };
+                let got = mina_curves::pasta::ProjectiveVesta::msm_bigint(&bases[..m], &scalars[..m]);
                 if got != want {
                     return -2.0;
                 }
                 let reps = ((1usize << 21) / n).max(1) as u32;
                 let t0 = js_sys::Date::now();
                 for _ in 0..reps {
-                    let out = if mode == 16 {
-                        mina_curves::pasta::ProjectiveVesta::msm_bigint(
-                            core::hint::black_box(&bases),
-                            core::hint::black_box(&scalars),
-                        )
-                    } else {
-                        msm_bigint_batch_affine::<VestaParameters>(
-                            core::hint::black_box(&bases),
-                            core::hint::black_box(&scalars),
-                        )
-                    };
+                    let out = mina_curves::pasta::ProjectiveVesta::msm_bigint(
+                        core::hint::black_box(&bases),
+                        core::hint::black_box(&scalars),
+                    );
                     core::hint::black_box(out);
                 }
                 (js_sys::Date::now() - t0) / reps as f64
@@ -865,63 +605,6 @@ pub fn rust_pickles_bench_field_mul(iters: u32, mode: u32) -> f64 {
                     (0..16usize).into_par_iter().for_each(|i| {
                         core::hint::black_box(i);
                     });
-                }
-                js_sys::Date::now() - t0
-            });
-        }
-        // 8/9 at 2^16 (tick domain), 13/14 the same pair at 2^12: the
-        // integrated-vs-serial delta across sizes separates fixed overhead
-        // from per-element cost.
-        8 | 9 | 13 | 14 => {
-            use ark_ff::lazy29;
-            use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
-            use lazy_fft_probe as lf;
-            use mina_curves::pasta::fields::FqConfig;
-            #[allow(non_snake_case)]
-            let N: usize = if mode >= 13 { 1 << 12 } else { 1 << 16 };
-            let domain = Radix2EvaluationDomain::<Fp>::new(N).unwrap();
-            // Varied input via a squaring chain.
-            let mut coeffs = Vec::with_capacity(N);
-            let mut x = Fp::one() + y;
-            for _ in 0..N {
-                x.square_in_place();
-                x += y;
-                coeffs.push(x);
-            }
-            let entry = lazy29::entry_constant::<FqConfig>();
-            let tw = lf::twiddles(domain.group_gen, N, &entry);
-            // Self-check: lazy FFT == ark FFT, element-wise. ark-poly is
-            // built with the parallel feature: its FFT must run inside the
-            // worker pool (that is also the production configuration).
-            let expected = crate::rayon::run_in_pool(|| domain.fft(&coeffs));
-            let mut d: Vec<lf::L> = coeffs
-                .iter()
-                .map(|c| lazy29::enter::<FqConfig>(&c.0, &entry))
-                .collect();
-            lf::fft_in_place(&mut d, &tw);
-            for (i, (got, want)) in d.iter().zip(&expected).enumerate() {
-                if lazy29::exit::<FqConfig>(got) != (want.0) {
-                    return -2.0 - i as f64;
-                }
-            }
-            let reps = iters.max(1);
-            return crate::rayon::run_in_pool(|| {
-                let t0 = js_sys::Date::now();
-                if mode == 8 || mode == 13 {
-                    for _ in 0..reps {
-                        let out = domain.fft(core::hint::black_box(&coeffs));
-                        core::hint::black_box(out);
-                    }
-                } else {
-                    for _ in 0..reps {
-                        let mut d: Vec<lf::L> = core::hint::black_box(&coeffs)
-                            .iter()
-                            .map(|c| lazy29::enter::<FqConfig>(&c.0, &entry))
-                            .collect();
-                        lf::fft_in_place(&mut d, &tw);
-                        let out: Vec<_> = d.iter().map(lazy29::exit::<FqConfig>).collect();
-                        core::hint::black_box(out);
-                    }
                 }
                 js_sys::Date::now() - t0
             });
