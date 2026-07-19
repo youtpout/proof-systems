@@ -5774,3 +5774,19 @@ manquante et jsoo la relit (11,0 s, VK id.) ; rust-native via les ops
 runtime → 1,4 s à chaud. VK identiques partout ; VkParity 3/3 × 4
 backends. Trap habituel : l'addon natif se construit depuis le
 SUBMODULE o1js/src/mina-rust — le bumper avant build:rust-backend.
+
+## #15 — suivi bench + verdicts perf (2026-07-19)
+
+Baseline versionnée : zkapp-rust/contracts/BENCHMARKS.md (froid + chaud,
+4 backends, gates, commits) — à re-runner à chaque changement de perf.
+- Piste « frontière JS↔wasm binaire » : NON-levier, réfutée par mesure
+  (branches JSON 0 ms / 1,2 Ko bench, ~450 Ko zkapp). Ne pas y revenir.
+- Piste « décodage cache parallèle » : PIÈGE — l'allocateur wasm à
+  verrou global rend le parallèle BigUint 3× plus lent (4,3 s vs 1,5 s).
+  Correctif retenu : field_from_decimal sans allocation (limbs pile) +
+  rust_pickles_seed_srs_cache_batch (une entrée de pool). Seed = 416 ms.
+- Décomposition warm compile wasm (2,05 s) : restore pk ~1,1 s (PROCHAIN
+  levier compile) • analyzeMethods TS 442 ms • seed 416 ms.
+- Levier majeur restant (prove wasm 2× natif) : backend de corps wasm
+  (limbs 32 bits ± SIMD128 ; build actuel SANS +simd128, ark-ff 0.5
+  vanilla, wasm-opt -O4 web seulement — vérifier le blob node).
