@@ -5866,3 +5866,20 @@ fenêtres 10-16, batch-affine Aztec ; code C non réutilisable tel quel.
 PROCHAINE ÉTAPE : câbler la FFT d'ark-poly (fork) sur lazy29 sous
 cfg(wasm32) — conversion des tableaux aux frontières, papillons en
 domaine < 2p, sonde par taille de domaine PUIS protocole bench complet.
+
+## #18 suite — sonde FFT lazy29 : GO (2026-07-19)
+
+FFT radix-2 complète en domaine lazy29 (0f735f4c32, modes 8/9) :
+**26,9 ms/fft SÉRIE (conversions incluses) vs 34,5 ms ark PARALLÈLE
+16 workers à 2^16** — le kernel série bat déjà la prod. Prochaine étape
+du chantier : l'INTÉGRATION — parallèle rayon par blocs (même découpage
+qu'ark) + branchement dans le chemin FFT du prover. Point de plomberie
+identifié : ark-poly est générique (T: DomainCoeff<F>) — la spécialisation
+passe par un downcast TypeId T==F + un trait capability, OU par un shim
+côté kimchi (types concrets pasta, bound ajoutable). Trancher au moment
+de l'implémentation. PIÈGES session : (1) TOUJOURS cp le blob vers
+dist/node après build:wasm:node:rust (un blob périmé dans dist a fait
+tomber les modes 8/9 dans le bras _ ⇒ mesures fantômes 0 ms) ;
+(2) ark-poly feature parallel ⇒ fft DOIT tourner dans run_in_pool ;
+(3) sonde via o1js dist : exporter rustPicklesBindings temporairement et
+lancer depuis dist/node (chemins cwd-relatifs du loader jsoo).
