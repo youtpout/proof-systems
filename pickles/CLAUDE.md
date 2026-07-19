@@ -5743,3 +5743,34 @@ Constats structurels (vérifiés empiriquement, dir déplacé) :
    Cache.None — contrairement à jsoo dont le cache SRS passe par l'objet
    Cache. Écart de gating assumé (données publiques déterministes,
    neutres pour les VK) mais à documenter dans toute comparaison de bench.
+
+## ✅ #14 TERMINÉ — cache SRS/Lagrange iso-jsoo (fonctionnement ET paramètres)
+
+Le cache SRS/Lagrange rust passe par l'objet `Cache` d'o1js avec les
+ENTRÉES EXACTES de jsoo — `srs-fp-65536`, `srs-fq-32768`,
+`lagrange-basis-{f}-{taille}` (JSON OrInfinity/PolyComm, version 1) —
+partagées octet pour octet dans les deux sens (jsoo chauffe rust, rust
+chauffe jsoo), avec le gating de jsoo : `Cache.None` ⇒ rien,
+`canWrite` gaté, écriture des seules entrées manquantes.
+
+- pickles e0e64be41d : codecs jsoo (`seed/export_{tick,tock}_srs_jsoo`,
+  `seed/export_lagrange_basis_jsoo`) + `set_disk_cache_enabled` (le
+  cache disque interne ~/.cache/pickles-rs ne sert plus qu'aux runs
+  cargo autonomes ; PICKLES_CACHE_DIR toujours respecté là-bas).
+- kimchi-wasm : `rust_pickles_seed_srs/export_srs/seed_lagrange_basis/
+  export_lagrange_basis` basculés au payload jsoo.
+- mina-rust cf0ba5bb : ops `SeedSrsCache`/`ExportSrsCache` (base64 sur
+  le fil), `set_disk_cache_enabled(false)` à l'init du Backend,
+  capability `srs-cache-v1`.
+- o1js a6f59124f : `readSrsCacheSeeds`/`persistSrsCacheEntries` via
+  readCache/writeCache (headers identiques à srs.ts/napi-srs.ts) sur
+  les DEUX chemins compile (wasm + minaRuntime) ; le chemin fichier
+  direct ~/.cache/pickles-rs est SUPPRIMÉ d'o1js.
+
+Validation (AddZkProgram) : Cache.None ⇒ zéro IO (dir déplacé, rien
+recréé), natif 6,1 s / wasm 14,5 s. Cache default : rust-wasm seedé par
+les entrées ÉCRITES PAR JSOO → 7,2 s ; rust écrit lagrange-basis-fq-8192
+manquante et jsoo la relit (11,0 s, VK id.) ; rust-native via les ops
+runtime → 1,4 s à chaud. VK identiques partout ; VkParity 3/3 × 4
+backends. Trap habituel : l'addon natif se construit depuis le
+SUBMODULE o1js/src/mina-rust — le bumper avant build:rust-backend.
