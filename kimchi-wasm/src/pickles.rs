@@ -1004,6 +1004,15 @@ pub fn rust_pickles_compile_recorded_program_base_shared_vk(
         .map_err(|err| JsError::new(&format!("VK envelope encoding failed: {err}")))
 }
 
+/// Debug: per-branch Step VK selector-commitment infinity status.
+#[wasm_bindgen]
+pub fn rust_pickles_debug_step_vk_selectors(branches_json: String) -> Result<String, JsError> {
+    console_error_panic_hook::set_once();
+    let branches = parse_program_branches(&branches_json)?;
+    crate::rayon::run_in_pool(|| pickles::recorded::debug_step_vk_selectors(branches))
+        .map_err(|err| JsError::new(&format!("step vk debug failed: {err}")))
+}
+
 #[wasm_bindgen]
 pub fn rust_pickles_program_prove_n0_bytes(
     program: &mut WasmRecordedProgram,

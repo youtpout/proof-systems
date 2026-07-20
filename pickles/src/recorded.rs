@@ -1678,6 +1678,42 @@ pub fn compile_recorded_program_base_shared_vk(
     Ok((base64, stable.mina_hash().to_string()))
 }
 
+/// Debug: per-branch Step VK gate-selector commitment infinity status, to tell
+/// which kimchi gate types the recorded circuit actually produced (a selector
+/// commitment is the point at infinity iff the circuit uses zero gates of that
+/// type). Used to compare against jsoo's compiled gate mix.
+#[doc(hidden)]
+pub fn debug_step_vk_selectors(branches: Vec<RecordedProgramBranch>) -> Result<String, String> {
+    use ark_ec::AffineRepr;
+    let bases: Vec<RecordedCompiledBase> = branches
+        .into_iter()
+        .map(|branch| RecordedCompiledBase::compile(branch.circuit, branch.witness))
+        .collect::<Result<_, _>>()
+        .map_err(|err| format!("{err:?}"))?;
+    let inf = |c: &poly_commitment::commitment::PolyComm<Vesta>| c.chunks[0].is_zero();
+    let mut out = String::new();
+    for (i, base) in bases.iter().enumerate() {
+        let svi = &base
+            .compiled
+            .step_indexes
+            .as_ref()
+            .expect("compiled Step indexes")
+            .1
+            .index;
+        out.push_str(&format!(
+            "branch {i} domain=2^{} generic_inf={} psm_inf={} complete_add_inf={} mul_inf={} emul_inf={} endomul_scalar_inf={}\n",
+            svi.domain.log_size_of_group,
+            inf(&svi.generic_comm),
+            inf(&svi.psm_comm),
+            inf(&svi.complete_add_comm),
+            inf(&svi.mul_comm),
+            inf(&svi.emul_comm),
+            inf(&svi.endomul_scalar_comm),
+        ));
+    }
+    Ok(out)
+}
+
 /// Reusable indexes for the first N1 transition over a retained base proof.
 pub struct RecordedCompiledN1 {
     circuit: RecordedCircuit,

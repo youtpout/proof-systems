@@ -48,6 +48,32 @@ fn main() {
         return;
     }
 
+    if mode == "stepvk" {
+        // Per-branch Step VK selector-commitment infinity status, to see which
+        // kimchi gate types the recorded circuit produced (native, no wasm).
+        let path = std::env::args().nth(2).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let report =
+            pickles::recorded::debug_step_vk_selectors(branches).expect("step vk selectors");
+        print!("{report}");
+        return;
+    }
+
     if mode == "cache" {
         // Round-trip + timing of the prover-key cache:
         // compile -> to_cache_bytes -> from_cache_bytes, comparing VKs.
