@@ -1840,7 +1840,7 @@ pub fn compile_recorded_program_base_shared_vk(
                 .index
         })
         .collect();
-    let wrap_verifier = crate::api::build_shared_base_wrap(&step_verifiers);
+    let (_wrap_prover, wrap_verifier) = crate::api::build_shared_base_wrap(&step_verifiers);
     // `step_domain_log2` is metadata only (never serialized into the VK); use
     // the largest branch Step domain so it validates against TICK_ROUNDS.
     let step_domain_log2 = step_verifiers
@@ -1860,6 +1860,47 @@ pub fn compile_recorded_program_base_shared_vk(
             .map_err(|err| RecordedProveError::Program(format!("VK encoding: {err:?}")))?,
     );
     Ok((base64, stable.mina_hash().to_string()))
+}
+
+/// Dumps the SHARED multi-branch wrap circuit gates (structure) in the
+/// `{ public_input_size, gates }` schema — for gate-level diff against the jsoo
+/// shared wrap (`fq_prover_to_json`).
+pub fn dump_shared_base_wrap_json(
+    branches: Vec<RecordedProgramBranch>,
+) -> Result<String, RecordedProveError> {
+    #[derive(serde::Serialize)]
+    struct Dump {
+        public_input_size: usize,
+        gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+    }
+    if branches.is_empty() {
+        return Err(RecordedProveError::Program(
+            "a program has at least one branch".into(),
+        ));
+    }
+    let bases: Vec<RecordedCompiledBase> = branches
+        .into_iter()
+        .map(|branch| RecordedCompiledBase::compile(branch.circuit, branch.witness))
+        .collect::<Result<_, _>>()?;
+    let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = bases
+        .iter()
+        .map(|base| {
+            &base
+                .compiled
+                .step_indexes
+                .as_ref()
+                .expect("compiled Step indexes")
+                .1
+                .index
+        })
+        .collect();
+    let (wrap_prover, _wrap_verifier) = crate::api::build_shared_base_wrap(&step_verifiers);
+    let dump = Dump {
+        public_input_size: wrap_prover.index.cs.public,
+        gates: wrap_prover.index.cs.gates.to_vec(),
+    };
+    serde_json::to_string(&dump)
+        .map_err(|err| RecordedProveError::Program(format!("shared wrap dump: {err}")))
 }
 
 /// Debug: per-branch Step VK gate-selector commitment infinity status, to tell

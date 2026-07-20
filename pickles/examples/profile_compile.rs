@@ -170,6 +170,36 @@ fn main() {
         return;
     }
 
+    if mode == "sharedwrap" {
+        // Dump the SHARED multi-branch wrap circuit gates for a gate-level diff
+        // against the jsoo shared wrap.
+        let path = std::env::args().nth(2).expect("branches json path");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/claude-1000/shared-wrap-rust.json".into());
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let json =
+            pickles::recorded::dump_shared_base_wrap_json(branches).expect("dump shared wrap");
+        std::fs::write(&out, json).expect("write");
+        eprintln!("shared wrap dumped to {out}");
+        return;
+    }
+
     if mode == "cache" {
         // Round-trip + timing of the prover-key cache:
         // compile -> to_cache_bytes -> from_cache_bytes, comparing VKs.

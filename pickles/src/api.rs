@@ -2118,7 +2118,10 @@ pub(crate) type SharedStepVerifierIndex =
 /// branch Step verifier indexes, not on any witness.
 pub(crate) fn build_shared_base_wrap(
     step_verifiers: &[&SharedStepVerifierIndex],
-) -> snarky::api::VerifierIndexWrapper<WrapCircuit<16, 40>> {
+) -> (
+    snarky::api::ProverIndexWrapper<WrapCircuit<16, 40>>,
+    snarky::api::VerifierIndexWrapper<WrapCircuit<16, 40>>,
+) {
     use ark_ec::{AffineRepr, CurveGroup};
     assert!(
         !step_verifiers.is_empty(),
@@ -2207,10 +2210,10 @@ pub(crate) fn build_shared_base_wrap(
         new_acc_dummies: dummy_wrap_chals,
     };
     let circuit = WrapCircuit::<16, 40> { w: Some(wdata) };
-    let (_wrap_prover, wrap_verifier) = circuit
+    let (wrap_prover, wrap_verifier) = circuit
         .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
         .unwrap();
-    wrap_verifier
+    (wrap_prover, wrap_verifier)
 }
 
 pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
