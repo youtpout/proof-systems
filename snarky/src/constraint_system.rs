@@ -266,6 +266,19 @@ pub enum KimchiConstraint<Var, Field> {
     RangeCheck1(Vec<Var>, Vec<Var>),
     /// A lookup row: the 7 variables `[w0..w6]`.
     Lookup(Vec<Var>),
+    /// A single `Xor16` gate row: the 15 variables in column order
+    /// `[in1, in2, out, in1_0..3, in2_0..3, out_0..3]` (no coefficients). The
+    /// trailing `Zero`/`Generic` check row is the gadget's responsibility.
+    Xor16(Vec<Var>),
+    /// A single `Rot64` gate row: the 15 variables in column order
+    /// `[word, rotated, excess, bound_limb0..3, bound_crumb0..7]`, plus the
+    /// rotation scalar `2^rot` as the single coefficient. The `RangeCheck0`
+    /// follow-up rows are the gadget's responsibility.
+    Rot64(Vec<Var>, Field),
+    /// A raw gate row: an explicit `GateType` with its (up to 15) variables and
+    /// coefficients. Mirrors o1js `Gates.raw` (used e.g. for the trailing
+    /// `Zero` check of an XOR chain).
+    Raw(GateType, Vec<Var>, Vec<Field>),
 }
 
 /* TODO: This is a Unique_id in OCaml. */
@@ -1894,6 +1907,30 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     .collect();
                 self.add_row(labels, loc, vars, GateType::Lookup, vec![]);
             }
+            KimchiConstraint::Xor16(vars) => {
+                assert_eq!(vars.len(), COLUMNS, "Xor16 expects 15 variables");
+                let vars = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                self.add_row(labels, loc, vars, GateType::Xor16, vec![]);
+            }
+            KimchiConstraint::Rot64(vars, two_to_rot) => {
+                assert_eq!(vars.len(), COLUMNS, "Rot64 expects 15 variables");
+                let vars = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                self.add_row(labels, loc, vars, GateType::Rot64, vec![two_to_rot]);
+            }
+            KimchiConstraint::Raw(gate_type, vars, coeffs) => {
+                assert!(vars.len() <= COLUMNS, "Raw gate has at most 15 variables");
+                let vars = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                self.add_row(labels, loc, vars, gate_type, coeffs);
+            }
         }
     }
     pub(crate) fn sponge_params(
@@ -2025,7 +2062,10 @@ where
             | KimchiConstraint::RangeCheck { .. }
             | KimchiConstraint::RangeCheck0 { .. }
             | KimchiConstraint::RangeCheck1 { .. }
-            | KimchiConstraint::Lookup { .. } => (),
+            | KimchiConstraint::Lookup { .. }
+            | KimchiConstraint::Xor16 { .. }
+            | KimchiConstraint::Rot64 { .. }
+            | KimchiConstraint::Raw { .. } => (),
         };
         Ok(())
     }

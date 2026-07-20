@@ -22,6 +22,35 @@ use snarky::{
 
 use crate::api::{MinaWrapProof, StepApp};
 
+/// Maps an o1js `KimchiGateType` tag (from `Gates.raw`) to the rust kimchi
+/// [`GateType`]. o1js's enum omits the four Cairo gates, so tags from
+/// `RangeCheck0` up are offset by 4 relative to the rust discriminants — hence
+/// the explicit mapping rather than a numeric cast.
+fn raw_gate_type(tag: u8) -> Result<kimchi::circuits::gate::GateType, RecordedProveError> {
+    use kimchi::circuits::gate::GateType::*;
+    Ok(match tag {
+        0 => Zero,
+        1 => Generic,
+        2 => Poseidon,
+        3 => CompleteAdd,
+        4 => VarBaseMul,
+        5 => EndoMul,
+        6 => EndoMulScalar,
+        7 => Lookup,
+        8 => RangeCheck0,
+        9 => RangeCheck1,
+        10 => ForeignFieldAdd,
+        11 => ForeignFieldMul,
+        12 => Xor16,
+        13 => Rot64,
+        other => {
+            return Err(RecordedProveError::Program(format!(
+                "raw gate: unknown KimchiGateType tag {other}"
+            )))
+        }
+    })
+}
+
 /// Serde for Pasta `Fp` as decimal strings — the o1js-friendly JSON form.
 pub mod fp_decimal {
     use core::str::FromStr;
@@ -59,6 +88,31 @@ pub mod fp_decimal {
                     .map_err(|_| serde::de::Error::custom("expected a decimal Pasta Fp"))
             })
             .transpose()
+        }
+    }
+
+    pub mod vec {
+        use super::*;
+        use serde::ser::SerializeSeq;
+
+        pub fn serialize<S: Serializer>(value: &[Fp], serializer: S) -> Result<S::Ok, S::Error> {
+            let mut seq = serializer.serialize_seq(Some(value.len()))?;
+            for coeff in value {
+                seq.serialize_element(&coeff.to_string())?;
+            }
+            seq.end()
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<Fp>, D::Error> {
+            let raw = Vec::<String>::deserialize(deserializer)?;
+            raw.into_iter()
+                .map(|coeff| {
+                    Fp::from_str(&coeff)
+                        .map_err(|_| serde::de::Error::custom("expected a decimal Pasta Fp"))
+                })
+                .collect()
         }
     }
 
@@ -241,6 +295,28 @@ pub enum RecordedConstraint {
     /// A lookup row: the 7 variables `[w0..w6]`.
     Lookup {
         row: Vec<LinComb>,
+    },
+    /// A single `Xor16` gate row: 15 variables in column order
+    /// `[in1, in2, out, in1_0..3, in2_0..3, out_0..3]`.
+    Xor16 {
+        row: Vec<LinComb>,
+    },
+    /// A single `Rot64` gate row: 15 variables in column order
+    /// `[word, rotated, excess, bound_limb0..3, bound_crumb0..7]`, plus the
+    /// rotation scalar `2^rot`.
+    Rot64 {
+        row: Vec<LinComb>,
+        #[serde(with = "fp_decimal")]
+        two_to_rot: Fp,
+    },
+    /// A raw gate (o1js `Gates.raw`): the `KimchiGateType` tag, its (padded to
+    /// 15) variables, and coefficients. Used e.g. for the trailing `Zero` row
+    /// of an XOR chain.
+    Raw {
+        gate_type: u8,
+        row: Vec<LinComb>,
+        #[serde(with = "fp_decimal::vec", default)]
+        coeffs: Vec<Fp>,
     },
     /// The o1js `DynamicProof.verify(vk)` declaration point: the replay
     /// expands OCaml's side-loaded verification-key witness gadget here
@@ -509,6 +585,17 @@ impl RecordedCircuit {
                 }
                 RecordedConstraint::Lookup { row } => {
                     check_row(row, 7)?;
+                    for lincomb in row {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::Xor16 { row } | RecordedConstraint::Rot64 { row, .. } => {
+                    check_row(row, 15)?;
+                    for lincomb in row {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::Raw { row, .. } => {
                     for lincomb in row {
                         check(lincomb)?;
                     }
@@ -964,6 +1051,37 @@ impl RecordedApp {
                     None,
                     loc!(),
                 )?,
+                RecordedConstraint::Xor16 { row } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::Xor16(
+                        row.iter().map(resolve).collect(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::Rot64 { row, two_to_rot } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::Rot64(
+                        row.iter().map(resolve).collect(),
+                        *two_to_rot,
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::Raw {
+                    gate_type,
+                    row,
+                    coeffs,
+                } => {
+                    let gate = raw_gate_type(*gate_type).expect("valid KimchiGateType tag");
+                    sys.add_constraint(
+                        snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::Raw(
+                            gate,
+                            row.iter().map(resolve).collect(),
+                            coeffs.clone(),
+                        )),
+                        None,
+                        loc!(),
+                    )?
+                }
             }
         }
 
