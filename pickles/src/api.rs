@@ -1447,6 +1447,15 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             zeta,
             sponge_digest_before_evaluations: sponge_digest,
             bulletproof_challenges: bp,
+            // The statement's joint_combiner scalar is the LAST slot (slot 39 of
+            // the 40-slot layout: feature_flags[8] then joint_combiner opt = flag
+            // + scalar). Only asserted for lookup branches (OCaml
+            // `assert_eq_plonk` includes it only when the circuit uses lookups).
+            joint_combiner: if w.lookup.is_some() {
+                Some(stmt[STMT_LEN - 1].clone())
+            } else {
+                None
+            },
         };
 
         // OCaml `lagrange_with_correction` (wrap_verifier.ml:382): if every

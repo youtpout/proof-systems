@@ -683,6 +683,7 @@ mod tests {
                 zeta: w1(sys, self.claimed.3)?,
                 sponge_digest_before_evaluations: w1(sys, self.claimed.4)?,
                 bulletproof_challenges: wvec(sys, &self.claimed_bp)?,
+                joint_combiner: None,
             };
             let msgs_wrap_digest = w1(sys, self.msgs_wrap_digest)?;
 

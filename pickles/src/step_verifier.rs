@@ -38,6 +38,10 @@ pub struct Claimed<F: PrimeField> {
     pub zeta: FieldVar<F>,
     pub sponge_digest_before_evaluations: FieldVar<F>,
     pub bulletproof_challenges: Vec<FieldVar<F>>,
+    /// The statement's `joint_combiner` slot, present only for lookup branches.
+    /// Asserted against the derived joint combiner (OCaml `assert_eq_plonk`),
+    /// linking that public input into the circuit's copy constraints.
+    pub joint_combiner: Option<FieldVar<F>>,
 }
 
 /// Full verification of one wrap proof (`Step_verifier.verify`). Returns the
@@ -83,6 +87,7 @@ where
         oracles,
         sponge_digest,
         bulletproof_challenges,
+        joint_combiner: derived_joint_combiner,
     } = incrementally_verify_proof::<F, C>(
         sys,
         loc.clone(),
@@ -147,6 +152,13 @@ where
     oracles
         .zeta
         .assert_equals(sys, Cow::Borrowed("verify: zeta"), &claimed.zeta)?;
+    // Lookup branches also assert the derived joint combiner against the
+    // statement's slot (OCaml `assert_eq_plonk` includes `joint_combiner` when
+    // the circuit uses lookups). This links the statement's joint_combiner
+    // public input into the copy-constraint graph, exactly as jsoo does.
+    if let (Some(derived), Some(claimed_jc)) = (&derived_joint_combiner, &claimed.joint_combiner) {
+        derived.assert_equals(sys, Cow::Borrowed("verify: joint_combiner"), claimed_jc)?;
+    }
 
     Ok(success)
 }
@@ -741,6 +753,7 @@ mod tests {
                 zeta: sys.compute(loc!(), |_| self.claimed_zeta)?,
                 sponge_digest_before_evaluations: sys.compute(loc!(), |_| self.claimed_digest)?,
                 bulletproof_challenges: claimed_bp,
+                joint_combiner: None,
             };
             let is_base_case: Boolean<Fp> = sys.compute(loc!(), |_| true)?;
 
@@ -1124,6 +1137,7 @@ mod tests {
                 zeta: w1(sys, self.claimed.3)?,
                 sponge_digest_before_evaluations: w1(sys, self.claimed.4)?,
                 bulletproof_challenges: wvec(sys, &self.claimed_bp)?,
+                joint_combiner: None,
             };
             // must_verify = should_finalize = false: with synthetic finalize
             // data and random IPA data the ok boolean is !must_verify = true,

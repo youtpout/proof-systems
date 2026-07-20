@@ -206,6 +206,11 @@ pub struct IncrementalResult<F: PrimeField> {
     /// The bulletproof round prechallenges (raw 128-bit), recorded as the
     /// deferred `bulletproof_challenges`.
     pub bulletproof_challenges: Vec<FieldVar<F>>,
+    /// The lookup joint combiner (constant 0 for non-joint), present only when
+    /// the branch uses lookup gates. The caller asserts it against the
+    /// statement's `joint_combiner` slot (OCaml `assert_eq_plonk`), which links
+    /// that public input into the circuit.
+    pub joint_combiner: Option<FieldVar<F>>,
 }
 
 fn to_pv<F: PrimeField>(p: &Point<F>) -> PointVar<F> {
@@ -519,6 +524,9 @@ where
     // The combined lookup `table` commitment (`Column::LookupTable`), computed
     // in the lookup block below and fed to the polyscale.
     let mut combined_table: Option<Point<F>> = None;
+    // The joint combiner (for the caller's `assert_eq_plonk` against the
+    // statement slot), captured when the branch uses lookup.
+    let mut out_joint_combiner: Option<FieldVar<F>> = None;
 
     // Lookup section (OCaml `wrap_verifier.ml:972-1091`): absorb runtime tables,
     // then `Opt.consume_all_pending` to FLUSH the witness-commitment absorbs
@@ -554,6 +562,7 @@ where
         } else {
             FieldVar::constant(F::zero())
         };
+        out_joint_combiner = Some(jc.clone());
         // absorb the sorted columns (queued; flushed at the beta squeeze).
         for com in &lk.sorted {
             sponge.absorb_commitment(
@@ -856,6 +865,7 @@ where
         },
         sponge_digest,
         bulletproof_challenges: prechallenges,
+        joint_combiner: out_joint_combiner,
     })
 }
 

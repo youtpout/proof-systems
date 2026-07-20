@@ -5037,6 +5037,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         alpha: statement[13].clone(),
         zeta: statement[14].clone(),
         bulletproof_challenges: statement[16..16 + WRAP_ROUNDS].to_vec(),
+        joint_combiner: None,
     };
     // No booleanity gate here: OCaml pins this statement slot in `verify_one`
     // (`Boolean.Assert.(=) should_finalize must_verify`, step_main.ml:28) —
@@ -5685,6 +5686,7 @@ impl<
             alpha: stmt2[13].clone(),
             zeta: stmt2[14].clone(),
             bulletproof_challenges: stmt2[16..16 + WRAP_ROUNDS].to_vec(),
+            joint_combiner: None,
         };
         let xi2 = stmt2[15].clone();
         let sf = stmt2[16 + WRAP_ROUNDS].clone();
