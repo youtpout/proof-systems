@@ -101,6 +101,32 @@ fn main() {
         return;
     }
 
+    if mode == "sharedvk" {
+        // Shared width-0 wrap VK for a non-recursive multi-branch program —
+        // the exact path o1js uses for a SmartContract's canonical VK.
+        let path = std::env::args().nth(2).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let (_data, hash) =
+            pickles::recorded::compile_recorded_program_base_shared_vk(branches).expect("shared vk");
+        println!("shared VK hash: {hash}");
+        return;
+    }
+
     if mode == "cache" {
         // Round-trip + timing of the prover-key cache:
         // compile -> to_cache_bytes -> from_cache_bytes, comparing VKs.

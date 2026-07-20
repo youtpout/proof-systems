@@ -1603,14 +1603,32 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                 self.add_row(labels, loc, vars, GateType::Zero, vec![]);
             }
             KimchiConstraint::Poseidon2(PoseidonInput { states, last }) => {
-                // reduce variables
+                // Reduce variables. Within each row, reduce the Var-bearing
+                // elements before the pure-constant ones, matching jsoo's
+                // emission order: OCaml materializes a constant into a variable
+                // (a `1*x + (-c) = 0` pin) lazily via `cached_constants`, so a
+                // constant appearing at a lower state index than a compound
+                // element must not pin before the compound reduction — otherwise
+                // the two generic gates pack into a double-generic row with
+                // op1/op2 swapped, diverging the step VK (observed on the
+                // account-update-body hashes of FungibleToken burn/mint/
+                // setAdmin/approveBase). Positions are preserved for the gate
+                // wires, so only the generic emission order changes.
                 let states = states
                     .into_iter()
                     .map(|round| {
-                        round
-                            .into_iter()
-                            .map(|x| self.reduce_to_var(labels, loc, x))
-                            .collect_vec()
+                        let mut out: Vec<Option<V>> = (0..round.len()).map(|_| None).collect();
+                        for (i, x) in round.iter().enumerate() {
+                            if !x.to_constant_and_terms().1.is_empty() {
+                                out[i] = Some(self.reduce_to_var(labels, loc, x.clone()));
+                            }
+                        }
+                        for (i, x) in round.into_iter().enumerate() {
+                            if out[i].is_none() {
+                                out[i] = Some(self.reduce_to_var(labels, loc, x));
+                            }
+                        }
+                        out.into_iter().map(|v| v.unwrap()).collect_vec()
                     })
                     .collect_vec();
 
