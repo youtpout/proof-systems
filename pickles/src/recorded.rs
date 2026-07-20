@@ -155,6 +155,18 @@ pub enum RecordedConstraint {
         v: LinComb,
         square: LinComb,
     },
+    /// o1js `Snarky.field.truncateToBits16` = OCaml
+    /// `Scalar_challenge.to_field_checked'`: emit the `EndoMulScalar` rows for
+    /// a `num_bits`-bit range-truncation of `input`, then alias `output` to the
+    /// gadget's recomposed value `n` (what `truncateToBits16` returns), so no
+    /// extra equality gate is added. Used by every UInt range check; missing it
+    /// (the recorder does not hook this native op) left a SmartContract Step
+    /// circuit with the whole wiring shifted vs jsoo.
+    Endoscalar {
+        input: LinComb,
+        output: LinComb,
+        num_bits: u32,
+    },
     R1cs {
         a: LinComb,
         b: LinComb,
@@ -408,6 +420,10 @@ impl RecordedCircuit {
                     check(a)?;
                     check(b)?;
                     check(c)?;
+                }
+                RecordedConstraint::Endoscalar { input, output, .. } => {
+                    check(input)?;
+                    check(output)?;
                 }
                 RecordedConstraint::Generic { l, r, o, .. } => {
                     check(l)?;
@@ -704,6 +720,30 @@ impl RecordedApp {
         }
 
         for constraint in &self.circuit.constraints {
+            // Endoscalar aliases an existing recorded variable to the gadget's
+            // recomposed value, so it must run before the immutable `resolve`
+            // borrow below and mutate `vars` directly.
+            if let RecordedConstraint::Endoscalar {
+                input,
+                output,
+                num_bits,
+            } = constraint
+            {
+                let input_var = input.resolve(&vars);
+                let output_index = output
+                    .terms
+                    .first()
+                    .map(|(_, i)| *i as usize)
+                    .expect("endoscalar output must be a single recorded variable");
+                let (_a, _b, n) = crate::scalar_challenge::scalar_to_field_raw_with_bits(
+                    sys,
+                    "endoscalar".into(),
+                    &input_var,
+                    *num_bits as usize,
+                )?;
+                vars[output_index] = n;
+                continue;
+            }
             let resolve = |lincomb: &LinComb| lincomb.resolve(&vars);
             match constraint {
                 RecordedConstraint::Boolean { v } => sys.add_constraint(
@@ -720,6 +760,9 @@ impl RecordedApp {
                     None,
                     loc!(),
                 )?,
+                RecordedConstraint::Endoscalar { .. } => {
+                    unreachable!("Endoscalar is handled before the match")
+                }
                 RecordedConstraint::Square { v, square } => sys.add_constraint(
                     snarky::runner::Constraint::BasicSnarkyConstraint(
                         BasicSnarkyConstraint::Square(resolve(v), resolve(square)),
