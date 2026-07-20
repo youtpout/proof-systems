@@ -1093,7 +1093,26 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sys,
                 field_coords(&|l| l.gate_range_check0, shape.gate_range_check0.is_some()),
             )?;
+            // The branch presence flag: OR of the one-hot bits of the branches
+            // that use lookup. Constant `true` when EVERY branch uses it (Just,
+            // incl. single-branch base wraps), a VARIABLE when only some do
+            // (Maybe) — gates the OptSponge lookup absorbs + combine_table +
+            // digest alignment + joint_combiner (jsoo `Opt.Maybe`).
+            let lookup_present: Vec<&Boolean<Fq>> = branches
+                .iter()
+                .zip(&branch_definitions)
+                .filter(|(_, bd)| bd.lookup.is_some())
+                .map(|(flag, _)| flag)
+                .collect();
+            let lookup_flag: Boolean<Fq> = if branch_definitions.is_empty()
+                || lookup_present.len() == branch_definitions.len()
+            {
+                Boolean::true_()
+            } else {
+                Boolean::any(&lookup_present, sys, loc!())?
+            };
             Some(crate::incrementally_verify::LookupVkComm {
+                flag: lookup_flag,
                 joint_lookup_used: shape.joint_lookup_used,
                 gate_range_check0,
                 gate_range_check1,

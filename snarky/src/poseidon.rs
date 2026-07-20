@@ -4,6 +4,7 @@ use crate::{
     constraint_system::KimchiConstraint,
     prelude::{FieldVar, RunState},
     runner::Constraint,
+    Boolean, SnarkyResult,
 };
 use ark_ff::PrimeField;
 use itertools::Itertools;
@@ -254,6 +255,28 @@ where
         let out = machine.squeeze(Self::permute_closure(sys, loc));
         self.restore(machine);
         out
+    }
+
+    /// Conditionally absorbs `inputs` (OCaml pickles'
+    /// `simulate_optional_sponge_with_alignment`, wrap_verifier.ml:791): the
+    /// absorb ALWAYS runs (its gates are emitted regardless), but the resulting
+    /// state is kept only when `flag` is true, otherwise reverted to the state
+    /// before. Requires the absorb to leave the rate position unchanged (the
+    /// caller absorbs a full commitment = rate elements), so only the `state`
+    /// array is conditionally selected, not the mode.
+    pub fn absorb_maybe(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        flag: &Boolean<F>,
+        inputs: &[FieldVar<F>],
+    ) -> SnarkyResult<()> {
+        let before = self.state.clone();
+        self.absorb(sys, loc.clone(), inputs);
+        for (slot, was) in self.state.iter_mut().zip(before) {
+            *slot = sys.if_(loc.clone(), flag.clone(), slot.clone(), was)?;
+        }
+        Ok(())
     }
 }
 

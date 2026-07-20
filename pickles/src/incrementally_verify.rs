@@ -69,6 +69,13 @@ pub struct VerificationKeyComm<F: PrimeField> {
 /// lookup_table[], table_ids?, runtime_tables_selector?, then the selectors
 /// xor?, lookup?, range_check?, ffmul?.
 pub struct LookupVkComm<F: PrimeField> {
+    /// The branch presence flag (OCaml `Opt.Just`/`Maybe`): constant `true` when
+    /// every branch of the shared wrap uses this lookup (or single-branch), a
+    /// VARIABLE one-hot OR when only SOME branches use it. Gates whether the
+    /// lookup absorbs / combine_table / digest alignment / joint_combiner run
+    /// (via the OptSponge's flagged `consume_pairs`), matching jsoo's
+    /// `Opt.Maybe` machinery.
+    pub flag: Boolean<F>,
     /// Whether the lookup uses a multi-column (joint) table — gates whether the
     /// joint combiner challenge is squeezed. False for range_check/xor.
     pub joint_lookup_used: bool,
@@ -395,16 +402,23 @@ where
                 coords.push(pt.x.clone());
                 coords.push(pt.y.clone());
             }
+            index_sponge.absorb(sys, Cow::Owned(format!("{loc} | vk index absorb")), &coords);
             // Lookup index commitments (kimchi `VerifierIndex::digest` order),
-            // absorbed right after the base 28 — only when the branch uses
-            // lookup gates, so the no-lookup digest is unchanged.
+            // absorbed right after the base 28 — with OCaml's `Opt.Maybe`
+            // alignment (`simulate_optional_sponge_with_alignment`): each
+            // commitment is absorbed but its state kept only when the branch
+            // flag is true. Constant-true (single-branch / all-lookup) folds the
+            // `if_` so the digest stays byte-identical.
             if let Some(lk) = &vk.lookup {
                 for pt in lk.digest_order() {
-                    coords.push(pt.x.clone());
-                    coords.push(pt.y.clone());
+                    index_sponge.absorb_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | vk index lookup absorb")),
+                        &lk.flag,
+                        &[pt.x.clone(), pt.y.clone()],
+                    )?;
                 }
             }
-            index_sponge.absorb(sys, Cow::Owned(format!("{loc} | vk index absorb")), &coords);
             index_sponge.squeeze(sys, Cow::Owned(format!("{loc} | vk index squeeze")))
         }
         IndexDigest::SpongeAfterIndex(after_index) => {
