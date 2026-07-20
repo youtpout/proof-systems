@@ -275,6 +275,20 @@ impl<F: PrimeField> Transcript<F> {
         }
     }
 
+    /// Flushes the opt sponge's pending absorbs without squeezing (OCaml
+    /// `Opt.consume_all_pending`, called around the lookup section of the wrap
+    /// verifier). No-op on the plain (step-side) sponge, which absorbs eagerly.
+    fn consume_all_pending(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+    ) -> SnarkyResult<()> {
+        match self {
+            Transcript::Plain(_) => Ok(()),
+            Transcript::Opt(sponge) => sponge.consume_all_pending(sys, loc),
+        }
+    }
+
     /// The opt->plain conversion of IVC Step 13 (`wrap_verifier.ml:1294-1304`):
     /// the opt sponge must be in `Squeezed n` state (it is, right after zeta);
     /// its raw state becomes a plain sponge. Identity on the step side.
@@ -506,10 +520,12 @@ where
     // in the lookup block below and fed to the polyscale.
     let mut combined_table: Option<Point<F>> = None;
 
-    // Lookup (kimchi `verifier.rs` oracles): if runtime tables are used absorb
-    // the runtime commitment, then (for a multi-column table) squeeze the joint
-    // combiner — range_check/xor are single-value here so joint_combiner is 0
-    // and NO challenge is squeezed — then absorb the sorted commitments.
+    // Lookup section (OCaml `wrap_verifier.ml:972-1091`): absorb runtime tables,
+    // then `Opt.consume_all_pending` to FLUSH the witness-commitment absorbs
+    // (permuting them now), then compute the joint combiner + absorb the sorted
+    // columns, then build the combined `table` commitment. The flush is what
+    // places the witness permutations BEFORE the `combine_table` endo — the opt
+    // sponge otherwise defers every permutation to the next squeeze.
     if let Some(lk) = &messages.lookup {
         if let Some(runtime) = &lk.runtime {
             sponge.absorb_commitment(
@@ -518,6 +534,9 @@ where
                 &to_pvs(runtime),
             );
         }
+        // Opt.consume_all_pending (wrap_verifier.ml:1078/1090): flush witness
+        // (+runtime) absorbs so their permutations land before the endo.
+        sponge.consume_all_pending(sys, Cow::Owned(format!("{loc} | consume_all_pending (pre-jc)")))?;
         // The joint combiner: squeezed (128-bit) for a multi-column table,
         // otherwise the constant 0 materialised as a variable so the table
         // combination emits identical rows regardless of joint usage.
@@ -533,18 +552,20 @@ where
         } else {
             sys.compute(Cow::Owned(format!("{loc} | joint_combiner var")), |_| F::zero())?
         };
-        // Build the combined `table` commitment (kimchi `combine_table`,
-        // verifier.rs:1145-1165): `Σ jc^i·col_i + jc^{max_joint}·table_ids [+
-        // jc·runtime]`. For single-column range_check/xor tables
-        // `max_joint_size = 1`, so the table_id term is one endo scale — emitted
-        // even when `joint_combiner = 0` (non-joint), exactly as OCaml builds it.
-        //
-        // NOTE (open): the wrap `OptSponge` defers its absorb-permutes to squeeze
-        // time, so this endo currently lands before the witness-commitment
-        // consume rather than between it and the `sorted` consume as in jsoo.
-        // Making the opt sponge consume incrementally (like OCaml) is the
-        // remaining step for byte-identical row placement; all gate-type COUNTS
-        // already match.
+        // absorb the sorted columns (queued; flushed at the beta squeeze).
+        for com in &lk.sorted {
+            sponge.absorb_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | absorb lookup sorted")),
+                &to_pvs(com),
+            );
+        }
+        // Combined `table` commitment (OCaml `compute_lookup_table_comm`,
+        // wrap_verifier.ml:1093-1206; kimchi `combine_table`): fold the columns
+        // from `table_ids` by `endo(acc, joint_combiner)` + column. For the
+        // single-column range_check/xor tables `max_joint_size = 1`, so it is one
+        // endo scale of `table_ids` + the column — emitted even when
+        // `joint_combiner = 0` (non-joint), exactly as OCaml builds it.
         if let Some(vlk) = &vk.lookup {
             if !vlk.lookup_table.is_empty() {
                 let mut table = vlk.lookup_table[0].clone();
@@ -598,13 +619,6 @@ where
                 }
                 combined_table = Some(table);
             }
-        }
-        for com in &lk.sorted {
-            sponge.absorb_commitment(
-                sys,
-                Cow::Owned(format!("{loc} | absorb lookup sorted")),
-                &to_pvs(com),
-            );
         }
     }
 

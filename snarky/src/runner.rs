@@ -664,6 +664,7 @@ where
         self.system.as_ref().map(|sys| sys.sponge_params()).unwrap()
     }
 
+
     pub fn poseidon(
         &mut self,
         loc: Cow<'static, str>,

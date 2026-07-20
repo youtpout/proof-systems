@@ -126,6 +126,52 @@ impl<F: PrimeField> OptSponge<F> {
         }
     }
 
+    /// Sets `needs_final_permute_if_empty` (OCaml `wrap_verifier.ml:1087`).
+    pub fn set_needs_final_permute(&mut self, v: bool) {
+        self.needs_final_permute_if_empty = v;
+    }
+
+    /// Flushes the pending queue WITHOUT squeezing a challenge (OCaml
+    /// `Opt_sponge.consume_all_pending`, opt_sponge.ml:229-258): consume the
+    /// complete rate-pairs (permuting them) and add in a trailing odd element,
+    /// leaving the sponge `Absorbing` at the carried position with an empty
+    /// queue. The wrap verifier calls this around the lookup section so the
+    /// witness-commitment permutations are emitted BEFORE the lookup
+    /// `combine_table` endo, matching jsoo's gate schedule (a plain squeeze
+    /// here would instead consume everything and sample a challenge).
+    pub fn consume_all_pending(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+    ) -> SnarkyResult<()> {
+        let (start_pos, input) = match &mut self.sponge_state {
+            SpongeState::Squeezed(_) => panic!("OptSponge::consume_all_pending: nothing pending"),
+            SpongeState::Absorbing { next_index, xs } => (next_index.clone(), std::mem::take(xs)),
+        };
+        let n = input.len();
+        let num_pairs = n / 2;
+        let remaining = n - 2 * num_pairs;
+        let pairs: Vec<_> = (0..num_pairs)
+            .map(|i| (input[2 * i].clone(), input[2 * i + 1].clone()))
+            .collect();
+        let pos = consume_pairs(sys, loc.clone(), &mut self.state, start_pos, &pairs)?;
+        let pos_after = if remaining == 1 {
+            let (b, x) = &input[n - 1];
+            let p = pos;
+            let pos_after = p.xor(b, sys, loc.clone())?;
+            let x_masked = x.mul(&b.to_field_var(), None, loc.clone(), sys)?;
+            add_in(sys, loc.clone(), &mut self.state, &p, &x_masked)?;
+            pos_after
+        } else {
+            pos
+        };
+        self.sponge_state = SpongeState::Absorbing {
+            next_index: pos_after,
+            xs: vec![],
+        };
+        Ok(())
+    }
+
     /// Consumes the opt sponge into `(state, squeezed)` for the opt->plain
     /// conversion of the wrap verifier (`wrap_verifier.ml:1294-1304`, IVC
     /// Step 13). Panics if the sponge is still absorbing, exactly as the
