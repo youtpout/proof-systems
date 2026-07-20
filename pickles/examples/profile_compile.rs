@@ -125,6 +125,29 @@ fn main() {
         return;
     }
 
+    if mode == "appdump" {
+        // Dump the BARE app-circuit gates (method main compiled standalone,
+        // no step/pickles framework) — for a clean gate diff against jsoo's
+        // Provable.constraintSystem output. Isolates app-logic gadget parity.
+        let path = std::env::args().nth(2).expect("branches json path");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/claude-1000/app-rust.json".into());
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let circuit = parsed.into_iter().next().expect("one branch").circuit;
+        let witness = vec![Fp::from(0u64); circuit.aux_count as usize];
+        let json =
+            pickles::recorded::debug_recorded_method_gates(circuit, witness).expect("app dump");
+        std::fs::write(&out, json).expect("write");
+        eprintln!("bare app circuit dumped to {out}");
+        return;
+    }
+
     if mode == "stepdump" {
         // Dump the STEP (app-logic) circuit gates of a single-branch recorded
         // program — for gate-level diff against jsoo's step circuit.
