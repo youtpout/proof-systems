@@ -633,6 +633,7 @@ mod tests {
                 coefficients: vkpts[6..21].to_vec(),
                 sigma_init: vkpts[21..27].to_vec(),
                 sigma_last: vec![vkpts[27].clone()],
+                lookup: None,
             };
             let h = cpt(self.h);
             let t1 = crate::plonk_curve_ops::ShiftedScalar::Type1;
@@ -663,6 +664,7 @@ mod tests {
                             .iter()
                             .map(|&p| mkpt(sys, p))
                             .collect::<SnarkyResult<Vec<_>>>()?,
+                        lookup: None,
                     };
                     Ok((openings, messages))
                 };

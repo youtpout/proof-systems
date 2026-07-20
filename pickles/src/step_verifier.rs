@@ -699,11 +699,13 @@ mod tests {
                 coefficients: mkpts(sys, &self.coefficients)?,
                 sigma_init: mkpts(sys, &self.sigma_init)?,
                 sigma_last: mkpts(sys, &self.sigma_last)?,
+                lookup: None,
             };
             let messages = Messages {
                 w_comm,
                 z_comm: mkpts(sys, &self.z_comm)?,
                 t_comm: mkpts(sys, &self.t_comm)?,
+                lookup: None,
             };
             let mut lr = vec![];
             for &(l, r) in &self.lr {
@@ -1084,11 +1086,13 @@ mod tests {
                 coefficients: ivp[6..21].to_vec(),
                 sigma_init: ivp[21..27].to_vec(),
                 sigma_last: vec![ivp[27].clone()],
+                lookup: None,
             };
             let messages = Messages {
                 w_comm,
                 z_comm: mkpts(sys, &self.z_comm)?,
                 t_comm: mkpts(sys, &self.t_comm)?,
+                lookup: None,
             };
             let mut lr = vec![];
             for &(l, r) in &self.lr {

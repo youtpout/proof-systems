@@ -502,6 +502,10 @@ where
         sponge.absorb_commitment(sys, Cow::Owned(format!("{loc} | absorb w_comm")), &to_pvs(w));
     }
 
+    // The combined lookup `table` commitment (`Column::LookupTable`), computed
+    // in the lookup block below and fed to the polyscale.
+    let mut combined_table: Option<Point<F>> = None;
+
     // Lookup (kimchi `verifier.rs` oracles): if runtime tables are used absorb
     // the runtime commitment, then (for a multi-column table) squeeze the joint
     // combiner — range_check/xor are single-value here so joint_combiner is 0
@@ -514,14 +518,86 @@ where
                 &to_pvs(runtime),
             );
         }
-        if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
-            let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
-            let _ = crate::challenge::lowest_128_bits(
+        // The joint combiner: squeezed (128-bit) for a multi-column table,
+        // otherwise the constant 0 materialised as a variable so the table
+        // combination emits identical rows regardless of joint usage.
+        let jc: FieldVar<F> = if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
+            let squeezed =
+                sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
+            crate::challenge::lowest_128_bits(
                 sys,
                 Cow::Owned(format!("{loc} | joint_combiner")),
                 &squeezed,
                 true,
-            )?;
+            )?
+        } else {
+            sys.compute(Cow::Owned(format!("{loc} | joint_combiner var")), |_| F::zero())?
+        };
+        // Build the combined `table` commitment (kimchi `combine_table`,
+        // verifier.rs:1145-1165): `Σ jc^i·col_i + jc^{max_joint}·table_ids [+
+        // jc·runtime]`. For single-column range_check/xor tables
+        // `max_joint_size = 1`, so the table_id term is one endo scale — emitted
+        // even when `joint_combiner = 0` (non-joint), exactly as OCaml builds it.
+        //
+        // NOTE (open): the wrap `OptSponge` defers its absorb-permutes to squeeze
+        // time, so this endo currently lands before the witness-commitment
+        // consume rather than between it and the `sorted` consume as in jsoo.
+        // Making the opt sponge consume incrementally (like OCaml) is the
+        // remaining step for byte-identical row placement; all gate-type COUNTS
+        // already match.
+        if let Some(vlk) = &vk.lookup {
+            if !vlk.lookup_table.is_empty() {
+                let mut table = vlk.lookup_table[0].clone();
+                for col in &vlk.lookup_table[1..] {
+                    let scaled = crate::scalar_challenge::endo(
+                        sys,
+                        Cow::Owned(format!("{loc} | table col endo")),
+                        &table,
+                        &jc,
+                        crate::common::SCALAR_CHALLENGE_BITS,
+                        endo_base,
+                    )?;
+                    table = crate::plonk_curve_ops::add_fast(
+                        sys,
+                        Cow::Owned(format!("{loc} | table col add")),
+                        col,
+                        &scaled,
+                    )?;
+                }
+                if let Some(table_ids) = &vlk.table_ids {
+                    let scaled = crate::scalar_challenge::endo(
+                        sys,
+                        Cow::Owned(format!("{loc} | table_id endo")),
+                        table_ids,
+                        &jc,
+                        crate::common::SCALAR_CHALLENGE_BITS,
+                        endo_base,
+                    )?;
+                    table = crate::plonk_curve_ops::add_fast(
+                        sys,
+                        Cow::Owned(format!("{loc} | table_id add")),
+                        &table,
+                        &scaled,
+                    )?;
+                }
+                if let Some(rt) = &lk.runtime {
+                    let scaled = crate::scalar_challenge::endo(
+                        sys,
+                        Cow::Owned(format!("{loc} | table runtime endo")),
+                        &rt[0],
+                        &jc,
+                        crate::common::SCALAR_CHALLENGE_BITS,
+                        endo_base,
+                    )?;
+                    table = crate::plonk_curve_ops::add_fast(
+                        sys,
+                        Cow::Owned(format!("{loc} | table runtime add")),
+                        &table,
+                        &scaled,
+                    )?;
+                }
+                combined_table = Some(table);
+            }
         }
         for com in &lk.sorted {
             sponge.absorb_commitment(
@@ -653,12 +729,32 @@ where
         }
         commitments.extend(mlk.aggreg.iter().map(just));
     }
-    if let Some(lk) = &vk.lookup {
-        commitments.extend(lk.lookup_table.iter().map(just));
+    // The `LookupTable` column enters the polyscale as the single combined
+    // table commitment computed above (before the `sorted[]` absorb).
+    if let Some(table) = &combined_table {
+        commitments.push(just(table));
     }
     if let Some(mlk) = &messages.lookup {
         if let Some(rt) = &mlk.runtime {
             commitments.extend(rt.iter().map(just));
+        }
+    }
+    // Then, in kimchi order (verifier.rs:616-648), the runtime-table selector
+    // and the per-pattern lookup KIND selectors: xor, lookup, range_check,
+    // foreign_field_mul. These are the `lookup_selectors` of the step VK
+    // (distinct from the optional GATE selectors above), each present iff the
+    // step evaluates that lookup pattern.
+    if let Some(lk) = &vk.lookup {
+        for s in [
+            &lk.runtime_tables_selector,
+            &lk.selector_xor,
+            &lk.selector_lookup,
+            &lk.selector_range_check,
+            &lk.selector_ffmul,
+        ] {
+            if let Some(p) = s {
+                commitments.push(just(p));
+            }
         }
     }
 
@@ -908,11 +1004,13 @@ mod tests {
                 coefficients: mkpts(sys, &self.coefficients)?,
                 sigma_init: mkpts(sys, &self.sigma_init)?,
                 sigma_last: mkpts(sys, &self.sigma_last)?,
+                lookup: None,
             };
             let messages = Messages {
                 w_comm,
                 z_comm,
                 t_comm,
+                lookup: None,
             };
             let mut lr = vec![];
             for &(l, r) in &self.lr {
@@ -1169,11 +1267,13 @@ mod tests {
                 coefficients: mkpts(sys, &self.coefficients)?,
                 sigma_init: mkpts(sys, &self.sigma_init)?,
                 sigma_last: mkpts(sys, &self.sigma_last)?,
+                lookup: None,
             };
             let messages = Messages {
                 w_comm,
                 z_comm: mkpts(sys, &self.z_comm)?,
                 t_comm: mkpts(sys, &self.t_comm)?,
+                lookup: None,
             };
             let mut lr = vec![];
             for &(l, r) in &self.lr {
