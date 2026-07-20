@@ -318,6 +318,23 @@ pub enum RecordedConstraint {
         #[serde(with = "fp_decimal::vec", default)]
         coeffs: Vec<Fp>,
     },
+    /// A `ForeignFieldAdd` gate row: 8 variables in column order
+    /// `[left0..2, right0..2, field_overflow, carry]`, plus the coefficients
+    /// `[modulus0..2, sign]`.
+    ForeignFieldAdd {
+        row: Vec<LinComb>,
+        #[serde(with = "fp_decimal::vec", default)]
+        coeffs: Vec<Fp>,
+    },
+    /// A `ForeignFieldMul` gate: the current row (15 vars) and the trailing
+    /// `Zero` row (12 vars), plus the coefficients
+    /// `[foreign_field_modulus2, neg_foreign_field_modulus0..2]`.
+    ForeignFieldMul {
+        curr: Vec<LinComb>,
+        next: Vec<LinComb>,
+        #[serde(with = "fp_decimal::vec", default)]
+        coeffs: Vec<Fp>,
+    },
     /// The o1js `DynamicProof.verify(vk)` declaration point: the replay
     /// expands OCaml's side-loaded verification-key witness gadget here
     /// (`Side_loaded.in_circuit` + in-circuit `vk_digest`) and asserts the
@@ -595,8 +612,14 @@ impl RecordedCircuit {
                         check(lincomb)?;
                     }
                 }
-                RecordedConstraint::Raw { row, .. } => {
+                RecordedConstraint::Raw { row, .. }
+                | RecordedConstraint::ForeignFieldAdd { row, .. } => {
                     for lincomb in row {
+                        check(lincomb)?;
+                    }
+                }
+                RecordedConstraint::ForeignFieldMul { curr, next, .. } => {
+                    for lincomb in curr.iter().chain(next.iter()) {
                         check(lincomb)?;
                     }
                 }
@@ -1082,6 +1105,23 @@ impl RecordedApp {
                         loc!(),
                     )?
                 }
+                RecordedConstraint::ForeignFieldAdd { row, coeffs } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::ForeignFieldAdd(
+                        row.iter().map(resolve).collect(),
+                        coeffs.clone(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
+                RecordedConstraint::ForeignFieldMul { curr, next, coeffs } => sys.add_constraint(
+                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::ForeignFieldMul(
+                        curr.iter().map(resolve).collect(),
+                        next.iter().map(resolve).collect(),
+                        coeffs.clone(),
+                    )),
+                    None,
+                    loc!(),
+                )?,
             }
         }
 

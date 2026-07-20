@@ -279,6 +279,14 @@ pub enum KimchiConstraint<Var, Field> {
     /// coefficients. Mirrors o1js `Gates.raw` (used e.g. for the trailing
     /// `Zero` check of an XOR chain).
     Raw(GateType, Vec<Var>, Vec<Field>),
+    /// A single `ForeignFieldAdd` row: 8 variables in column order
+    /// `[left0..2, right0..2, field_overflow, carry]` (cols 8-14 unused/None),
+    /// plus the 4 coefficients `[modulus0..2, sign]`.
+    ForeignFieldAdd(Vec<Var>, Vec<Field>),
+    /// A `ForeignFieldMul` gate: the current row (15 variables) and the trailing
+    /// `Zero` row (12 variables, cols 12-14 unused/None), plus the 4 coefficients
+    /// `[foreign_field_modulus2, neg_foreign_field_modulus0..2]`.
+    ForeignFieldMul(Vec<Var>, Vec<Var>, Vec<Field>),
 }
 
 /* TODO: This is a Unique_id in OCaml. */
@@ -1931,6 +1939,31 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
                     .collect();
                 self.add_row(labels, loc, vars, gate_type, coeffs);
             }
+            KimchiConstraint::ForeignFieldAdd(vars, coeffs) => {
+                assert!(vars.len() <= COLUMNS, "ForeignFieldAdd has at most 15 variables");
+                let mut row: Vec<Option<V>> = vars
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                row.resize_with(COLUMNS, || None);
+                self.add_row(labels, loc, row, GateType::ForeignFieldAdd, coeffs);
+            }
+            KimchiConstraint::ForeignFieldMul(curr, next, coeffs) => {
+                assert!(curr.len() <= COLUMNS, "ForeignFieldMul curr has at most 15 variables");
+                assert!(next.len() <= COLUMNS, "ForeignFieldMul next has at most 15 variables");
+                let mut curr_row: Vec<Option<V>> = curr
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                curr_row.resize_with(COLUMNS, || None);
+                let mut next_row: Vec<Option<V>> = next
+                    .into_iter()
+                    .map(|x| Some(self.reduce_to_var(labels, loc, x)))
+                    .collect();
+                next_row.resize_with(COLUMNS, || None);
+                self.add_row(labels, loc, curr_row, GateType::ForeignFieldMul, coeffs);
+                self.add_row(labels, loc, next_row, GateType::Zero, vec![]);
+            }
         }
     }
     pub(crate) fn sponge_params(
@@ -2065,7 +2098,9 @@ where
             | KimchiConstraint::Lookup { .. }
             | KimchiConstraint::Xor16 { .. }
             | KimchiConstraint::Rot64 { .. }
-            | KimchiConstraint::Raw { .. } => (),
+            | KimchiConstraint::Raw { .. }
+            | KimchiConstraint::ForeignFieldAdd { .. }
+            | KimchiConstraint::ForeignFieldMul { .. } => (),
         };
         Ok(())
     }

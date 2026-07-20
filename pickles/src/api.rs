@@ -1071,18 +1071,20 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 select_opt(sys, field_coords(&|l| l.gate_rot, shape.gate_rot.is_some()))?;
             let gate_xor =
                 select_opt(sys, field_coords(&|l| l.gate_xor, shape.gate_xor.is_some()))?;
-            let gate_foreign_field_add = select_opt(
-                sys,
-                field_coords(
-                    &|l| l.gate_foreign_field_add,
-                    shape.gate_foreign_field_add.is_some(),
-                ),
-            )?;
+            // OCaml witnesses foreign_field_mul BEFORE foreign_field_add here
+            // (verified against jsoo's ff wrap), so allocate mul first.
             let gate_foreign_field_mul = select_opt(
                 sys,
                 field_coords(
                     &|l| l.gate_foreign_field_mul,
                     shape.gate_foreign_field_mul.is_some(),
+                ),
+            )?;
+            let gate_foreign_field_add = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.gate_foreign_field_add,
+                    shape.gate_foreign_field_add.is_some(),
                 ),
             )?;
             let gate_range_check1 = select_opt(
