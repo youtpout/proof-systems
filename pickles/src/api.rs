@@ -1003,6 +1003,115 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // right to left. Its vector map also invokes `f` from the last element
         // to the first. Allocate in that exact order, then assemble the Rust
         // record without adding constraints.
+        //
+        // The lookup / optional-gate commitments are the RIGHTMOST fields of the
+        // `Plonk_verification_key_evals.Step.t` record, so OCaml allocates them
+        // FIRST (before endomul_scalar), in reverse field order:
+        // lookup_selector_ffmul, _range_check, _lookup, _xor, runtime_tables_selector,
+        // lookup_table_ids, lookup_table_comm (reversed), then the gate selectors
+        // rot, xor, ffadd, ffmul, range_check1, range_check0.
+        let lookup: Option<crate::incrementally_verify::LookupVkComm<Fq>> = if let Some(shape) =
+            w.lookup.clone()
+        {
+            let zero = Fq::from(0u64);
+            let field_coords =
+                |get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>, present: bool| -> Option<Vec<(Fq, Fq)>> {
+                    if !present {
+                        return None;
+                    }
+                    Some(
+                        branch_definitions
+                            .iter()
+                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or((zero, zero)))
+                            .collect(),
+                    )
+                };
+            let mut select_opt =
+                |sys: &mut RunState<Fq>, coords: Option<Vec<(Fq, Fq)>>| -> SnarkyResult<Option<Point<Fq>>> {
+                    match coords {
+                        Some(c) => Ok(Some(choose_pt(sys, c)?)),
+                        None => Ok(None),
+                    }
+                };
+            let selector_ffmul = select_opt(
+                sys,
+                field_coords(&|l| l.selector_ffmul, shape.selector_ffmul.is_some()),
+            )?;
+            let selector_range_check = select_opt(
+                sys,
+                field_coords(&|l| l.selector_range_check, shape.selector_range_check.is_some()),
+            )?;
+            let selector_lookup = select_opt(
+                sys,
+                field_coords(&|l| l.selector_lookup, shape.selector_lookup.is_some()),
+            )?;
+            let selector_xor =
+                select_opt(sys, field_coords(&|l| l.selector_xor, shape.selector_xor.is_some()))?;
+            let runtime_tables_selector = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.runtime_tables_selector,
+                    shape.runtime_tables_selector.is_some(),
+                ),
+            )?;
+            let table_ids =
+                select_opt(sys, field_coords(&|l| l.table_ids, shape.table_ids.is_some()))?;
+            // lookup_table_comm: OCaml's `Vector.map` runs last-element-first, so
+            // allocate the columns in reverse, then store forward for the digest.
+            let mut lookup_table: Vec<Point<Fq>> = Vec::with_capacity(shape.lookup_table.len());
+            for i in (0..shape.lookup_table.len()).rev() {
+                let coords: Vec<(Fq, Fq)> = branch_definitions
+                    .iter()
+                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or((zero, zero)))
+                    .collect();
+                lookup_table.push(choose_pt(sys, coords)?);
+            }
+            lookup_table.reverse();
+            let gate_rot =
+                select_opt(sys, field_coords(&|l| l.gate_rot, shape.gate_rot.is_some()))?;
+            let gate_xor =
+                select_opt(sys, field_coords(&|l| l.gate_xor, shape.gate_xor.is_some()))?;
+            let gate_foreign_field_add = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.gate_foreign_field_add,
+                    shape.gate_foreign_field_add.is_some(),
+                ),
+            )?;
+            let gate_foreign_field_mul = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.gate_foreign_field_mul,
+                    shape.gate_foreign_field_mul.is_some(),
+                ),
+            )?;
+            let gate_range_check1 = select_opt(
+                sys,
+                field_coords(&|l| l.gate_range_check1, shape.gate_range_check1.is_some()),
+            )?;
+            let gate_range_check0 = select_opt(
+                sys,
+                field_coords(&|l| l.gate_range_check0, shape.gate_range_check0.is_some()),
+            )?;
+            Some(crate::incrementally_verify::LookupVkComm {
+                joint_lookup_used: shape.joint_lookup_used,
+                gate_range_check0,
+                gate_range_check1,
+                gate_foreign_field_mul,
+                gate_foreign_field_add,
+                gate_xor,
+                gate_rot,
+                lookup_table,
+                table_ids,
+                runtime_tables_selector,
+                selector_xor,
+                selector_lookup,
+                selector_range_check,
+                selector_ffmul,
+            })
+        } else {
+            None
+        };
         let endomul_scalar = choose_pt(
             sys,
             branch_definitions
@@ -1060,110 +1169,6 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 .map(|branch| branch.sigma_init.clone())
                 .collect(),
         )?;
-        // Select the step VK lookup commitments across branches (one-hot),
-        // when the branch(es) use lookup gates. Structure (which commitments
-        // are present) comes from `w.lookup`, uniform over branches; values are
-        // one-hot selected per branch. `None` keeps the no-lookup layout.
-        let lookup: Option<crate::incrementally_verify::LookupVkComm<Fq>> = if let Some(shape) =
-            w.lookup.clone()
-        {
-            let zero = Fq::from(0u64);
-            // Pure coordinate builders (borrow `branch_definitions`, not `sys`).
-            let field_coords =
-                |get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>, present: bool| -> Option<Vec<(Fq, Fq)>> {
-                    if !present {
-                        return None;
-                    }
-                    Some(
-                        branch_definitions
-                            .iter()
-                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or((zero, zero)))
-                            .collect(),
-                    )
-                };
-            let mut lookup_table = Vec::with_capacity(shape.lookup_table.len());
-            for i in 0..shape.lookup_table.len() {
-                let coords: Vec<(Fq, Fq)> = branch_definitions
-                    .iter()
-                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or((zero, zero)))
-                    .collect();
-                lookup_table.push(choose_pt(sys, coords)?);
-            }
-            let mut select_opt =
-                |sys: &mut RunState<Fq>, coords: Option<Vec<(Fq, Fq)>>| -> SnarkyResult<Option<Point<Fq>>> {
-                    match coords {
-                        Some(c) => Ok(Some(choose_pt(sys, c)?)),
-                        None => Ok(None),
-                    }
-                };
-            let table_ids =
-                select_opt(sys, field_coords(&|l| l.table_ids, shape.table_ids.is_some()))?;
-            let runtime_tables_selector = select_opt(
-                sys,
-                field_coords(
-                    &|l| l.runtime_tables_selector,
-                    shape.runtime_tables_selector.is_some(),
-                ),
-            )?;
-            let selector_xor =
-                select_opt(sys, field_coords(&|l| l.selector_xor, shape.selector_xor.is_some()))?;
-            let selector_lookup = select_opt(
-                sys,
-                field_coords(&|l| l.selector_lookup, shape.selector_lookup.is_some()),
-            )?;
-            let selector_range_check = select_opt(
-                sys,
-                field_coords(&|l| l.selector_range_check, shape.selector_range_check.is_some()),
-            )?;
-            let selector_ffmul = select_opt(
-                sys,
-                field_coords(&|l| l.selector_ffmul, shape.selector_ffmul.is_some()),
-            )?;
-            let gate_range_check0 = select_opt(
-                sys,
-                field_coords(&|l| l.gate_range_check0, shape.gate_range_check0.is_some()),
-            )?;
-            let gate_range_check1 = select_opt(
-                sys,
-                field_coords(&|l| l.gate_range_check1, shape.gate_range_check1.is_some()),
-            )?;
-            let gate_foreign_field_mul = select_opt(
-                sys,
-                field_coords(
-                    &|l| l.gate_foreign_field_mul,
-                    shape.gate_foreign_field_mul.is_some(),
-                ),
-            )?;
-            let gate_foreign_field_add = select_opt(
-                sys,
-                field_coords(
-                    &|l| l.gate_foreign_field_add,
-                    shape.gate_foreign_field_add.is_some(),
-                ),
-            )?;
-            let gate_xor =
-                select_opt(sys, field_coords(&|l| l.gate_xor, shape.gate_xor.is_some()))?;
-            let gate_rot =
-                select_opt(sys, field_coords(&|l| l.gate_rot, shape.gate_rot.is_some()))?;
-            Some(crate::incrementally_verify::LookupVkComm {
-                joint_lookup_used: shape.joint_lookup_used,
-                gate_range_check0,
-                gate_range_check1,
-                gate_foreign_field_mul,
-                gate_foreign_field_add,
-                gate_xor,
-                gate_rot,
-                lookup_table,
-                table_ids,
-                runtime_tables_selector,
-                selector_xor,
-                selector_lookup,
-                selector_range_check,
-                selector_ffmul,
-            })
-        } else {
-            None
-        };
         let vk = VerificationKeyComm {
             generic,
             psm,

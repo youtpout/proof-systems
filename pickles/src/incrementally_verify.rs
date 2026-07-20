@@ -538,8 +538,10 @@ where
         // (+runtime) absorbs so their permutations land before the endo.
         sponge.consume_all_pending(sys, Cow::Owned(format!("{loc} | consume_all_pending (pre-jc)")))?;
         // The joint combiner: squeezed (128-bit) for a multi-column table,
-        // otherwise the constant 0 materialised as a variable so the table
-        // combination emits identical rows regardless of joint usage.
+        // otherwise the CONSTANT 0 (OCaml `{ inner = Field.zero }`,
+        // wrap_verifier.ml:1039). A constant scalar is inlined into the endo's
+        // coefficients rather than wired, so the table endo's copy constraints
+        // match jsoo — a witnessed 0 would add spurious permutation cells.
         let jc: FieldVar<F> = if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
             let squeezed =
                 sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
@@ -550,7 +552,7 @@ where
                 true,
             )?
         } else {
-            sys.compute(Cow::Owned(format!("{loc} | joint_combiner var")), |_| F::zero())?
+            FieldVar::constant(F::zero())
         };
         // absorb the sorted columns (queued; flushed at the beta squeeze).
         for com in &lk.sorted {
@@ -561,63 +563,39 @@ where
             );
         }
         // Combined `table` commitment (OCaml `compute_lookup_table_comm`,
-        // wrap_verifier.ml:1093-1206; kimchi `combine_table`): fold the columns
-        // from `table_ids` by `endo(acc, joint_combiner)` + column. For the
-        // single-column range_check/xor tables `max_joint_size = 1`, so it is one
-        // endo scale of `table_ids` + the column — emitted even when
-        // `joint_combiner = 0` (non-joint), exactly as OCaml builds it.
+        // wrap_verifier.ml:1093-1206; kimchi `combine_table`): fold from
+        // `table_ids` over the columns IN REVERSE, `acc = endo(acc, jc) + column`
+        // (OCaml operand order `scaled_acc + comm`). For the single-column
+        // range_check/xor tables (`table_ids` present, no runtime,
+        // `max_joint_size = 1`) this is `endo(table_ids, jc) + col0` — one endo
+        // scale, emitted even when `joint_combiner = 0` (non-joint).
         if let Some(vlk) = &vk.lookup {
             if !vlk.lookup_table.is_empty() {
-                let mut table = vlk.lookup_table[0].clone();
-                for col in &vlk.lookup_table[1..] {
-                    let scaled = crate::scalar_challenge::endo(
-                        sys,
-                        Cow::Owned(format!("{loc} | table col endo")),
-                        &table,
-                        &jc,
-                        crate::common::SCALAR_CHALLENGE_BITS,
-                        endo_base,
-                    )?;
-                    table = crate::plonk_curve_ops::add_fast(
-                        sys,
-                        Cow::Owned(format!("{loc} | table col add")),
-                        col,
-                        &scaled,
-                    )?;
+                // TODO: runtime tables merge into the second column in OCaml;
+                // range_check/xor (our only lookup users) have none.
+                let mut acc: Option<Point<F>> = vlk.table_ids.clone();
+                for col in vlk.lookup_table.iter().rev() {
+                    acc = Some(match acc {
+                        Some(a) => {
+                            let scaled = crate::scalar_challenge::endo(
+                                sys,
+                                Cow::Owned(format!("{loc} | table endo")),
+                                &a,
+                                &jc,
+                                crate::common::SCALAR_CHALLENGE_BITS,
+                                endo_base,
+                            )?;
+                            crate::plonk_curve_ops::add_fast(
+                                sys,
+                                Cow::Owned(format!("{loc} | table add")),
+                                &scaled,
+                                col,
+                            )?
+                        }
+                        None => col.clone(),
+                    });
                 }
-                if let Some(table_ids) = &vlk.table_ids {
-                    let scaled = crate::scalar_challenge::endo(
-                        sys,
-                        Cow::Owned(format!("{loc} | table_id endo")),
-                        table_ids,
-                        &jc,
-                        crate::common::SCALAR_CHALLENGE_BITS,
-                        endo_base,
-                    )?;
-                    table = crate::plonk_curve_ops::add_fast(
-                        sys,
-                        Cow::Owned(format!("{loc} | table_id add")),
-                        &table,
-                        &scaled,
-                    )?;
-                }
-                if let Some(rt) = &lk.runtime {
-                    let scaled = crate::scalar_challenge::endo(
-                        sys,
-                        Cow::Owned(format!("{loc} | table runtime endo")),
-                        &rt[0],
-                        &jc,
-                        crate::common::SCALAR_CHALLENGE_BITS,
-                        endo_base,
-                    )?;
-                    table = crate::plonk_curve_ops::add_fast(
-                        sys,
-                        Cow::Owned(format!("{loc} | table runtime add")),
-                        &table,
-                        &scaled,
-                    )?;
-                }
-                combined_table = Some(table);
+                combined_table = acc;
             }
         }
     }
