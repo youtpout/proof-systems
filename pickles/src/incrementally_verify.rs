@@ -567,11 +567,14 @@ where
         let jc: FieldVar<F> = if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
             let squeezed =
                 sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
+            // The joint combiner is a SCALAR challenge (OCaml `Opt.scalar_challenge`,
+            // wrap_verifier.ml:1030) — `constrain_low_bits:false`, like alpha/zeta;
+            // `true` would double the EndoMulScalar (constrain both hi AND lo).
             crate::challenge::lowest_128_bits(
                 sys,
                 Cow::Owned(format!("{loc} | joint_combiner")),
                 &squeezed,
-                true,
+                false,
             )?
         } else {
             FieldVar::constant(F::zero())
