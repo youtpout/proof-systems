@@ -74,6 +74,33 @@ fn main() {
         return;
     }
 
+    if mode == "methodgates" {
+        // Per-branch METHOD-level kimchi gates (recorded app compiled bare),
+        // to diff against jsoo analyzeMethods. Native, no wasm.
+        let path = std::env::args().nth(2).expect("branches json path");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/rust-method-gates.json".into());
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let per_branch: Vec<serde_json::Value> = parsed
+            .into_iter()
+            .map(|b| {
+                let witness = vec![Fp::from(0u64); b.circuit.aux_count as usize];
+                let json = pickles::recorded::debug_recorded_method_gates(b.circuit, witness)
+                    .expect("method gates");
+                serde_json::from_str(&json).unwrap()
+            })
+            .collect();
+        std::fs::write(&out, serde_json::to_string(&per_branch).unwrap()).expect("write");
+        eprintln!("method gates dumped to {out}");
+        return;
+    }
+
     if mode == "cache" {
         // Round-trip + timing of the prover-key cache:
         // compile -> to_cache_bytes -> from_cache_bytes, comparing VKs.

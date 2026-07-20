@@ -1774,6 +1774,65 @@ pub fn debug_step_vk_selectors(branches: Vec<RecordedProgramBranch>) -> Result<S
     Ok(out)
 }
 
+/// A bare kimchi circuit that runs ONLY the recorded application `main` (no
+/// Pickles step machinery), so we can dump the method-level gates and diff
+/// them against jsoo's `analyzeMethods` output to find recording infidelities.
+struct RecordedAppBare {
+    app: RecordedApp,
+    witness: Vec<Fp>,
+}
+
+impl snarky::api::SnarkyCircuit for RecordedAppBare {
+    type Curve = Vesta;
+    type Proof = poly_commitment::ipa::OpeningProof<Vesta, { snarky::FULL_ROUNDS }>;
+    type PrivateInput = ();
+    type PublicInput = ();
+    type PublicOutput = ();
+    const PREV_CHALLENGES: usize = 0;
+
+    fn srs(size: usize) -> std::sync::Arc<poly_commitment::ipa::SRS<Vesta>> {
+        crate::common::tick_srs(size)
+    }
+
+    fn circuit(
+        &self,
+        sys: &mut snarky::runner::RunState<Fp>,
+        _public: Self::PublicInput,
+        _private: Option<&Self::PrivateInput>,
+    ) -> snarky::errors::SnarkyResult<()> {
+        self.app.main(sys, Some(&self.witness))?;
+        Ok(())
+    }
+}
+
+/// Debug: the method-level kimchi gates of a single recorded circuit (the
+/// application `main` compiled bare), for a gate-by-gate diff against jsoo's
+/// `analyzeMethods`.
+#[doc(hidden)]
+pub fn debug_recorded_method_gates(
+    circuit: RecordedCircuit,
+    witness: Vec<Fp>,
+) -> Result<String, String> {
+    use snarky::api::SnarkyCircuit as _;
+    let bare = RecordedAppBare {
+        app: RecordedApp { circuit },
+        witness,
+    };
+    let (prover, _verifier) = bare
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+        .map_err(|err| format!("{err:?}"))?;
+    #[derive(serde::Serialize)]
+    struct Dump {
+        public_input_size: usize,
+        gates: Vec<kimchi::circuits::gate::CircuitGate<Fp>>,
+    }
+    let dump = Dump {
+        public_input_size: prover.index.cs.public,
+        gates: prover.index.cs.gates.to_vec(),
+    };
+    serde_json::to_string(&dump).map_err(|err| err.to_string())
+}
+
 /// Reusable indexes for the first N1 transition over a retained base proof.
 pub struct RecordedCompiledN1 {
     circuit: RecordedCircuit,
