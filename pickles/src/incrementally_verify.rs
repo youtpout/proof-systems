@@ -69,6 +69,17 @@ pub struct VerificationKeyComm<F: PrimeField> {
 /// lookup_table[], table_ids?, runtime_tables_selector?, then the selectors
 /// xor?, lookup?, range_check?, ffmul?.
 pub struct LookupVkComm<F: PrimeField> {
+    /// Whether the lookup uses a multi-column (joint) table — gates whether the
+    /// joint combiner challenge is squeezed. False for range_check/xor.
+    pub joint_lookup_used: bool,
+    /// Optional GATE selector commitments (kimchi digest order): range_check0,
+    /// range_check1, ffmul, ffadd, xor, rot — absorbed BEFORE the lookup index.
+    pub gate_range_check0: Option<Point<F>>,
+    pub gate_range_check1: Option<Point<F>>,
+    pub gate_foreign_field_mul: Option<Point<F>>,
+    pub gate_foreign_field_add: Option<Point<F>>,
+    pub gate_xor: Option<Point<F>>,
+    pub gate_rot: Option<Point<F>>,
     pub lookup_table: Vec<Point<F>>,
     pub table_ids: Option<Point<F>>,
     pub runtime_tables_selector: Option<Point<F>>,
@@ -79,9 +90,20 @@ pub struct LookupVkComm<F: PrimeField> {
 }
 
 impl<F: PrimeField> LookupVkComm<F> {
+    pub fn joint_lookup_used(&self) -> bool {
+        self.joint_lookup_used
+    }
     /// The commitments in kimchi `digest` absorption order.
     fn digest_order(&self) -> Vec<&Point<F>> {
-        let mut v: Vec<&Point<F>> = self.lookup_table.iter().collect();
+        let mut v: Vec<&Point<F>> = Vec::new();
+        // Optional gate selectors first (verifier_index.rs:467-489 order).
+        v.extend(self.gate_range_check0.iter());
+        v.extend(self.gate_range_check1.iter());
+        v.extend(self.gate_foreign_field_mul.iter());
+        v.extend(self.gate_foreign_field_add.iter());
+        v.extend(self.gate_xor.iter());
+        v.extend(self.gate_rot.iter());
+        v.extend(self.lookup_table.iter());
         v.extend(self.table_ids.iter());
         v.extend(self.runtime_tables_selector.iter());
         v.extend(self.selector_xor.iter());
@@ -100,6 +122,19 @@ pub struct Messages<F: PrimeField> {
     pub z_comm: Vec<Point<F>>,
     /// The quotient commitment (7 chunks).
     pub t_comm: Vec<Point<F>>,
+    /// Proof lookup commitments (sorted / aggregation / runtime), present only
+    /// when the step used lookup gates. `None` keeps the pre-lookup transcript.
+    pub lookup: Option<LookupMsgComm<F>>,
+}
+
+/// The proof's lookup commitments absorbed by the Fq-sponge (kimchi
+/// `verifier.rs` oracles order): the `sorted` polynomials (after the witness
+/// commitments), then the `aggreg` polynomial (after gamma). `runtime` is
+/// absorbed before the joint combiner when runtime tables are used.
+pub struct LookupMsgComm<F: PrimeField> {
+    pub sorted: Vec<Vec<Point<F>>>,
+    pub aggreg: Vec<Point<F>>,
+    pub runtime: Option<Vec<Point<F>>>,
 }
 
 /// The IPA opening proof pieces (`Openings.Bulletproof.t`), plus the SRS
@@ -467,6 +502,36 @@ where
         sponge.absorb_commitment(sys, Cow::Owned(format!("{loc} | absorb w_comm")), &to_pvs(w));
     }
 
+    // Lookup (kimchi `verifier.rs` oracles): if runtime tables are used absorb
+    // the runtime commitment, then (for a multi-column table) squeeze the joint
+    // combiner — range_check/xor are single-value here so joint_combiner is 0
+    // and NO challenge is squeezed — then absorb the sorted commitments.
+    if let Some(lk) = &messages.lookup {
+        if let Some(runtime) = &lk.runtime {
+            sponge.absorb_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | absorb lookup runtime")),
+                &to_pvs(runtime),
+            );
+        }
+        if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
+            let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
+            let _ = crate::challenge::lowest_128_bits(
+                sys,
+                Cow::Owned(format!("{loc} | joint_combiner")),
+                &squeezed,
+                true,
+            )?;
+        }
+        for com in &lk.sorted {
+            sponge.absorb_commitment(
+                sys,
+                Cow::Owned(format!("{loc} | absorb lookup sorted")),
+                &to_pvs(com),
+            );
+        }
+    }
+
     // == IVC Step 7: beta, gamma (raw 128-bit, `Opt.challenge`) ==
     let beta = {
         let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze beta")))?;
@@ -476,6 +541,16 @@ where
         let squeezed = sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze gamma")))?;
         crate::challenge::lowest_128_bits(sys, Cow::Owned(format!("{loc} | squeeze gamma")), &squeezed, true)?
     };
+
+    // Lookup: absorb the aggregation commitment (kimchi absorbs it after gamma,
+    // before z_comm).
+    if let Some(lk) = &messages.lookup {
+        sponge.absorb_commitment(
+            sys,
+            Cow::Owned(format!("{loc} | absorb lookup aggreg")),
+            &to_pvs(&lk.aggreg),
+        );
+    }
 
     // == IVC Steps 9-10: absorb z_comm, sample alpha (`Opt.scalar_challenge`) ==
     sponge.absorb_commitment(

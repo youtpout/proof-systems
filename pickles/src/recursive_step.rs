@@ -3230,6 +3230,9 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         which_branch: 0,
         branches: vec![],
         lookup: crate::api::LookupBranchData::from_step_verifier(svi),
+        lookup_sorted: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).0,
+        lookup_aggreg: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).1,
+        lookup_runtime: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).2,
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
@@ -4774,6 +4777,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
             .iter()
             .map(|&p| mkpt(sys, p))
             .collect::<SnarkyResult<Vec<_>>>()?,
+        lookup: None,
     };
     // `Wrap_proof.typ` checks every LR point here. The wrap verification key
     // itself is the already-witnessed `dlog_index`; witnessing/checking a
@@ -5647,6 +5651,7 @@ impl<
                 .iter()
                 .map(|&p| mkpt(sys, p))
                 .collect::<SnarkyResult<Vec<_>>>()?,
+        lookup: None,
         };
         let mut lr = vec![];
         for &(l, r) in &d.lr {

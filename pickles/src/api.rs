@@ -342,9 +342,57 @@ pub struct LookupBranchData {
     pub selector_lookup: Option<(Fq, Fq)>,
     pub selector_range_check: Option<(Fq, Fq)>,
     pub selector_ffmul: Option<(Fq, Fq)>,
+    /// Optional GATE selector commitments (distinct from the lookup selectors),
+    /// absorbed into the index digest BEFORE the lookup commitments in kimchi
+    /// `digest` order: range_check0, range_check1, ffmul, ffadd, xor, rot.
+    pub gate_range_check0: Option<(Fq, Fq)>,
+    pub gate_range_check1: Option<(Fq, Fq)>,
+    pub gate_foreign_field_mul: Option<(Fq, Fq)>,
+    pub gate_foreign_field_add: Option<(Fq, Fq)>,
+    pub gate_xor: Option<(Fq, Fq)>,
+    pub gate_rot: Option<(Fq, Fq)>,
+}
+
+/// The proof lookup commitments (`sorted[]`, `aggreg`, optional `runtime`) a
+/// wrap witness carries. For structure-only VK compiles the VALUES are
+/// irrelevant, so a lookup-using branch gets on-curve placeholders sized by
+/// `sorted_count`; a no-lookup branch gets empty vectors.
+pub(crate) fn proof_lookup_commitments(
+    lk: &Option<LookupBranchData>,
+) -> (Vec<(Fq, Fq)>, (Fq, Fq), Option<(Fq, Fq)>) {
+    match lk {
+        Some(l) => {
+            use ark_ec::AffineRepr;
+            let g = Vesta::generator();
+            let pt = (g.x, g.y);
+            let runtime = if l.uses_runtime_tables { Some(pt) } else { None };
+            (vec![pt; l.sorted_count()], pt, runtime)
+        }
+        None => (vec![], (Fq::from(0u64), Fq::from(0u64)), None),
+    }
 }
 
 impl LookupBranchData {
+    /// Number of `sorted` lookup polynomials in the proof = kimchi's
+    /// `max_lookups_per_row + 1` over the used patterns (Xor/RangeCheck/
+    /// ForeignFieldMul = 4, Lookup = 3).
+    pub fn sorted_count(&self) -> usize {
+        let mut max = 0usize;
+        if self.xor {
+            max = max.max(4);
+        }
+        if self.range_check0 || self.range_check1 || self.rot {
+            max = max.max(4);
+        }
+        if self.foreign_field_mul {
+            max = max.max(4);
+        }
+        if self.lookup {
+            max = max.max(3);
+        }
+        max + 1
+    }
+
     /// Extracts the optional-gate / lookup usage of a step branch from its
     /// verifier index, or `None` if the branch uses no lookup gates.
     pub fn from_step_verifier(
@@ -378,6 +426,12 @@ impl LookupBranchData {
                 selector_lookup: opt(&sel.lookup),
                 selector_range_check: opt(&sel.range_check),
                 selector_ffmul: opt(&sel.ffmul),
+                gate_range_check0: opt(&index.range_check0_comm),
+                gate_range_check1: opt(&index.range_check1_comm),
+                gate_foreign_field_mul: opt(&index.foreign_field_mul_comm),
+                gate_foreign_field_add: opt(&index.foreign_field_add_comm),
+                gate_xor: opt(&index.xor_comm),
+                gate_rot: opt(&index.rot_comm),
             }
         })
     }
@@ -444,6 +498,12 @@ pub struct WrapWitnessData {
     /// `None` for the common no-lookup case. For multi-branch programs the
     /// per-branch data lives in `branches`.
     pub lookup: Option<LookupBranchData>,
+    /// Proof lookup commitments (single chunk each): the `sorted` polynomials,
+    /// the `aggreg` polynomial, and the optional `runtime` table. Empty when the
+    /// step used no lookup gates.
+    pub lookup_sorted: Vec<(Fq, Fq)>,
+    pub lookup_aggreg: (Fq, Fq),
+    pub lookup_runtime: Option<(Fq, Fq)>,
     pub generic: (Fq, Fq),
     pub psm: (Fq, Fq),
     pub complete_add: (Fq, Fq),
@@ -1059,7 +1119,40 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 sys,
                 field_coords(&|l| l.selector_ffmul, shape.selector_ffmul.is_some()),
             )?;
+            let gate_range_check0 = select_opt(
+                sys,
+                field_coords(&|l| l.gate_range_check0, shape.gate_range_check0.is_some()),
+            )?;
+            let gate_range_check1 = select_opt(
+                sys,
+                field_coords(&|l| l.gate_range_check1, shape.gate_range_check1.is_some()),
+            )?;
+            let gate_foreign_field_mul = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.gate_foreign_field_mul,
+                    shape.gate_foreign_field_mul.is_some(),
+                ),
+            )?;
+            let gate_foreign_field_add = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.gate_foreign_field_add,
+                    shape.gate_foreign_field_add.is_some(),
+                ),
+            )?;
+            let gate_xor =
+                select_opt(sys, field_coords(&|l| l.gate_xor, shape.gate_xor.is_some()))?;
+            let gate_rot =
+                select_opt(sys, field_coords(&|l| l.gate_rot, shape.gate_rot.is_some()))?;
             Some(crate::incrementally_verify::LookupVkComm {
+                joint_lookup_used: shape.joint_lookup_used,
+                gate_range_check0,
+                gate_range_check1,
+                gate_foreign_field_mul,
+                gate_foreign_field_add,
+                gate_xor,
+                gate_rot,
                 lookup_table,
                 table_ids,
                 runtime_tables_selector,
@@ -1311,6 +1404,24 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                         .iter()
                         .map(|&p| mkpt(sys, p))
                         .collect::<SnarkyResult<Vec<_>>>()?,
+                    lookup: if w.lookup.is_some() {
+                        let mut sorted = Vec::with_capacity(w.lookup_sorted.len());
+                        for &p in &w.lookup_sorted {
+                            sorted.push(vec![mkpt(sys, p)?]);
+                        }
+                        let aggreg = vec![mkpt(sys, w.lookup_aggreg)?];
+                        let runtime = match w.lookup_runtime {
+                            Some(p) => Some(vec![mkpt(sys, p)?]),
+                            None => None,
+                        };
+                        Some(crate::incrementally_verify::LookupMsgComm {
+                            sorted,
+                            aggreg,
+                            runtime,
+                        })
+                    } else {
+                        None
+                    },
                 };
                 Ok((openings, messages))
             };
@@ -2044,6 +2155,9 @@ pub(crate) fn build_shared_base_wrap(
         // lookup usage (all lookup branches share the same feature-flag shape;
         // per-branch commitment VALUES are selected from `branches`).
         lookup: branches.iter().find_map(|b| b.lookup.clone()),
+        lookup_sorted: proof_lookup_commitments(&branches.iter().find_map(|b| b.lookup.clone())).0,
+        lookup_aggreg: proof_lookup_commitments(&branches.iter().find_map(|b| b.lookup.clone())).1,
+        lookup_runtime: proof_lookup_commitments(&branches.iter().find_map(|b| b.lookup.clone())).2,
         branches,
         step_domain_log2: svi0.domain.log_size_of_group as u8,
         step_vk_digest: svi0.digest::<VestaBase>(),
@@ -2136,6 +2250,9 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
             step_domain_log2: svi.domain.log_size_of_group as u8,
             step_vk_digest: svi.digest::<VestaBase>(),
         lookup: LookupBranchData::from_step_verifier(svi),
+        lookup_sorted: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).0,
+        lookup_aggreg: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).1,
+        lookup_runtime: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).2,
             generic: co(&svi.generic_comm.chunks[0]),
             psm: co(&svi.psm_comm.chunks[0]),
             complete_add: co(&svi.complete_add_comm.chunks[0]),
@@ -2402,6 +2519,9 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         lookup: LookupBranchData::from_step_verifier(svi),
+        lookup_sorted: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).0,
+        lookup_aggreg: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).1,
+        lookup_runtime: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).2,
         generic: co(&svi.generic_comm.chunks[0]),
         psm: co(&svi.psm_comm.chunks[0]),
         complete_add: co(&svi.complete_add_comm.chunks[0]),
