@@ -1782,6 +1782,29 @@ impl RecordedCompiledBase {
             .map_err(|err| RecordedProveError::Program(format!("wrap dump: {err}")))
     }
 
+    /// Dumps the STEP (app-logic) circuit gates in the `{ public_input_size,
+    /// gates }` schema — for gate-level diff against the jsoo step circuit
+    /// (`fp_prover_to_json`). Used to align app gadgets like `hashToGroup`.
+    pub fn dump_step_circuit_json(&self) -> Result<String, RecordedProveError> {
+        #[derive(serde::Serialize)]
+        struct Dump {
+            public_input_size: usize,
+            gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fp>>,
+        }
+        let step_prover = &self
+            .compiled
+            .step_indexes
+            .as_ref()
+            .expect("compiled Step indexes")
+            .0;
+        let dump = Dump {
+            public_input_size: step_prover.index.cs.public,
+            gates: step_prover.index.cs.gates.to_vec(),
+        };
+        serde_json::to_string(&dump)
+            .map_err(|err| RecordedProveError::Program(format!("step dump: {err}")))
+    }
+
     /// A proof-SHAPED base handle assembled from the compiled indexes
     /// without running either prover — the compile-time template donor for
     /// the recursive compiles. Its values are protocol-meaningless dummies;
