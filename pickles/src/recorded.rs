@@ -1690,7 +1690,21 @@ pub fn debug_step_vk_selectors(branches: Vec<RecordedProgramBranch>) -> Result<S
         .map(|branch| RecordedCompiledBase::compile(branch.circuit, branch.witness))
         .collect::<Result<_, _>>()
         .map_err(|err| format!("{err:?}"))?;
-    let inf = |c: &poly_commitment::commitment::PolyComm<Vesta>| c.chunks[0].is_zero();
+    use ark_ff::{BigInteger, PrimeField};
+    // x-coordinate as 32-byte little-endian hex (matches the first 32 bytes of
+    // Mina's compressed point encoding in the jsoo step-vk JSON `chunks`).
+    let xhex = |c: &poly_commitment::commitment::PolyComm<Vesta>| {
+        let p = c.chunks[0];
+        if p.is_zero() {
+            "INF".to_string()
+        } else {
+            p.x.into_bigint()
+                .to_bytes_le()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        }
+    };
     let mut out = String::new();
     for (i, base) in bases.iter().enumerate() {
         let svi = &base
@@ -1700,16 +1714,19 @@ pub fn debug_step_vk_selectors(branches: Vec<RecordedProgramBranch>) -> Result<S
             .expect("compiled Step indexes")
             .1
             .index;
-        out.push_str(&format!(
-            "branch {i} domain=2^{} generic_inf={} psm_inf={} complete_add_inf={} mul_inf={} emul_inf={} endomul_scalar_inf={}\n",
-            svi.domain.log_size_of_group,
-            inf(&svi.generic_comm),
-            inf(&svi.psm_comm),
-            inf(&svi.complete_add_comm),
-            inf(&svi.mul_comm),
-            inf(&svi.emul_comm),
-            inf(&svi.endomul_scalar_comm),
-        ));
+        out.push_str(&format!("branch {i} domain=2^{}\n", svi.domain.log_size_of_group));
+        out.push_str(&format!("  generic {}\n", xhex(&svi.generic_comm)));
+        out.push_str(&format!("  psm {}\n", xhex(&svi.psm_comm)));
+        out.push_str(&format!("  complete_add {}\n", xhex(&svi.complete_add_comm)));
+        out.push_str(&format!("  mul {}\n", xhex(&svi.mul_comm)));
+        out.push_str(&format!("  emul {}\n", xhex(&svi.emul_comm)));
+        out.push_str(&format!("  endomul_scalar {}\n", xhex(&svi.endomul_scalar_comm)));
+        for (j, c) in svi.sigma_comm.iter().enumerate() {
+            out.push_str(&format!("  sigma[{j}] {}\n", xhex(c)));
+        }
+        for (j, c) in svi.coefficients_comm.iter().enumerate() {
+            out.push_str(&format!("  coeff[{j}] {}\n", xhex(c)));
+        }
     }
     Ok(out)
 }
