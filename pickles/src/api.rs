@@ -315,6 +315,74 @@ pub struct WrapUnfinalizedWitnessData {
     pub constant_pad_challenges: usize,
 }
 
+/// The optional-gate / lookup feature usage of a step branch, derived from its
+/// verifier index. Mirrors `kimchi::circuits::constraints::FeatureFlags`, plus
+/// the step VK's lookup commitments the wrap must absorb into the Fq transcript
+/// (in the kimchi `VerifierIndex::digest` order) and combine into the polyscale.
+/// `None` in [`WrapBranchData::lookup`] means the branch uses no optional gates,
+/// so the wrap stays byte-identical to the pre-lookup layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LookupBranchData {
+    pub range_check0: bool,
+    pub range_check1: bool,
+    pub foreign_field_add: bool,
+    pub foreign_field_mul: bool,
+    pub xor: bool,
+    pub rot: bool,
+    /// The o1js runtime/plain lookup pattern (kimchi `LookupPattern::Lookup`).
+    pub lookup: bool,
+    pub joint_lookup_used: bool,
+    pub uses_runtime_tables: bool,
+    /// Step VK `lookup_index.lookup_table` commitments (one per table chunk).
+    pub lookup_table: Vec<(Fq, Fq)>,
+    pub table_ids: Option<(Fq, Fq)>,
+    pub runtime_tables_selector: Option<(Fq, Fq)>,
+    /// `lookup_selectors` in kimchi `digest` order: xor, lookup, range_check, ffmul.
+    pub selector_xor: Option<(Fq, Fq)>,
+    pub selector_lookup: Option<(Fq, Fq)>,
+    pub selector_range_check: Option<(Fq, Fq)>,
+    pub selector_ffmul: Option<(Fq, Fq)>,
+}
+
+impl LookupBranchData {
+    /// Extracts the optional-gate / lookup usage of a step branch from its
+    /// verifier index, or `None` if the branch uses no lookup gates.
+    pub fn from_step_verifier(
+        index: &kimchi::verifier_index::VerifierIndex<
+            FULL_ROUNDS,
+            Vesta,
+            poly_commitment::ipa::SRS<Vesta>,
+        >,
+    ) -> Option<Self> {
+        let point = |c: &poly_commitment::commitment::PolyComm<Vesta>| {
+            let p = c.chunks[0];
+            (p.x, p.y)
+        };
+        let opt = |c: &Option<poly_commitment::commitment::PolyComm<Vesta>>| c.as_ref().map(point);
+        index.lookup_index.as_ref().map(|li| {
+            let sel = &li.lookup_selectors;
+            LookupBranchData {
+                range_check0: index.range_check0_comm.is_some(),
+                range_check1: index.range_check1_comm.is_some(),
+                foreign_field_add: index.foreign_field_add_comm.is_some(),
+                foreign_field_mul: index.foreign_field_mul_comm.is_some(),
+                xor: index.xor_comm.is_some(),
+                rot: index.rot_comm.is_some(),
+                lookup: sel.lookup.is_some(),
+                joint_lookup_used: li.joint_lookup_used,
+                uses_runtime_tables: li.runtime_tables_selector.is_some(),
+                lookup_table: li.lookup_table.iter().map(point).collect(),
+                table_ids: opt(&li.table_ids),
+                runtime_tables_selector: opt(&li.runtime_tables_selector),
+                selector_xor: opt(&sel.xor),
+                selector_lookup: opt(&sel.lookup),
+                selector_range_check: opt(&sel.range_check),
+                selector_ffmul: opt(&sel.ffmul),
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrapBranchData {
     pub proofs_verified: usize,
@@ -328,6 +396,8 @@ pub struct WrapBranchData {
     pub coefficients: Vec<(Fq, Fq)>,
     pub sigma_init: Vec<(Fq, Fq)>,
     pub sigma_last: Vec<(Fq, Fq)>,
+    /// Optional-gate / lookup usage; `None` for the common no-lookup branch.
+    pub lookup: Option<LookupBranchData>,
 }
 
 impl WrapBranchData {
@@ -343,6 +413,7 @@ impl WrapBranchData {
             let point = commitment.chunks[0];
             (point.x, point.y)
         };
+        let lookup = LookupBranchData::from_step_verifier(index);
         Self {
             proofs_verified,
             step_domain_log2: index.domain.log_size_of_group as u8,
@@ -355,6 +426,7 @@ impl WrapBranchData {
             coefficients: index.coefficients_comm.iter().map(point).collect(),
             sigma_init: index.sigma_comm[..PERMUTS - 1].iter().map(point).collect(),
             sigma_last: vec![point(&index.sigma_comm[PERMUTS - 1])],
+            lookup,
         }
     }
 }
@@ -368,6 +440,10 @@ pub struct WrapWitnessData {
     pub branches: Vec<WrapBranchData>,
     pub step_domain_log2: u8,
     pub step_vk_digest: Fq,
+    /// Optional-gate / lookup usage of the (single) step branch being wrapped;
+    /// `None` for the common no-lookup case. For multi-branch programs the
+    /// per-branch data lives in `branches`.
+    pub lookup: Option<LookupBranchData>,
     pub generic: (Fq, Fq),
     pub psm: (Fq, Fq),
     pub complete_add: (Fq, Fq),
@@ -617,6 +693,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 coefficients: w.coefficients.clone(),
                 sigma_init: w.sigma_init.clone(),
                 sigma_last: w.sigma_last.clone(),
+                lookup: w.lookup.clone(),
             }]
         } else {
             w.branches.clone()
@@ -923,6 +1000,77 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 .map(|branch| branch.sigma_init.clone())
                 .collect(),
         )?;
+        // Select the step VK lookup commitments across branches (one-hot),
+        // when the branch(es) use lookup gates. Structure (which commitments
+        // are present) comes from `w.lookup`, uniform over branches; values are
+        // one-hot selected per branch. `None` keeps the no-lookup layout.
+        let lookup: Option<crate::incrementally_verify::LookupVkComm<Fq>> = if let Some(shape) =
+            w.lookup.clone()
+        {
+            let zero = Fq::from(0u64);
+            // Pure coordinate builders (borrow `branch_definitions`, not `sys`).
+            let field_coords =
+                |get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>, present: bool| -> Option<Vec<(Fq, Fq)>> {
+                    if !present {
+                        return None;
+                    }
+                    Some(
+                        branch_definitions
+                            .iter()
+                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or((zero, zero)))
+                            .collect(),
+                    )
+                };
+            let mut lookup_table = Vec::with_capacity(shape.lookup_table.len());
+            for i in 0..shape.lookup_table.len() {
+                let coords: Vec<(Fq, Fq)> = branch_definitions
+                    .iter()
+                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or((zero, zero)))
+                    .collect();
+                lookup_table.push(choose_pt(sys, coords)?);
+            }
+            let mut select_opt =
+                |sys: &mut RunState<Fq>, coords: Option<Vec<(Fq, Fq)>>| -> SnarkyResult<Option<Point<Fq>>> {
+                    match coords {
+                        Some(c) => Ok(Some(choose_pt(sys, c)?)),
+                        None => Ok(None),
+                    }
+                };
+            let table_ids =
+                select_opt(sys, field_coords(&|l| l.table_ids, shape.table_ids.is_some()))?;
+            let runtime_tables_selector = select_opt(
+                sys,
+                field_coords(
+                    &|l| l.runtime_tables_selector,
+                    shape.runtime_tables_selector.is_some(),
+                ),
+            )?;
+            let selector_xor =
+                select_opt(sys, field_coords(&|l| l.selector_xor, shape.selector_xor.is_some()))?;
+            let selector_lookup = select_opt(
+                sys,
+                field_coords(&|l| l.selector_lookup, shape.selector_lookup.is_some()),
+            )?;
+            let selector_range_check = select_opt(
+                sys,
+                field_coords(&|l| l.selector_range_check, shape.selector_range_check.is_some()),
+            )?;
+            let selector_ffmul = select_opt(
+                sys,
+                field_coords(&|l| l.selector_ffmul, shape.selector_ffmul.is_some()),
+            )?;
+            Some(crate::incrementally_verify::LookupVkComm {
+                lookup_table,
+                table_ids,
+                runtime_tables_selector,
+                selector_xor,
+                selector_lookup,
+                selector_range_check,
+                selector_ffmul,
+            })
+        } else {
+            None
+        };
         let vk = VerificationKeyComm {
             generic,
             psm,
@@ -933,6 +1081,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             coefficients,
             sigma_init,
             sigma_last,
+            lookup,
         };
         // For the N0 o1js branch, the feature set used by
         // `expand_feature_flags` is part of the selected verification key and
@@ -1890,6 +2039,11 @@ pub(crate) fn build_shared_base_wrap(
     };
     let wdata = WrapWitnessData {
         which_branch: 0,
+        // Shared multi-branch wrap: the wrap structure must emit the lookup
+        // verification of any branch that uses it, so carry the first branch's
+        // lookup usage (all lookup branches share the same feature-flag shape;
+        // per-branch commitment VALUES are selected from `branches`).
+        lookup: branches.iter().find_map(|b| b.lookup.clone()),
         branches,
         step_domain_log2: svi0.domain.log_size_of_group as u8,
         step_vk_digest: svi0.digest::<VestaBase>(),
@@ -1981,6 +2135,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
             branches: vec![],
             step_domain_log2: svi.domain.log_size_of_group as u8,
             step_vk_digest: svi.digest::<VestaBase>(),
+        lookup: LookupBranchData::from_step_verifier(svi),
             generic: co(&svi.generic_comm.chunks[0]),
             psm: co(&svi.psm_comm.chunks[0]),
             complete_add: co(&svi.complete_add_comm.chunks[0]),
@@ -2246,6 +2401,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         branches: vec![],
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
+        lookup: LookupBranchData::from_step_verifier(svi),
         generic: co(&svi.generic_comm.chunks[0]),
         psm: co(&svi.psm_comm.chunks[0]),
         complete_add: co(&svi.complete_add_comm.chunks[0]),

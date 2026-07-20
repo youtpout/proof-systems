@@ -3229,6 +3229,7 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
     let data = WrapWitnessData {
         which_branch: 0,
         branches: vec![],
+        lookup: crate::api::LookupBranchData::from_step_verifier(svi),
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
@@ -4792,6 +4793,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
         coefficients: dlog_index.coefficients_comm.clone(),
         sigma_init: dlog_index.sigma_comm[..PERMUTS - 1].to_vec(),
         sigma_last: dlog_index.sigma_comm[PERMUTS - 1..].to_vec(),
+        lookup: None,
     };
     // Delta/sg are allocated with the opening, but their `Typ` checks are
     // emitted below at the positions previously (and incorrectly) occupied
@@ -5631,6 +5633,7 @@ impl<
             coefficients: mkpts(sys, &d.coefficients)?,
             sigma_init: mkpts(sys, &d.sigma_init)?,
             sigma_last: mkpts(sys, &d.sigma_last)?,
+            lookup: None,
         };
         let messages = Messages {
             w_comm: d

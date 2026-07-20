@@ -58,6 +58,38 @@ pub struct VerificationKeyComm<F: PrimeField> {
     pub sigma_init: Vec<Point<F>>,
     /// The last (`PERMUTS-1` index) sigma commitment, used by `ft_comm`.
     pub sigma_last: Vec<Point<F>>,
+    /// Step VK lookup commitments, absorbed into the index digest (in the
+    /// kimchi `VerifierIndex::digest` order) when the branch uses lookup gates.
+    /// `None` keeps the pre-lookup layout byte-for-byte.
+    pub lookup: Option<LookupVkComm<F>>,
+}
+
+/// The step VK's `lookup_index` commitments the wrap absorbs into the index
+/// digest, in kimchi `VerifierIndex::digest` order (verifier_index.rs:493-529):
+/// lookup_table[], table_ids?, runtime_tables_selector?, then the selectors
+/// xor?, lookup?, range_check?, ffmul?.
+pub struct LookupVkComm<F: PrimeField> {
+    pub lookup_table: Vec<Point<F>>,
+    pub table_ids: Option<Point<F>>,
+    pub runtime_tables_selector: Option<Point<F>>,
+    pub selector_xor: Option<Point<F>>,
+    pub selector_lookup: Option<Point<F>>,
+    pub selector_range_check: Option<Point<F>>,
+    pub selector_ffmul: Option<Point<F>>,
+}
+
+impl<F: PrimeField> LookupVkComm<F> {
+    /// The commitments in kimchi `digest` absorption order.
+    fn digest_order(&self) -> Vec<&Point<F>> {
+        let mut v: Vec<&Point<F>> = self.lookup_table.iter().collect();
+        v.extend(self.table_ids.iter());
+        v.extend(self.runtime_tables_selector.iter());
+        v.extend(self.selector_xor.iter());
+        v.extend(self.selector_lookup.iter());
+        v.extend(self.selector_range_check.iter());
+        v.extend(self.selector_ffmul.iter());
+        v
+    }
 }
 
 /// The proof messages absorbed by the Fq-sponge (base subset): witness,
@@ -308,6 +340,15 @@ where
             {
                 coords.push(pt.x.clone());
                 coords.push(pt.y.clone());
+            }
+            // Lookup index commitments (kimchi `VerifierIndex::digest` order),
+            // absorbed right after the base 28 — only when the branch uses
+            // lookup gates, so the no-lookup digest is unchanged.
+            if let Some(lk) = &vk.lookup {
+                for pt in lk.digest_order() {
+                    coords.push(pt.x.clone());
+                    coords.push(pt.y.clone());
+                }
             }
             index_sponge.absorb(sys, Cow::Owned(format!("{loc} | vk index absorb")), &coords);
             index_sponge.squeeze(sys, Cow::Owned(format!("{loc} | vk index squeeze")))

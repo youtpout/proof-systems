@@ -101,6 +101,25 @@ fn main() {
         return;
     }
 
+    if mode == "basevk" {
+        // Base-case VK of a single-branch recorded program (the path a
+        // single-method ZkProgram like a rangeCheck64 probe takes).
+        let path = std::env::args().nth(2).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let circuit = parsed.into_iter().next().expect("one branch").circuit;
+        let witness = vec![Fp::from(0u64); circuit.aux_count as usize];
+        let compiled =
+            pickles::recorded::RecordedCompiledBase::compile(circuit, witness).expect("compile");
+        let (_data, hash) = compiled.verification_key_envelope().expect("vk");
+        println!("base VK hash: {hash}");
+        return;
+    }
+
     if mode == "sharedvk" {
         // Shared width-0 wrap VK for a non-recursive multi-branch program —
         // the exact path o1js uses for a SmartContract's canonical VK.
