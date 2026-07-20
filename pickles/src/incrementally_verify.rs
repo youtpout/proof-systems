@@ -629,6 +629,39 @@ where
     commitments.extend(vk.coefficients.iter().map(just));
     commitments.extend(vk.sigma_init.iter().map(just));
 
+    // Lookup / optional-gate commitments enter the polyscale after the base
+    // commitments, in kimchi evaluation order (verifier.rs:1067-1130): the
+    // optional GATE selectors, then the proof lookup `sorted[]` and `aggreg`,
+    // then the fixed lookup `table` (and runtime table if present).
+    if let Some(lk) = &vk.lookup {
+        for g in [
+            &lk.gate_range_check0,
+            &lk.gate_range_check1,
+            &lk.gate_foreign_field_add,
+            &lk.gate_foreign_field_mul,
+            &lk.gate_xor,
+            &lk.gate_rot,
+        ] {
+            if let Some(p) = g {
+                commitments.push(just(p));
+            }
+        }
+    }
+    if let Some(mlk) = &messages.lookup {
+        for s in &mlk.sorted {
+            commitments.extend(s.iter().map(just));
+        }
+        commitments.extend(mlk.aggreg.iter().map(just));
+    }
+    if let Some(lk) = &vk.lookup {
+        commitments.extend(lk.lookup_table.iter().map(just));
+    }
+    if let Some(mlk) = &messages.lookup {
+        if let Some(rt) = &mlk.runtime {
+            commitments.extend(rt.iter().map(just));
+        }
+    }
+
     // OCaml `check_bulletproof` (wrap_verifier.ml:580-606) order: absorb cip
     // -> squeeze t -> u = group_map(t) -> combined_polynomial =
     // Split_commitments.combine(xi, commitments) -> bullet_reduce(lr) ->

@@ -1601,6 +1601,29 @@ impl RecordedCompiledBase {
         Ok((base64, stable.mina_hash().to_string()))
     }
 
+    /// Dumps the compiled base-case WRAP circuit gates (structure) in the
+    /// `{ public_input_size, gates }` JSON schema — the diagnostic diff target
+    /// against jsoo's `fq_prover_to_json` wrap.
+    pub fn dump_wrap_circuit_json(&self) -> Result<String, RecordedProveError> {
+        #[derive(serde::Serialize)]
+        struct Dump {
+            public_input_size: usize,
+            gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+        }
+        let wrap_prover = &self
+            .compiled
+            .wrap_indexes
+            .as_ref()
+            .expect("compiled Wrap indexes")
+            .0;
+        let dump = Dump {
+            public_input_size: wrap_prover.index.cs.public,
+            gates: wrap_prover.index.cs.gates.to_vec(),
+        };
+        serde_json::to_string(&dump)
+            .map_err(|err| RecordedProveError::Program(format!("wrap dump: {err}")))
+    }
+
     /// A proof-SHAPED base handle assembled from the compiled indexes
     /// without running either prover — the compile-time template donor for
     /// the recursive compiles. Its values are protocol-meaningless dummies;

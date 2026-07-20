@@ -101,6 +101,30 @@ fn main() {
         return;
     }
 
+    if mode == "basewrap" {
+        // Dump the base-case WRAP circuit gates (structure) of a single-branch
+        // recorded program, in the `{ public_input_size, gates }` schema — for
+        // gate-level diff against the jsoo wrap (fq_prover_to_json).
+        let path = std::env::args().nth(2).expect("branches json path");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/claude-1000/rc-wrap-rust-base.json".into());
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let circuit = parsed.into_iter().next().expect("one branch").circuit;
+        let witness = vec![Fp::from(0u64); circuit.aux_count as usize];
+        let compiled =
+            pickles::recorded::RecordedCompiledBase::compile(circuit, witness).expect("compile");
+        let json = compiled.dump_wrap_circuit_json().expect("dump wrap");
+        std::fs::write(&out, json).expect("write");
+        eprintln!("base wrap dumped to {out}");
+        return;
+    }
+
     if mode == "basevk" {
         // Base-case VK of a single-branch recorded program (the path a
         // single-method ZkProgram like a rangeCheck64 probe takes).
