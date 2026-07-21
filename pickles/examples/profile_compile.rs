@@ -216,6 +216,65 @@ fn main() {
         return;
     }
 
+    if mode == "vkdiff" {
+        // Gradient tool: compile the rust shared base VK from <branches json>,
+        // decode it and the jsoo VK (base64 of `verificationKey.data`), and
+        // report which of the 28 wrap commitments match. Usage:
+        //   vkdiff <jsoo_base64> <branches_json>
+        use base64::prelude::*;
+        let jsoo_b64 = std::env::args().nth(2).expect("jsoo base64");
+        let path = std::env::args().nth(3).expect("branches json path");
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let (rust_b64, rust_hash) =
+            pickles::recorded::compile_recorded_program_base_shared_vk(branches).expect("shared vk");
+        let decode = |b64: &str| -> Vec<(Fp, Fp)> {
+            let bytes = BASE64_STANDARD.decode(b64.trim()).expect("base64");
+            pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_bin_prot(&bytes)
+                .expect("bin_prot")
+                .commitments
+        };
+        let jsoo = decode(&jsoo_b64);
+        let rust = decode(&rust_b64);
+        let label = |i: usize| -> String {
+            match i {
+                0..=6 => format!("sigma[{i}]"),
+                7..=21 => format!("coeff[{}]", i - 7),
+                22 => "generic".into(),
+                23 => "psm".into(),
+                24 => "complete_add".into(),
+                25 => "mul".into(),
+                26 => "emul".into(),
+                27 => "endomul_scalar".into(),
+                _ => unreachable!(),
+            }
+        };
+        let mut matches = 0;
+        for i in 0..28 {
+            let ok = jsoo[i] == rust[i];
+            if ok {
+                matches += 1;
+            }
+            println!("{:>16} {}", label(i), if ok { "OK" } else { "DIFF" });
+        }
+        println!("MATCH {matches}/28  rust_hash={rust_hash}");
+        return;
+    }
+
     if mode == "sharedwrap" {
         // Dump the SHARED multi-branch wrap circuit gates for a gate-level diff
         // against the jsoo shared wrap.
