@@ -79,30 +79,43 @@ pub struct LookupVkComm<F: PrimeField> {
     /// Whether the lookup uses a multi-column (joint) table — gates whether the
     /// joint combiner challenge is squeezed. False for range_check/xor.
     pub joint_lookup_used: bool,
+    /// True when NO branch uses a width>=2 lookup table AND none uses runtime
+    /// tables, i.e. OCaml `compute_joint_combiner`'s `(_ :: Nothing :: _, Nothing)`
+    /// case (wrap_verifier.ml:1035): the joint-combiner sponge absorbs the sorted
+    /// columns FLAT, with no inner fork/recombine and jc = 0. When false the table
+    /// presence is variable (Maybe, xor/multi-column) and the inner fork runs
+    /// (cases 1040/1057). Distinguishes range_check (single-column) from xor.
+    pub jc_table_absent: bool,
     /// Optional GATE selector commitments (kimchi digest order): range_check0,
     /// range_check1, ffmul, ffadd, xor, rot — absorbed BEFORE the lookup index.
-    pub gate_range_check0: Option<Point<F>>,
-    pub gate_range_check1: Option<Point<F>>,
-    pub gate_foreign_field_mul: Option<Point<F>>,
-    pub gate_foreign_field_add: Option<Point<F>>,
-    pub gate_xor: Option<Point<F>>,
-    pub gate_rot: Option<Point<F>>,
-    pub lookup_table: Vec<Point<F>>,
-    pub table_ids: Option<Point<F>>,
-    pub runtime_tables_selector: Option<Point<F>>,
-    pub selector_xor: Option<Point<F>>,
-    pub selector_lookup: Option<Point<F>>,
-    pub selector_range_check: Option<Point<F>>,
-    pub selector_ffmul: Option<Point<F>>,
+    /// Each carries its OWN `Opt.Maybe` presence flag (the sealed `is_yes` var
+    /// from `choose_key`): the vk-index absorb and `combine_commitments` gate each
+    /// commitment on its own flag, not on the shared `flag` above (jsoo wires each
+    /// absorb to a distinct is_yes var — sharing one var diverges once two or more
+    /// branches carry the commitment).
+    pub gate_range_check0: Option<(Point<F>, Boolean<F>)>,
+    pub gate_range_check1: Option<(Point<F>, Boolean<F>)>,
+    pub gate_foreign_field_mul: Option<(Point<F>, Boolean<F>)>,
+    pub gate_foreign_field_add: Option<(Point<F>, Boolean<F>)>,
+    pub gate_xor: Option<(Point<F>, Boolean<F>)>,
+    pub gate_rot: Option<(Point<F>, Boolean<F>)>,
+    pub lookup_table: Vec<(Point<F>, Boolean<F>)>,
+    pub table_ids: Option<(Point<F>, Boolean<F>)>,
+    pub runtime_tables_selector: Option<(Point<F>, Boolean<F>)>,
+    pub selector_xor: Option<(Point<F>, Boolean<F>)>,
+    pub selector_lookup: Option<(Point<F>, Boolean<F>)>,
+    pub selector_range_check: Option<(Point<F>, Boolean<F>)>,
+    pub selector_ffmul: Option<(Point<F>, Boolean<F>)>,
 }
 
 impl<F: PrimeField> LookupVkComm<F> {
     pub fn joint_lookup_used(&self) -> bool {
         self.joint_lookup_used
     }
-    /// The commitments in kimchi `digest` absorption order.
-    fn digest_order(&self) -> Vec<&Point<F>> {
-        let mut v: Vec<&Point<F>> = Vec::new();
+    /// The commitments in kimchi `digest` absorption order, each with its own
+    /// presence flag.
+    fn digest_order(&self) -> Vec<&(Point<F>, Boolean<F>)> {
+        let mut v: Vec<&(Point<F>, Boolean<F>)> = Vec::new();
         // Optional gate selectors first (verifier_index.rs:467-489 order).
         v.extend(self.gate_range_check0.iter());
         v.extend(self.gate_range_check1.iter());
@@ -484,11 +497,11 @@ where
             // flag is true. Constant-true (single-branch / all-lookup) folds the
             // `if_` so the digest stays byte-identical.
             if let Some(lk) = &vk.lookup {
-                for pt in lk.digest_order() {
+                for (pt, flag) in lk.digest_order() {
                     index_sponge.absorb_maybe(
                         sys,
                         Cow::Owned(format!("{loc} | vk index lookup absorb")),
-                        &lk.flag,
+                        flag,
                         &[pt.x.clone(), pt.y.clone()],
                     )?;
                 }
@@ -666,62 +679,113 @@ where
             // under the flag. The 5 sorted columns split 1 / 3 / 1, the last being
             // the `sorted_5th_column: Opt lookups_per_row_4`.
             let b = &lookup_flag;
-            // OCaml `compute_joint_combiner` threads the VERIFIER-side lookup flag
-            // (`m.lookup_table_comm`'s Maybe flag, wrap_verifier.ml:1057/1066/1069)
-            // through the INNER recombine and the `jc` `Field.if_`, while the OUTER
-            // recombine (1082) uses the messages/proof flag. Using the vk flag here
-            // keeps the inner-recombine selector in the vk-flag copy-cycle (shared
-            // with the combined_table `point_if`), as jsoo does.
-            let vk_flag = vk
-                .lookup
-                .as_ref()
-                .map(|v| v.flag.clone())
-                .unwrap_or_else(|| lookup_flag.clone());
+            // The OUTER fork (wrap_verifier.ml:1079/1082) always wraps
+            // `compute_joint_combiner` when the messages lookup is `Maybe`.
             let sponge2 = sponge.opt_clone();
-            let mut sponge2b = sponge.opt_clone();
-            let jc_true = squeeze_jc(sys, &mut sponge)?;
+            // Whether `compute_joint_combiner` itself forks depends on the joint
+            // table presence: with a single-column table and no runtime tables it
+            // is the flat `(Nothing, Nothing)` case (wrap_verifier.ml:1035), with
+            // no inner fork and jc = 0; otherwise it forks (1040/1057).
+            let table_absent = vk.lookup.as_ref().is_none_or(|v| v.jc_table_absent);
             let n = lk.sorted.len();
-            if n >= 1 {
-                // absorb_sorted_1 on both jc branches (flag true).
-                sponge.absorb_commitment_maybe(
+            let jc = if table_absent {
+                // OCaml case 1035: absorb sorted columns flat (first 4 under the
+                // constant-true flag, the 5th under its own `lookups_per_row_4`
+                // flag), no squeeze, no inner fork; joint_combiner = 0.
+                for com in lk.sorted.iter().take(4) {
+                    sponge.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[0..4] (flat)")),
+                        &Boolean::true_(),
+                        &to_pvs(com),
+                    );
+                }
+                if n >= 5 {
+                    sponge.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[4] (flat)")),
+                        &lk.lppr4_flag,
+                        &to_pvs(&lk.sorted[4]),
+                    );
+                }
+                FieldVar::constant(F::zero())
+            } else {
+                // OCaml cases 1040/1057: fork, squeeze the jc on the `true` branch
+                // (also absorbing sorted[0]) vs no squeeze on the `false` branch,
+                // then INNER `recombine` under the table's Maybe flag. The 5 sorted
+                // columns split 1 / 3 / 1, the last being `sorted_5th_column`.
+                //
+                // The inner recombine + `jc` `Field.if_` thread the VERIFIER-side
+                // fork flag (wrap_verifier.ml:1040/1057): the Maybe flag of
+                // `m.lookup_table_comm[1]` (= table_width_at_least_2) and/or the
+                // runtime_tables_selector — `b1 ||| b2` when both are Maybe. These
+                // are the per-column sealed `is_yes` vars (NOT the shared
+                // `vk.lookup.flag`, an unsealed sum that wires to a different cell
+                // once two branches carry the table). The OUTER recombine (1082)
+                // uses the messages/proof flag.
+                let vk_flag = {
+                    let vlk = vk.lookup.as_ref();
+                    let tw2 = vlk.and_then(|v| v.lookup_table.get(1).map(|(_, f)| f.clone()));
+                    let rt = vlk
+                        .and_then(|v| v.runtime_tables_selector.as_ref().map(|(_, f)| f.clone()));
+                    match (tw2, rt) {
+                        (Some(a), Some(b)) => {
+                            a.or(&b, Cow::Owned(format!("{loc} | jc fork flag")), sys)
+                        }
+                        (Some(a), None) => a,
+                        (None, Some(b)) => b,
+                        (None, None) => lookup_flag.clone(),
+                    }
+                };
+                let mut sponge2b = sponge.opt_clone();
+                let jc_true = squeeze_jc(sys, &mut sponge)?;
+                if n >= 1 {
+                    // absorb_sorted_1 on both jc branches (flag true).
+                    sponge.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[0]")),
+                        &Boolean::true_(),
+                        &to_pvs(&lk.sorted[0]),
+                    );
+                    sponge2b.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[0] (jc_false)")),
+                        &Boolean::true_(),
+                        &to_pvs(&lk.sorted[0]),
+                    );
+                }
+                sponge.recombine(
                     sys,
-                    Cow::Owned(format!("{loc} | absorb lookup sorted[0]")),
-                    &Boolean::true_(),
-                    &to_pvs(&lk.sorted[0]),
-                );
-                sponge2b.absorb_commitment_maybe(
-                    sys,
-                    Cow::Owned(format!("{loc} | absorb lookup sorted[0] (jc_false)")),
-                    &Boolean::true_(),
-                    &to_pvs(&lk.sorted[0]),
-                );
-            }
-            sponge.recombine(sys, Cow::Owned(format!("{loc} | jc recombine")), &vk_flag, &sponge2b)?;
-            // absorb_sorted_2_to_4 (indices 1..4), flag true.
-            for com in lk.sorted.iter().take(4).skip(1) {
-                sponge.absorb_commitment_maybe(
-                    sys,
-                    Cow::Owned(format!("{loc} | absorb lookup sorted[1..4]")),
-                    &Boolean::true_(),
-                    &to_pvs(com),
-                );
-            }
-            // absorb_sorted_5 (`sorted_5th_column`) under its own Maybe flag.
-            if n >= 5 {
-                sponge.absorb_commitment_maybe(
-                    sys,
-                    Cow::Owned(format!("{loc} | absorb lookup sorted[4]")),
-                    &lk.lppr4_flag,
-                    &to_pvs(&lk.sorted[4]),
-                );
-            }
-            // jc = Field.if_ b jc_true jc_false(=0).
-            let jc = sys.if_(
-                Cow::Owned(format!("{loc} | jc if_")),
-                vk_flag.clone(),
-                jc_true,
-                FieldVar::constant(F::zero()),
-            )?;
+                    Cow::Owned(format!("{loc} | jc recombine")),
+                    &vk_flag,
+                    &sponge2b,
+                )?;
+                // absorb_sorted_2_to_4 (indices 1..4), flag true.
+                for com in lk.sorted.iter().take(4).skip(1) {
+                    sponge.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[1..4]")),
+                        &Boolean::true_(),
+                        &to_pvs(com),
+                    );
+                }
+                // absorb_sorted_5 (`sorted_5th_column`) under its own Maybe flag.
+                if n >= 5 {
+                    sponge.absorb_commitment_maybe(
+                        sys,
+                        Cow::Owned(format!("{loc} | absorb lookup sorted[4]")),
+                        &lk.lppr4_flag,
+                        &to_pvs(&lk.sorted[4]),
+                    );
+                }
+                // jc = Field.if_ b jc_true jc_false(=0).
+                sys.if_(
+                    Cow::Owned(format!("{loc} | jc if_")),
+                    vk_flag.clone(),
+                    jc_true,
+                    FieldVar::constant(F::zero()),
+                )?
+            };
             sponge.consume_all_pending(
                 sys,
                 Cow::Owned(format!("{loc} | consume_all_pending (post-jc)")),
@@ -757,8 +821,9 @@ where
                 if b.to_constant().is_some() {
                     // Just path (alllookup / single-branch): endo + add_fast, no
                     // conditional selects — byte-identical to the pre-Maybe code.
-                    let mut acc: Option<Point<F>> = vlk.table_ids.clone();
-                    for col in vlk.lookup_table.iter().rev() {
+                    let mut acc: Option<Point<F>> =
+                        vlk.table_ids.as_ref().map(|(p, _)| p.clone());
+                    for (col, _) in vlk.lookup_table.iter().rev() {
                         acc = Some(match acc {
                             Some(a) => {
                                 let scaled = crate::scalar_challenge::endo(
@@ -816,10 +881,14 @@ where
                     // (has, point); None = Opt.Nothing. Each step folds the running
                     // presence flag `has_acc ||| has_comm` (OCaml wrap_verifier.ml:1176)
                     // — a real gate even when the two flags are the same var.
+                    // Each column carries its OWN `has_comm` flag
+                    // (table_width_at_least_(i+1)); table_ids its own flag. OCaml
+                    // `compute_lookup_table_comm` (wrap_verifier.ml:1155-1176) folds
+                    // on these per-column flags, not the shared lookup flag.
                     let mut acc: Option<(Boolean<F>, Point<F>)> =
-                        vlk.table_ids.clone().map(|p| (b.clone(), p));
-                    for col in vlk.lookup_table.iter().rev() {
-                        let comm_flag = b.clone();
+                        vlk.table_ids.as_ref().map(|(p, f)| (f.clone(), p.clone()));
+                    for (col, col_flag) in vlk.lookup_table.iter().rev() {
+                        let comm_flag = col_flag.clone();
                         acc = Some(match acc {
                             None => (comm_flag, col.clone()),
                             Some((acc_flag, a)) => {
@@ -988,7 +1057,6 @@ where
     // carry the witnessed messages flag (`mlk.flag`); the combined table its
     // own accumulated fold flag.
     if let Some(lk) = &vk.lookup {
-        let f = lk.flag.clone();
         for g in [
             &lk.gate_range_check0,
             &lk.gate_range_check1,
@@ -997,8 +1065,8 @@ where
             &lk.gate_xor,
             &lk.gate_rot,
         ] {
-            if let Some(p) = g {
-                commitments.push(CommitmentOpt::Maybe(f.clone(), p.clone()));
+            if let Some((p, flag)) = g {
+                commitments.push(CommitmentOpt::Maybe(flag.clone(), p.clone()));
             }
         }
     }
@@ -1034,7 +1102,6 @@ where
     // (distinct from the optional GATE selectors above), each present iff the
     // step evaluates that lookup pattern.
     if let Some(lk) = &vk.lookup {
-        let f = lk.flag.clone();
         for s in [
             &lk.runtime_tables_selector,
             &lk.selector_xor,
@@ -1042,8 +1109,8 @@ where
             &lk.selector_range_check,
             &lk.selector_ffmul,
         ] {
-            if let Some(p) = s {
-                commitments.push(CommitmentOpt::Maybe(f.clone(), p.clone()));
+            if let Some((p, flag)) = s {
+                commitments.push(CommitmentOpt::Maybe(flag.clone(), p.clone()));
             }
         }
     }

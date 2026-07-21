@@ -1064,6 +1064,26 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         // lookup_selector_ffmul, _range_check, _lookup, _xor, runtime_tables_selector,
         // lookup_table_ids, lookup_table_comm (reversed), then the gate selectors
         // rot, xor, ffadd, ffmul, range_check1, range_check0.
+        // OCaml `assert_consistent` (wrap_main.ml:281-299) asserts each optional
+        // commitment's `commitment_flag` equals its feature flag — on the SAME
+        // sealed `is_yes` var that `choose_key` produced, not a freshly recomputed
+        // sum. Capture those sealed flags here (constant `false` when the whole
+        // lookup index is absent) so the consistency checks below reuse them.
+        let mut cf_xor = Boolean::false_();
+        let mut cf_rc0 = Boolean::false_();
+        let mut cf_rc1 = Boolean::false_();
+        let mut cf_ffadd = Boolean::false_();
+        let mut cf_ffmul = Boolean::false_();
+        let mut cf_rot = Boolean::false_();
+        let mut cf_lut0 = Boolean::false_();
+        let mut cf_lut1 = Boolean::false_();
+        let mut cf_lut2 = Boolean::false_();
+        let mut cf_lut3 = Boolean::false_();
+        let mut cf_rt_sel = Boolean::false_();
+        let mut cf_lookup_sel = Boolean::false_();
+        let mut cf_xor_sel = Boolean::false_();
+        let mut cf_rc_sel = Boolean::false_();
+        let mut cf_ffmul_sel = Boolean::false_();
         let lookup: Option<crate::incrementally_verify::LookupVkComm<Fq>> = if let Some(shape) =
             w.lookup.clone()
         {
@@ -1081,92 +1101,143 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                 let g = Vesta::generator().into_group().into_affine();
                 (g.x, g.y)
             };
-            let field_coords =
-                |get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>, present: bool| -> Option<Vec<(Fq, Fq)>> {
-                    if !present {
-                        return None;
+            // Select one optional step-VK commitment across branches, matching
+            // OCaml `choose_key`'s Maybe reduce (wrap_verifier.ml:269-319):
+            //   sum = none_sum + just_sum
+            // where `none_sum = is_none · generator` over the branches that do
+            // NOT carry the commitment (`is_none = Σ absent bits`) and
+            // `just_sum = Σ present bit · coord` over those that do. Crucially the
+            // TERM ORDER of the sealed linear combination is: absent (generator)
+            // terms FIRST, then present terms — this is the pairing jsoo emits,
+            // and it differs from a naive branch-order `Σ bᵢ·coordᵢ` once two or
+            // more branches carry the commitment (the double-generic seal pairs
+            // terms differently). The all-present (`Just`) case has no absent
+            // terms and reduces to the plain present sum, so it is unchanged.
+            // Returns the selected commitment (None when no branch carries it) and
+            // its OCaml `commitment_flag` (wrap_main.ml:273-279): `true_` for a
+            // `Just` (every branch present), `false_` for `Nothing` (absent from
+            // the shape), else the sealed `is_yes = Σ present bits` for a `Maybe`.
+            // The SAME sealed flag var is reused by the digest-consistency checks
+            // (jsoo asserts on this exact var, not a freshly recomputed sum).
+            let select_opt = |sys: &mut RunState<Fq>,
+                              get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>,
+                              present_in_shape: bool|
+             -> SnarkyResult<(Option<Point<Fq>>, Boolean<Fq>)> {
+                if !present_in_shape {
+                    return Ok((None, Boolean::false_()));
+                }
+                let mut present: Vec<(&Boolean<Fq>, (Fq, Fq))> = Vec::new();
+                let mut absent: Vec<&Boolean<Fq>> = Vec::new();
+                for (b, bd) in branches.iter().zip(&branch_definitions) {
+                    match bd.lookup.as_ref().and_then(|l| get(l)) {
+                        Some(c) => present.push((b, c)),
+                        None => absent.push(b),
                     }
-                    Some(
-                        branch_definitions
-                            .iter()
-                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or(gen_coords))
-                            .collect(),
-                    )
-                };
-            let mut select_opt =
-                |sys: &mut RunState<Fq>, coords: Option<Vec<(Fq, Fq)>>| -> SnarkyResult<Option<Point<Fq>>> {
-                    match coords {
-                        Some(c) => Ok(Some(choose_pt(sys, c)?)),
-                        None => Ok(None),
+                }
+                let coord = |x_coord: bool| -> FieldVar<Fq> {
+                    let gen = if x_coord { gen_coords.0 } else { gen_coords.1 };
+                    let mut acc = FieldVar::zero();
+                    for b in &absent {
+                        acc = acc + b.to_field_var().scale(gen);
                     }
+                    for (b, c) in &present {
+                        let v = if x_coord { c.0 } else { c.1 };
+                        acc = acc + b.to_field_var().scale(v);
+                    }
+                    acc
                 };
-            let selector_ffmul = select_opt(
+                // OCaml seals the y-coordinate before the x-coordinate (Double.map
+                // evaluates the pair right-to-left, matching `choose_pt`).
+                let y = coord(false).seal(sys, loc!())?;
+                let x = coord(true).seal(sys, loc!())?;
+                // OCaml's final `Step.map` (wrap_verifier.ml:321-331) seals a Maybe
+                // commitment as `Opt.Maybe (seal is_yes, seal coords)` — it seals
+                // the presence flag `is_yes = Σ present bits` too, AFTER the coords
+                // (constructor args evaluate right-to-left). A `Just` commitment
+                // (no absent terms) seals only the coordinates and its flag is the
+                // constant `true`. A single present branch needs no sum, so its
+                // `is_yes` seal is a no-op (folds to the bare one-hot bit).
+                let flag = if absent.is_empty() {
+                    Boolean::true_()
+                } else {
+                    let is_yes = present
+                        .iter()
+                        .fold(FieldVar::zero(), |acc, (b, _)| acc + b.to_field_var());
+                    Boolean::create_unsafe(is_yes.seal(sys, loc!())?)
+                };
+                Ok((Some(Point::new(x, y)), flag))
+            };
+            let (selector_ffmul, f_ffmul_sel) =
+                select_opt(sys, &|l| l.selector_ffmul, shape.selector_ffmul.is_some())?;
+            let (selector_range_check, f_rc_sel) = select_opt(
                 sys,
-                field_coords(&|l| l.selector_ffmul, shape.selector_ffmul.is_some()),
+                &|l| l.selector_range_check,
+                shape.selector_range_check.is_some(),
             )?;
-            let selector_range_check = select_opt(
+            let (selector_lookup, f_lookup_sel) =
+                select_opt(sys, &|l| l.selector_lookup, shape.selector_lookup.is_some())?;
+            let (selector_xor, f_xor_sel) =
+                select_opt(sys, &|l| l.selector_xor, shape.selector_xor.is_some())?;
+            let (runtime_tables_selector, f_rt_sel) = select_opt(
                 sys,
-                field_coords(&|l| l.selector_range_check, shape.selector_range_check.is_some()),
+                &|l| l.runtime_tables_selector,
+                shape.runtime_tables_selector.is_some(),
             )?;
-            let selector_lookup = select_opt(
-                sys,
-                field_coords(&|l| l.selector_lookup, shape.selector_lookup.is_some()),
-            )?;
-            let selector_xor =
-                select_opt(sys, field_coords(&|l| l.selector_xor, shape.selector_xor.is_some()))?;
-            let runtime_tables_selector = select_opt(
-                sys,
-                field_coords(
-                    &|l| l.runtime_tables_selector,
-                    shape.runtime_tables_selector.is_some(),
-                ),
-            )?;
-            let table_ids =
-                select_opt(sys, field_coords(&|l| l.table_ids, shape.table_ids.is_some()))?;
+            let (table_ids, _f_table_ids) =
+                select_opt(sys, &|l| l.table_ids, shape.table_ids.is_some())?;
             // lookup_table_comm: OCaml's `Vector.map` runs last-element-first, so
             // allocate the columns in reverse, then store forward for the digest.
+            // Each column is a `Maybe` commitment (branches with a narrower table
+            // do not carry it), so it goes through the same `just_sum + none_sum`
+            // selection as the gate selectors. Column i's presence flag is
+            // `table_width_at_least_(i+1)`, reused by the consistency checks.
             let mut lookup_table: Vec<Point<Fq>> = Vec::with_capacity(shape.lookup_table.len());
+            let mut table_col_flags: Vec<Boolean<Fq>> =
+                vec![Boolean::false_(); shape.lookup_table.len()];
             for i in (0..shape.lookup_table.len()).rev() {
-                let coords: Vec<(Fq, Fq)> = branch_definitions
-                    .iter()
-                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or(gen_coords))
-                    .collect();
-                lookup_table.push(choose_pt(sys, coords)?);
+                let (pt, flag) = select_opt(sys, &|l| l.lookup_table.get(i).copied(), true)?;
+                lookup_table.push(pt.expect("lookup_table column present in shape"));
+                table_col_flags[i] = flag;
             }
             lookup_table.reverse();
-            let gate_rot =
-                select_opt(sys, field_coords(&|l| l.gate_rot, shape.gate_rot.is_some()))?;
-            let gate_xor =
-                select_opt(sys, field_coords(&|l| l.gate_xor, shape.gate_xor.is_some()))?;
-            // OCaml witnesses foreign_field_mul BEFORE foreign_field_add here
-            // (verified against jsoo's ff wrap), so allocate mul first.
-            let gate_foreign_field_mul = select_opt(
+            let table_flag = |i: usize| -> Boolean<Fq> {
+                table_col_flags.get(i).cloned().unwrap_or_else(Boolean::false_)
+            };
+            // The optional GATE selectors are sealed in REVERSE of the
+            // `Plonk_verification_key_evals.Step.t` record field order
+            // (plonk_verification_key_evals.ml:81-86 = xor, range_check0,
+            // range_check1, foreign_field_add, foreign_field_mul, rot), because
+            // OCaml's `choose_key`/`Step.map` evaluates the record right-to-left.
+            // So the seal order is: rot, foreign_field_mul, foreign_field_add,
+            // range_check1, range_check0, xor. In particular `xor_comm` is the
+            // FIRST record field and thus sealed LAST (verified against jsoo's
+            // xor+ffadd wrap: rust emitting xor first rotated the 4 gate-selector
+            // commitments by one).
+            let (gate_rot, f_rot_c) = select_opt(sys, &|l| l.gate_rot, shape.gate_rot.is_some())?;
+            let (gate_foreign_field_mul, f_ffmul_c) = select_opt(
                 sys,
-                field_coords(
-                    &|l| l.gate_foreign_field_mul,
-                    shape.gate_foreign_field_mul.is_some(),
-                ),
+                &|l| l.gate_foreign_field_mul,
+                shape.gate_foreign_field_mul.is_some(),
             )?;
-            let gate_foreign_field_add = select_opt(
+            let (gate_foreign_field_add, f_ffadd_c) = select_opt(
                 sys,
-                field_coords(
-                    &|l| l.gate_foreign_field_add,
-                    shape.gate_foreign_field_add.is_some(),
-                ),
+                &|l| l.gate_foreign_field_add,
+                shape.gate_foreign_field_add.is_some(),
             )?;
-            let gate_range_check1 = select_opt(
-                sys,
-                field_coords(&|l| l.gate_range_check1, shape.gate_range_check1.is_some()),
-            )?;
-            let gate_range_check0 = select_opt(
-                sys,
-                field_coords(&|l| l.gate_range_check0, shape.gate_range_check0.is_some()),
-            )?;
-            // The branch presence flag: OR of the one-hot bits of the branches
-            // that use lookup. Constant `true` when EVERY branch uses it (Just,
-            // incl. single-branch base wraps), a VARIABLE when only some do
-            // (Maybe) — gates the OptSponge lookup absorbs + combine_table +
-            // digest alignment + joint_combiner (jsoo `Opt.Maybe`).
+            let (gate_range_check1, f_rc1_c) =
+                select_opt(sys, &|l| l.gate_range_check1, shape.gate_range_check1.is_some())?;
+            let (gate_range_check0, f_rc0_c) =
+                select_opt(sys, &|l| l.gate_range_check0, shape.gate_range_check0.is_some())?;
+            let (gate_xor, f_xor_c) = select_opt(sys, &|l| l.gate_xor, shape.gate_xor.is_some())?;
+            // The branch presence flag. Constant `true` when EVERY branch uses
+            // lookup (Just, incl. single-branch base wraps). Otherwise it is
+            // OCaml's `is_yes = Boolean.Unsafe.of_cvar (Σ present bits)`
+            // (wrap_verifier.ml:290/307): a RAW sum of the present branches'
+            // one-hot bits — NOT a Boolean OR. No gate is emitted here (the sum is
+            // a linear combination, and `choose_key` already seals a per-commitment
+            // copy of it in `select_opt`); a `Boolean::any` OR would be an extra
+            // gate jsoo does not have. Gates the OptSponge lookup absorbs +
+            // combine_table + digest alignment + joint_combiner (jsoo `Opt.Maybe`).
             let lookup_present: Vec<&Boolean<Fq>> = branches
                 .iter()
                 .zip(&branch_definitions)
@@ -1178,24 +1249,63 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             {
                 Boolean::true_()
             } else {
-                Boolean::any(&lookup_present, sys, loc!())?
+                let refs: Vec<FieldVar<Fq>> =
+                    lookup_present.iter().map(|b| b.to_field_var()).collect();
+                let sum = FieldVar::sum(&refs.iter().collect::<Vec<_>>());
+                Boolean::create_unsafe(sum)
             };
+            // OCaml `compute_joint_combiner` branches on the Opt state of the 2nd
+            // lookup-table column (`table_width_at_least_2`) and the runtime-tables
+            // selector (wrap_verifier.ml:1026-1072). When BOTH are definitely
+            // absent (no branch has a width>=2 table and none uses runtime tables),
+            // it takes the flat `(Nothing, Nothing)` path (1035): absorb sorted
+            // columns with no inner fork. Otherwise (a width>=2 table appears in
+            // some branch — e.g. xor's 3-column table) it forks (1057/1040).
+            // range_check uses a single-column table, so ffadd-only programs are
+            // `jc_table_absent = true`.
+            let jc_table_absent = !branch_definitions.iter().any(|bd| {
+                bd.lookup.as_ref().is_some_and(|l| {
+                    l.lookup_table.len() >= 2 || l.runtime_tables_selector.is_some()
+                })
+            });
+            // Hand the sealed commitment flags to the outer consistency checks.
+            cf_xor = f_xor_c.clone();
+            cf_rc0 = f_rc0_c.clone();
+            cf_rc1 = f_rc1_c.clone();
+            cf_ffadd = f_ffadd_c.clone();
+            cf_ffmul = f_ffmul_c.clone();
+            cf_rot = f_rot_c.clone();
+            cf_lut0 = table_flag(0);
+            cf_lut1 = table_flag(1);
+            cf_lut2 = table_flag(2);
+            cf_lut3 = table_flag(3);
+            cf_rt_sel = f_rt_sel.clone();
+            cf_lookup_sel = f_lookup_sel.clone();
+            cf_xor_sel = f_xor_sel.clone();
+            cf_rc_sel = f_rc_sel.clone();
+            cf_ffmul_sel = f_ffmul_sel.clone();
+            // Pair each optional commitment with its own sealed presence flag so
+            // the vk-index absorb and `combine_commitments` gate it individually.
             Some(crate::incrementally_verify::LookupVkComm {
                 flag: lookup_flag,
                 joint_lookup_used: shape.joint_lookup_used,
-                gate_range_check0,
-                gate_range_check1,
-                gate_foreign_field_mul,
-                gate_foreign_field_add,
-                gate_xor,
-                gate_rot,
-                lookup_table,
-                table_ids,
-                runtime_tables_selector,
-                selector_xor,
-                selector_lookup,
-                selector_range_check,
-                selector_ffmul,
+                jc_table_absent,
+                gate_range_check0: gate_range_check0.map(|p| (p, f_rc0_c.clone())),
+                gate_range_check1: gate_range_check1.map(|p| (p, f_rc1_c.clone())),
+                gate_foreign_field_mul: gate_foreign_field_mul.map(|p| (p, f_ffmul_c.clone())),
+                gate_foreign_field_add: gate_foreign_field_add.map(|p| (p, f_ffadd_c.clone())),
+                gate_xor: gate_xor.map(|p| (p, f_xor_c.clone())),
+                gate_rot: gate_rot.map(|p| (p, f_rot_c.clone())),
+                lookup_table: lookup_table
+                    .into_iter()
+                    .zip(table_col_flags.iter().cloned())
+                    .collect(),
+                table_ids: table_ids.map(|p| (p, _f_table_ids.clone())),
+                runtime_tables_selector: runtime_tables_selector.map(|p| (p, f_rt_sel.clone())),
+                selector_xor: selector_xor.map(|p| (p, f_xor_sel.clone())),
+                selector_lookup: selector_lookup.map(|p| (p, f_lookup_sel.clone())),
+                selector_range_check: selector_range_check.map(|p| (p, f_rc_sel.clone())),
+                selector_ffmul: selector_ffmul.map(|p| (p, f_ffmul_sel.clone())),
             })
         } else {
             None
@@ -1333,22 +1443,24 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             let f_lookup = raw_flag(&uses(&|l| l.lookup), 6);
             let f_rt = raw_flag(&uses(&|l| l.uses_runtime_tables), 7);
 
-            // Commitment presence flags (choose_key `commitment_flag`).
-            let c_xor = comm_flag(&uses(&|l| l.gate_xor.is_some()));
-            let c_rc0 = comm_flag(&uses(&|l| l.gate_range_check0.is_some()));
-            let c_rc1 = comm_flag(&uses(&|l| l.gate_range_check1.is_some()));
-            let c_ffadd = comm_flag(&uses(&|l| l.gate_foreign_field_add.is_some()));
-            let c_ffmul = comm_flag(&uses(&|l| l.gate_foreign_field_mul.is_some()));
-            let c_rot = comm_flag(&uses(&|l| l.gate_rot.is_some()));
-            let c_lut0 = comm_flag(&uses(&|l| !l.lookup_table.is_empty()));
-            let c_lut1 = comm_flag(&uses(&|l| l.lookup_table.len() >= 2));
-            let c_lut2 = comm_flag(&uses(&|l| l.lookup_table.len() >= 3));
-            let c_lut3 = comm_flag(&uses(&|l| l.lookup_table.len() >= 4));
-            let c_rt_sel = comm_flag(&uses(&|l| l.runtime_tables_selector.is_some()));
-            let c_lookup_sel = comm_flag(&uses(&|l| l.selector_lookup.is_some()));
-            let c_xor_sel = comm_flag(&uses(&|l| l.selector_xor.is_some()));
-            let c_rc_sel = comm_flag(&uses(&|l| l.selector_range_check.is_some()));
-            let c_ffmul_sel = comm_flag(&uses(&|l| l.selector_ffmul.is_some()));
+            // Commitment presence flags: reuse the SAME sealed `is_yes` vars that
+            // `select_opt`/`choose_key` produced (jsoo asserts on those exact vars).
+            let _ = &comm_flag; // retained for documentation of the Maybe folding
+            let c_xor = cf_xor;
+            let c_rc0 = cf_rc0;
+            let c_rc1 = cf_rc1;
+            let c_ffadd = cf_ffadd;
+            let c_ffmul = cf_ffmul;
+            let c_rot = cf_rot;
+            let c_lut0 = cf_lut0;
+            let c_lut1 = cf_lut1;
+            let c_lut2 = cf_lut2;
+            let c_lut3 = cf_lut3;
+            let c_rt_sel = cf_rt_sel;
+            let c_lookup_sel = cf_lookup_sel;
+            let c_xor_sel = cf_xor_sel;
+            let c_rc_sel = cf_rc_sel;
+            let c_ffmul_sel = cf_ffmul_sel;
 
             let ae = |sys: &mut RunState<Fq>, a: &Boolean<Fq>, b: &Boolean<Fq>| -> SnarkyResult<()> {
                 a.to_field_var().assert_equals(sys, loc!(), &b.to_field_var())
