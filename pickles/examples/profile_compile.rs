@@ -363,53 +363,21 @@ fn main() {
             // s_i (meet-in-the-middle via the single-row hashmap for the last row).
             if let Ok(cr) = std::env::var("CAND_ROWS") {
                 let cand: Vec<usize> = cr.split(',').map(|s| s.trim().parse().unwrap()).collect();
-                let rng: Vec<i64> = (-5..=5).collect();
-                // enumerate small combos over cand[..n-1], solve last row via hashmap
-                let last = *cand.last().unwrap();
-                let head = &cand[..cand.len() - 1];
-                // recursive-ish: only handle up to 6 head rows with a simple odometer
-                let base = rng.len();
-                let total = base.pow(head.len() as u32);
+                // candidate lagrange map (row -> only candidates)
+                let cmap: HashMap<[u64; 4], usize> =
+                    cand.iter().map(|&r| (key(&lag[r]), r)).collect();
+                // 1-row over candidates, LARGE |s| (a coordinate-sized error).
                 let mut found = false;
-                for combo in 0..total {
-                    let mut acc = d.into_group();
-                    let mut c = combo;
-                    let mut coeffs = vec![];
-                    for &r in head {
-                        let si = rng[c % base];
-                        c /= base;
-                        let sf = if si >= 0 {
-                            PFq::from(si as u64)
+                for s in 1..=3_000_000i64 {
+                    for sign in [1i64, -1] {
+                        let sf = if sign > 0 {
+                            PFq::from(s as u64)
                         } else {
-                            -PFq::from((-si) as u64)
+                            -PFq::from(s as u64)
                         };
-                        acc -= lag[r].into_group() * sf;
-                        coeffs.push((r, si));
-                    }
-                    // remaining = s_last * L_last
-                    let rem = acc.into_affine();
-                    if rem.is_zero() {
-                        if coeffs.iter().any(|&(_, s)| s != 0) {
-                            println!("vk[{vk_idx}] COMBO: {coeffs:?} (last row 0)");
-                            found = true;
-                            break;
-                        }
-                        continue;
-                    }
-                    // try small s_last
-                    for sl in -200..=200i64 {
-                        if sl == 0 {
-                            continue;
-                        }
-                        let sf = if sl >= 0 {
-                            PFq::from(sl as u64)
-                        } else {
-                            -PFq::from((-sl) as u64)
-                        };
-                        if (lag[last].into_group() * sf).into_affine() == rem {
-                            let mut all = coeffs.clone();
-                            all.push((last, sl));
-                            println!("vk[{vk_idx}] COMBO: {all:?}");
+                        let cand_pt = (d.into_group() * sf.inverse().unwrap()).into_affine();
+                        if let Some(&r) = cmap.get(&key(&cand_pt)) {
+                            println!("vk[{vk_idx}] 1-ROW cand: row {r}, s={}", sign * s);
                             found = true;
                             break;
                         }
@@ -418,8 +386,48 @@ fn main() {
                         break;
                     }
                 }
+                if found {
+                    continue;
+                }
+                // 2-row over candidate PAIRS, moderate |s|.
+                let rng: Vec<(i64, PFq)> = (-400..=400)
+                    .filter(|&k| k != 0)
+                    .map(|k| {
+                        (
+                            k,
+                            if k >= 0 {
+                                PFq::from(k as u64)
+                            } else {
+                                -PFq::from((-k) as u64)
+                            },
+                        )
+                    })
+                    .collect();
+                let rng_inv: Vec<(i64, PFq)> = rng.iter().map(|&(k, f)| (k, f.inverse().unwrap())).collect();
+                'pair: for &ra in &cand {
+                    let la = lag[ra].into_group();
+                    for &(sa_i, sa) in &rng {
+                        let target = (d.into_group() - la * sa).into_affine();
+                        if target.is_zero() {
+                            continue;
+                        }
+                        let tg = target.into_group();
+                        for &(sb_i, sb_inv) in &rng_inv {
+                            let cand_pt = (tg * sb_inv).into_affine();
+                            if let Some(&rb) = cmap.get(&key(&cand_pt)) {
+                                if rb != ra {
+                                    println!(
+                                        "vk[{vk_idx}] 2-ROW: row {ra} s={sa_i}, row {rb} s={sb_i}"
+                                    );
+                                    found = true;
+                                    break 'pair;
+                                }
+                            }
+                        }
+                    }
+                }
                 if !found {
-                    println!("vk[{vk_idx}]: no combo over CAND_ROWS with |s|<=200");
+                    println!("vk[{vk_idx}]: no 1-row(|s|<=3e6) or 2-row(|s|<=400) over {} cands", cand.len());
                 }
                 continue;
             }
