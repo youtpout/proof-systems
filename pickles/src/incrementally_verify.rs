@@ -778,29 +778,35 @@ where
                     // acc_with_comm = if_ has_acc sum comm; res = if_ has_comm
                     // acc_with_comm acc.
                     let point_if = |sys: &mut RunState<F>,
+                                    bsel: &Boolean<F>,
                                     then_: &Point<F>,
                                     else_: &Point<F>|
                      -> SnarkyResult<Point<F>> {
                         Ok(Point::new(
                             sys.if_(
                                 Cow::Owned(format!("{loc} | table if_ x")),
-                                b.clone(),
+                                bsel.clone(),
                                 then_.x.clone(),
                                 else_.x.clone(),
                             )?,
                             sys.if_(
                                 Cow::Owned(format!("{loc} | table if_ y")),
-                                b.clone(),
+                                bsel.clone(),
                                 then_.y.clone(),
                                 else_.y.clone(),
                             )?,
                         ))
                     };
-                    let mut acc: Option<Point<F>> = vlk.table_ids.clone();
+                    // (has, point); None = Opt.Nothing. Each step folds the running
+                    // presence flag `has_acc ||| has_comm` (OCaml wrap_verifier.ml:1176)
+                    // — a real gate even when the two flags are the same var.
+                    let mut acc: Option<(Boolean<F>, Point<F>)> =
+                        vlk.table_ids.clone().map(|p| (b.clone(), p));
                     for col in vlk.lookup_table.iter().rev() {
+                        let comm_flag = b.clone();
                         acc = Some(match acc {
-                            None => col.clone(),
-                            Some(a) => {
+                            None => (comm_flag, col.clone()),
+                            Some((acc_flag, a)) => {
                                 let scaled = crate::scalar_challenge::endo(
                                     sys,
                                     Cow::Owned(format!("{loc} | table endo")),
@@ -815,12 +821,18 @@ where
                                     &scaled,
                                     col,
                                 )?;
-                                let acc_with_comm = point_if(sys, &sum, col)?;
-                                point_if(sys, &acc_with_comm, &a)?
+                                let acc_with_comm = point_if(sys, &acc_flag, &sum, col)?;
+                                let res = point_if(sys, &comm_flag, &acc_with_comm, &a)?;
+                                let new_flag = acc_flag.or(
+                                    &comm_flag,
+                                    Cow::Owned(format!("{loc} | table flag or")),
+                                    sys,
+                                );
+                                (new_flag, res)
                             }
                         });
                     }
-                    combined_table = acc;
+                    combined_table = acc.map(|(_, p)| p);
                 }
             }
         }
