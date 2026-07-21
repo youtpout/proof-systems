@@ -824,16 +824,6 @@ where
                                 )?;
                                 let acc_with_comm = point_if(sys, &acc_flag, &sum, col)?;
                                 let res = point_if(sys, &comm_flag, &acc_with_comm, &a)?;
-                                // OCaml reduces the running flag (a lincom after
-                                // the first Maybe step) before OR-ing — a seal
-                                // gate for multi-term lincoms, a no-op for the
-                                // single-var `is_yes` of the first step.
-                                let acc_flag = Boolean::create_unsafe(
-                                    acc_flag.to_field_var().seal(
-                                        sys,
-                                        Cow::Owned(format!("{loc} | table flag seal")),
-                                    )?,
-                                );
                                 let new_flag = acc_flag.or(
                                     &comm_flag,
                                     Cow::Owned(format!("{loc} | table flag or")),
@@ -843,7 +833,30 @@ where
                             }
                         });
                     }
-                    combined_table = acc;
+                    // OCaml `wrap_verifier.ml:1267-1269`: the combined_table's
+                    // polyscale flag is `b_l &&& b_final`, where `b_l` is the
+                    // WITNESSED messages `uses_lookups` flag and `b_final` the
+                    // fold's running OR. The AND emits a fresh boolean-checked
+                    // var (jsoo's `keep = t1`, bare), NOT the `1 - both_false`
+                    // lincom that `b_final` alone is — which the polyscale
+                    // `if_ keep` would otherwise re-seal, shifting the packing.
+                    combined_table = match acc {
+                        Some((b_final, pt)) => {
+                            let b_l = messages
+                                .lookup
+                                .as_ref()
+                                .expect("combined_table present without messages.lookup")
+                                .flag
+                                .clone();
+                            let flag = b_l.and(
+                                &b_final,
+                                sys,
+                                Cow::Owned(format!("{loc} | table flag b_l and")),
+                            );
+                            Some((flag, pt))
+                        }
+                        None => None,
+                    };
                 }
             }
         }
