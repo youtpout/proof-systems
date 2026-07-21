@@ -216,6 +216,42 @@ fn main() {
         return;
     }
 
+    if mode == "readpk" {
+        // Deserialize a jsoo wrap prover-key cache file (rmp of
+        // `ProverIndex<Pallas>`, written by `caml_pasta_fq_plonk_index_encode`)
+        // and dump its gates — jsoo's ACTUAL multi-branch wrap gates, for a
+        // positional diff vs the rust shared wrap. Usage: readpk <pk_file> <out>
+        use serde::Deserialize;
+        let path = std::env::args().nth(2).expect("pk file path");
+        let out = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "/tmp/claude-1000/jsoo-wrap-gates.json".into());
+        let bytes = std::fs::read(&path).expect("read pk");
+        let mut de = rmp_serde::Deserializer::new(&bytes[..]);
+        type WrapPI = kimchi::prover_index::ProverIndex<
+            { pickles::common::FULL_ROUNDS },
+            mina_curves::pasta::Pallas,
+            poly_commitment::ipa::SRS<mina_curves::pasta::Pallas>,
+        >;
+        let index = WrapPI::deserialize(&mut de).expect("rmp deserialize ProverIndex");
+        #[derive(serde::Serialize)]
+        struct Dump {
+            public_input_size: usize,
+            gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+        }
+        let dump = Dump {
+            public_input_size: index.cs.public,
+            gates: index.cs.gates.to_vec(),
+        };
+        std::fs::write(&out, serde_json::to_string(&dump).unwrap()).expect("write");
+        eprintln!(
+            "jsoo wrap gates dumped to {out} ({} gates, domain 2^{})",
+            index.cs.gates.len(),
+            index.cs.domain.d1.log_size_of_group
+        );
+        return;
+    }
+
     if mode == "vkdiff" {
         // Gradient tool: compile the rust shared base VK from <branches json>,
         // decode it and the jsoo VK (base64 of `verificationKey.data`), and
