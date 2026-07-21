@@ -1642,8 +1642,13 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                         // when Maybe, else constant true (Yes). Captured as the
                         // `Opt.Maybe` flag threaded through the lookup verification.
                         let flag = if uses_lookups_maybe {
-                            let f = sys.compute(loc!(), |_| Fq::one())?;
-                            let b = Boolean::create_unsafe(f);
+                            // jsoo threads the STATEMENT's uses_lookups slot
+                            // (stmt[38]) as this flag — its copy cycle spans the
+                            // joint_combiner / combined_table / combine uses. A
+                            // freshly-witnessed var would form an isolated cycle
+                            // (sigma mismatch). Keep the messages Opt boolean
+                            // check (part A gate structure).
+                            let b = Boolean::create_unsafe(stmt[stmt.len() - 2].clone());
                             b.check(sys, loc!())?;
                             b
                         } else {
