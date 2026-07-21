@@ -29,7 +29,7 @@ use mina_poseidon::{
 };
 use poly_commitment::{commitment::PolyComm, ipa::OpeningProof as IpaProof, SRS};
 use serde::{Deserialize, Serialize};
-use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult};
+use snarky::{api::SnarkyCircuit, loc, Boolean, FieldVar, RunState, SnarkyResult, SnarkyType};
 
 use crate::{
     common::FULL_ROUNDS,
@@ -658,6 +658,60 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let msgs_wrap_digest = stmt[11].clone();
         let bp: Vec<FieldVar<Fq>> = stmt[13..13 + ROUNDS].to_vec();
         let branch_data = stmt[13 + ROUNDS].clone();
+        // OCaml statement `Typ.check` boolean-constrains each `Maybe` feature
+        // flag (and the joint_combiner / uses_lookups `Opt` flag) at witness
+        // time — the VERY FIRST wrap constraints, BEFORE the Other_field
+        // forbidden checks (verified via the jsoo gate-label/constraint dump:
+        // constraints 0,1 = `Boolean(Var 34=xor)`, `Boolean(Var 38=jc)` for the
+        // mixed case). A feature is `Maybe` iff some-but-not-all branches use
+        // it; `Yes`/`No` (all/none) fold to constants (`constant_layout_typ`
+        // No|Yes emits no check, opt.ml:125) so alllookup/nolookup stay
+        // byte-identical. rust's fixed `[FieldVar; STMT_LEN]` public input reads
+        // these slots via `create_unsafe` (no check), so emit the missing
+        // booleans here to align the whole circuit (this is the +1 that was
+        // propagating through the entire mixed wrap).
+        {
+            let per_branch: Vec<Option<&LookupBranchData>> = if w.branches.is_empty() {
+                vec![w.lookup.as_ref()]
+            } else {
+                w.branches.iter().map(|b| b.lookup.as_ref()).collect()
+            };
+            let feat_base = stmt.len() - 10;
+            let is_maybe = |get: &dyn Fn(&LookupBranchData) -> bool| -> bool {
+                let mut any = false;
+                let mut all = true;
+                for o in &per_branch {
+                    let u = o.map(|l| get(l)).unwrap_or(false);
+                    any |= u;
+                    all &= u;
+                }
+                any && !all
+            };
+            // Feature flags in `Plonk_types.Features.to_data` order, then the
+            // joint_combiner / uses_lookups Opt flag (stmt slot 8 = stmt[38]).
+            let flags: [(bool, usize); 8] = [
+                (is_maybe(&|l| l.range_check0), 0),
+                (is_maybe(&|l| l.range_check1), 1),
+                (is_maybe(&|l| l.foreign_field_add), 2),
+                (is_maybe(&|l| l.foreign_field_mul), 3),
+                (is_maybe(&|l| l.xor), 4),
+                (is_maybe(&|l| l.rot), 5),
+                (is_maybe(&|l| l.lookup), 6),
+                (is_maybe(&|l| l.uses_runtime_tables), 7),
+            ];
+            for (m, slot) in flags {
+                if m {
+                    Boolean::create_unsafe(stmt[feat_base + slot].clone()).check(sys, loc!())?;
+                }
+            }
+            // uses_lookups Opt flag: Maybe iff some-but-not-all branches use any
+            // lookup at all (i.e. carry LookupBranchData).
+            let present_any = per_branch.iter().any(|o| o.is_some());
+            let present_all = per_branch.iter().all(|o| o.is_some());
+            if present_any && !present_all {
+                Boolean::create_unsafe(stmt[feat_base + 8].clone()).check(sys, loc!())?;
+            }
+        }
         // OCaml `Wrap.Other_field.check`: each deferred Tick-field slot of the
         // statement (cip, b, zeta_to_srs_length, zeta_to_domain_size, perm)
         // must not be one of the forbidden shifted values — the 255-bit
