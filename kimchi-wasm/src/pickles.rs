@@ -727,6 +727,13 @@ pub fn rust_pickles_compile_recorded_program(
         let witness = parse_fp_decimals(branch.witness, "witness")?;
         parsed.push((branch.circuit, witness, branch.proofs_verified));
     }
+    // A non-recursive program with several distinct branches gets ONE shared
+    // width-0 wrap VK (OCaml `Pickles.compile`). Compute it here, reusing the
+    // Step verifiers this batch already builds — recompiling them in a second
+    // wasm call overruns wasm32's 4 GB linear memory and thrashes.
+    let branch_count = parsed.len();
+    let all_non_recursive = parsed.iter().all(|(_, _, pv)| *pv == 0);
+    let want_shared_base_vk = branch_count > 1 && all_non_recursive;
     type Compiled = (
         pickles::recorded::RecordedCompiledBase,
         Option<pickles::recorded::RecordedCompiledN1>,
@@ -775,10 +782,32 @@ pub fn rust_pickles_compile_recorded_program(
             })
             .collect()
     });
-    let out = js_sys::Array::new();
+    // Unwrap per-branch results first so the shared-base wrap can borrow the
+    // Step verifiers before the bases are moved into JS handles.
+    let mut results = Vec::with_capacity(compiled.len());
     for entry in compiled {
-        let (base, n1, n2) =
-            entry.map_err(|err| JsError::new(&format!("program compile failed: {err}")))?;
+        results.push(entry.map_err(|err| JsError::new(&format!("program compile failed: {err}")))?);
+    }
+    // Compute the shared width-0 base VK from the already-compiled Step
+    // verifiers (no second compile). Appended to the output as a trailing
+    // element the JS reads at index `branch_count`.
+    let shared_base_vk_json: Option<String> = if want_shared_base_vk {
+        let base_refs: Vec<&pickles::recorded::RecordedCompiledBase> =
+            results.iter().map(|(base, _, _)| base).collect();
+        let (base64, hash) = crate::rayon::run_in_pool(|| {
+            pickles::recorded::shared_base_vk_from_bases(&base_refs)
+        })
+        .map_err(|err| JsError::new(&format!("shared base VK failed: {err:?}")))?;
+        Some(format!(
+            "{{\"base64\":{},\"hash\":{}}}",
+            serde_json::Value::String(base64),
+            serde_json::Value::String(hash)
+        ))
+    } else {
+        None
+    };
+    let out = js_sys::Array::new();
+    for (base, n1, n2) in results {
         let triple = js_sys::Array::new();
         triple.push(&JsValue::from(WasmRecordedCompiledBase(base)));
         triple.push(&n1.map_or(JsValue::NULL, |n1| {
@@ -788,6 +817,9 @@ pub fn rust_pickles_compile_recorded_program(
             JsValue::from(WasmRecordedCompiledN2(n2))
         }));
         out.push(&triple);
+    }
+    if let Some(vk_json) = shared_base_vk_json {
+        out.push(&JsValue::from_str(&vk_json));
     }
     Ok(out)
 }

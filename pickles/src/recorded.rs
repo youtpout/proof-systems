@@ -1872,7 +1872,6 @@ impl RecordedCompiledBase {
 pub fn compile_recorded_program_base_shared_vk(
     branches: Vec<RecordedProgramBranch>,
 ) -> Result<(String, String), RecordedProveError> {
-    use base64::prelude::*;
     if branches.is_empty() {
         return Err(RecordedProveError::Program(
             "a program has at least one branch".into(),
@@ -1903,7 +1902,37 @@ pub fn compile_recorded_program_base_shared_vk(
                 .index
         })
         .collect();
-    let (_wrap_prover, wrap_verifier) = crate::api::build_shared_base_wrap(&step_verifiers);
+    shared_base_vk_from_step_verifiers(&step_verifiers)
+}
+
+/// Builds the shared multi-branch base wrap VK from already-compiled Step
+/// verifier indexes. Split out of [`compile_recorded_program_base_shared_vk`]
+/// so the batch compile can reuse the Step verifiers it already built instead
+/// of recompiling every branch a second time — a double compile that fits in
+/// native memory but overruns wasm32's 4 GB linear-memory ceiling and thrashes.
+pub fn shared_base_vk_from_bases(
+    bases: &[&RecordedCompiledBase],
+) -> Result<(String, String), RecordedProveError> {
+    let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = bases
+        .iter()
+        .map(|base| {
+            &base
+                .compiled
+                .step_indexes
+                .as_ref()
+                .expect("compiled Step indexes")
+                .1
+                .index
+        })
+        .collect();
+    shared_base_vk_from_step_verifiers(&step_verifiers)
+}
+
+pub fn shared_base_vk_from_step_verifiers(
+    step_verifiers: &[&crate::api::SharedStepVerifierIndex],
+) -> Result<(String, String), RecordedProveError> {
+    use base64::prelude::*;
+    let (_wrap_prover, wrap_verifier) = crate::api::build_shared_base_wrap(step_verifiers);
     // `step_domain_log2` is metadata only (never serialized into the VK); use
     // the largest branch Step domain so it validates against TICK_ROUNDS.
     let step_domain_log2 = step_verifiers
