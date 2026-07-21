@@ -742,31 +742,86 @@ where
         // scale, emitted even when `joint_combiner = 0` (non-joint).
         if let Some(vlk) = &vk.lookup {
             if !vlk.lookup_table.is_empty() {
-                // TODO: runtime tables merge into the second column in OCaml;
-                // range_check/xor (our only lookup users) have none.
-                let mut acc: Option<Point<F>> = vlk.table_ids.clone();
-                for col in vlk.lookup_table.iter().rev() {
-                    acc = Some(match acc {
-                        Some(a) => {
-                            let scaled = crate::scalar_challenge::endo(
-                                sys,
-                                Cow::Owned(format!("{loc} | table endo")),
-                                &a,
-                                &jc,
-                                crate::common::SCALAR_CHALLENGE_BITS,
-                                endo_base,
-                            )?;
-                            crate::plonk_curve_ops::add_fast(
-                                sys,
-                                Cow::Owned(format!("{loc} | table add")),
-                                &scaled,
-                                col,
-                            )?
-                        }
-                        None => col.clone(),
-                    });
+                let b = &vlk.flag;
+                if b.to_constant().is_some() {
+                    // Just path (alllookup / single-branch): endo + add_fast, no
+                    // conditional selects — byte-identical to the pre-Maybe code.
+                    let mut acc: Option<Point<F>> = vlk.table_ids.clone();
+                    for col in vlk.lookup_table.iter().rev() {
+                        acc = Some(match acc {
+                            Some(a) => {
+                                let scaled = crate::scalar_challenge::endo(
+                                    sys,
+                                    Cow::Owned(format!("{loc} | table endo")),
+                                    &a,
+                                    &jc,
+                                    crate::common::SCALAR_CHALLENGE_BITS,
+                                    endo_base,
+                                )?;
+                                crate::plonk_curve_ops::add_fast(
+                                    sys,
+                                    Cow::Owned(format!("{loc} | table add")),
+                                    &scaled,
+                                    col,
+                                )?
+                            }
+                            None => col.clone(),
+                        });
+                    }
+                    combined_table = acc;
+                } else {
+                    // Maybe path (OCaml `compute_lookup_table_comm` Opt fold,
+                    // wrap_verifier.ml:1155-1176). Every column shares the
+                    // choose_key flag `b` (= is_yes) and (for the mixed xor set)
+                    // table_ids is Nothing. Each Maybe(has_acc,acc) folded with
+                    // Maybe(has_comm,comm): scaled=endo(acc,jc); sum=scaled+comm;
+                    // acc_with_comm = if_ has_acc sum comm; res = if_ has_comm
+                    // acc_with_comm acc.
+                    let point_if = |sys: &mut RunState<F>,
+                                    then_: &Point<F>,
+                                    else_: &Point<F>|
+                     -> SnarkyResult<Point<F>> {
+                        Ok(Point::new(
+                            sys.if_(
+                                Cow::Owned(format!("{loc} | table if_ x")),
+                                b.clone(),
+                                then_.x.clone(),
+                                else_.x.clone(),
+                            )?,
+                            sys.if_(
+                                Cow::Owned(format!("{loc} | table if_ y")),
+                                b.clone(),
+                                then_.y.clone(),
+                                else_.y.clone(),
+                            )?,
+                        ))
+                    };
+                    let mut acc: Option<Point<F>> = vlk.table_ids.clone();
+                    for col in vlk.lookup_table.iter().rev() {
+                        acc = Some(match acc {
+                            None => col.clone(),
+                            Some(a) => {
+                                let scaled = crate::scalar_challenge::endo(
+                                    sys,
+                                    Cow::Owned(format!("{loc} | table endo")),
+                                    &a,
+                                    &jc,
+                                    crate::common::SCALAR_CHALLENGE_BITS,
+                                    endo_base,
+                                )?;
+                                let sum = crate::plonk_curve_ops::add_fast(
+                                    sys,
+                                    Cow::Owned(format!("{loc} | table add")),
+                                    &scaled,
+                                    col,
+                                )?;
+                                let acc_with_comm = point_if(sys, &sum, col)?;
+                                point_if(sys, &acc_with_comm, &a)?
+                            }
+                        });
+                    }
+                    combined_table = acc;
                 }
-                combined_table = acc;
             }
         }
     }
