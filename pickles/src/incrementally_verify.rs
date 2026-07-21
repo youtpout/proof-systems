@@ -666,6 +666,17 @@ where
             // under the flag. The 5 sorted columns split 1 / 3 / 1, the last being
             // the `sorted_5th_column: Opt lookups_per_row_4`.
             let b = &lookup_flag;
+            // OCaml `compute_joint_combiner` threads the VERIFIER-side lookup flag
+            // (`m.lookup_table_comm`'s Maybe flag, wrap_verifier.ml:1057/1066/1069)
+            // through the INNER recombine and the `jc` `Field.if_`, while the OUTER
+            // recombine (1082) uses the messages/proof flag. Using the vk flag here
+            // keeps the inner-recombine selector in the vk-flag copy-cycle (shared
+            // with the combined_table `point_if`), as jsoo does.
+            let vk_flag = vk
+                .lookup
+                .as_ref()
+                .map(|v| v.flag.clone())
+                .unwrap_or_else(|| lookup_flag.clone());
             let sponge2 = sponge.opt_clone();
             let mut sponge2b = sponge.opt_clone();
             let jc_true = squeeze_jc(sys, &mut sponge)?;
@@ -685,7 +696,7 @@ where
                     &to_pvs(&lk.sorted[0]),
                 );
             }
-            sponge.recombine(sys, Cow::Owned(format!("{loc} | jc recombine")), b, &sponge2b)?;
+            sponge.recombine(sys, Cow::Owned(format!("{loc} | jc recombine")), &vk_flag, &sponge2b)?;
             // absorb_sorted_2_to_4 (indices 1..4), flag true.
             for com in lk.sorted.iter().take(4).skip(1) {
                 sponge.absorb_commitment_maybe(
@@ -707,7 +718,7 @@ where
             // jc = Field.if_ b jc_true jc_false(=0).
             let jc = sys.if_(
                 Cow::Owned(format!("{loc} | jc if_")),
-                b.clone(),
+                vk_flag.clone(),
                 jc_true,
                 FieldVar::constant(F::zero()),
             )?;
