@@ -823,6 +823,16 @@ where
                                 )?;
                                 let acc_with_comm = point_if(sys, &acc_flag, &sum, col)?;
                                 let res = point_if(sys, &comm_flag, &acc_with_comm, &a)?;
+                                // OCaml reduces the running flag (a lincom after
+                                // the first Maybe step) before OR-ing — a seal
+                                // gate for multi-term lincoms, a no-op for the
+                                // single-var `is_yes` of the first step.
+                                let acc_flag = Boolean::create_unsafe(
+                                    acc_flag.to_field_var().seal(
+                                        sys,
+                                        Cow::Owned(format!("{loc} | table flag seal")),
+                                    )?,
+                                );
                                 let new_flag = acc_flag.or(
                                     &comm_flag,
                                     Cow::Owned(format!("{loc} | table flag or")),
