@@ -783,20 +783,24 @@ where
                                     then_: &Point<F>,
                                     else_: &Point<F>|
                      -> SnarkyResult<Point<F>> {
-                        Ok(Point::new(
-                            sys.if_(
-                                Cow::Owned(format!("{loc} | table if_ x")),
-                                bsel.clone(),
-                                then_.x.clone(),
-                                else_.x.clone(),
-                            )?,
-                            sys.if_(
-                                Cow::Owned(format!("{loc} | table if_ y")),
-                                bsel.clone(),
-                                then_.y.clone(),
-                                else_.y.clone(),
-                            )?,
-                        ))
+                        // OCaml `Inner_curve.if_` builds the tuple
+                        // `(F.if_ c tx ex, F.if_ c ty ey)`, evaluated
+                        // RIGHT-TO-LEFT, so the Y select is emitted BEFORE the X
+                        // select. Match that ordering (else the acc point's x/y
+                        // seal cells wire in swapped copy-cycle order).
+                        let y = sys.if_(
+                            Cow::Owned(format!("{loc} | table if_ y")),
+                            bsel.clone(),
+                            then_.y.clone(),
+                            else_.y.clone(),
+                        )?;
+                        let x = sys.if_(
+                            Cow::Owned(format!("{loc} | table if_ x")),
+                            bsel.clone(),
+                            then_.x.clone(),
+                            else_.x.clone(),
+                        )?;
+                        Ok(Point::new(x, y))
                     };
                     // (has, point); None = Opt.Nothing. Each step folds the running
                     // presence flag `has_acc ||| has_comm` (OCaml wrap_verifier.ml:1176)
