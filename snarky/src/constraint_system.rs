@@ -23,6 +23,19 @@ use std::{
 
 use super::{errors::SnarkyRuntimeError, union_find::DisjointSet};
 
+// THROWAWAY (task #24): per-constraint variant log for diffing the rust wrap
+// against jsoo. Gated by DUMP_CONSTRAINTS; drained by profile_compile. Revert
+// once the mixed wrap matches.
+thread_local! {
+    pub static CONSTRAINT_LOG: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// THROWAWAY (task #24): take and clear the recorded constraint variant log.
+pub fn drain_constraint_log() -> Vec<String> {
+    CONSTRAINT_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
 /** A row indexing in a constraint system.
     Either a public input row, or a non-public input row that starts at index 0.
 */
@@ -1172,6 +1185,18 @@ impl<Field: PrimeField> SnarkyConstraintSystem<Field> {
     ) where
         Cvar: SnarkyCvar<Field = Field>,
     {
+        // THROWAWAY (task #24): record the BasicSnarkyConstraint variant + loc so
+        // the rust wrap constraint sequence can be diffed against jsoo's OCaml
+        // dump to pinpoint the per-commitment combine gap. Gated by DUMP_CONSTRAINTS.
+        if std::env::var_os("DUMP_CONSTRAINTS").is_some() {
+            let v = match &constraint {
+                BasicSnarkyConstraint::Square(..) => "Square",
+                BasicSnarkyConstraint::R1CS(..) => "R1CS",
+                BasicSnarkyConstraint::Boolean(..) => "Boolean",
+                BasicSnarkyConstraint::Equal(..) => "Equal",
+            };
+            CONSTRAINT_LOG.with(|l| l.borrow_mut().push(format!("{v}\t{loc}")));
+        }
         match constraint {
             BasicSnarkyConstraint::Square(v1, v2) => {
                 match (

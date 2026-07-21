@@ -540,6 +540,19 @@ fn main() {
             pickles::recorded::dump_shared_base_wrap_json(branches).expect("dump shared wrap");
         std::fs::write(&out, json).expect("write");
         eprintln!("shared wrap dumped to {out}");
+        // THROWAWAY (task #24): dump the recorded per-constraint variant sequence
+        // (gated by DUMP_CONSTRAINTS) to diff the combine against jsoo.
+        if std::env::var_os("DUMP_CONSTRAINTS").is_some() {
+            let log = snarky::constraint_system::drain_constraint_log();
+            let cpath = format!("{out}.constraints.txt");
+            let body: String = log
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{i}\t{l}\n"))
+                .collect();
+            std::fs::write(&cpath, body).expect("write constraints");
+            eprintln!("constraints dumped to {cpath} ({} entries)", log.len());
+        }
         return;
     }
 
