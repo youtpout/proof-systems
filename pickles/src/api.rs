@@ -1013,7 +1013,20 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
         let lookup: Option<crate::incrementally_verify::LookupVkComm<Fq>> = if let Some(shape) =
             w.lookup.clone()
         {
-            let zero = Fq::from(0u64);
+            // OCaml `choose_key` Maybe case (wrap_verifier.ml:269-320): the
+            // coordinate sum is `just_sum + none_sum`, where `none_sum =
+            // is_none · Inner_curve.one`. So a branch that does NOT carry this
+            // optional commitment (Nothing) contributes the inner-curve
+            // generator, NOT (0,0). The step VK commitments are Vesta points,
+            // so `Inner_curve.one` is the Vesta generator. When every branch
+            // carries the commitment (the `Just` special case, e.g. the
+            // all-lookup wrap) this fallback never fires and the result is the
+            // plain `Σ b·x`, matching OCaml's `justs,[],[]` path exactly.
+            let gen_coords = {
+                use ark_ec::{AffineRepr, CurveGroup};
+                let g = Vesta::generator().into_group().into_affine();
+                (g.x, g.y)
+            };
             let field_coords =
                 |get: &dyn Fn(&LookupBranchData) -> Option<(Fq, Fq)>, present: bool| -> Option<Vec<(Fq, Fq)>> {
                     if !present {
@@ -1022,7 +1035,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                     Some(
                         branch_definitions
                             .iter()
-                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or((zero, zero)))
+                            .map(|b| b.lookup.as_ref().and_then(|l| get(l)).unwrap_or(gen_coords))
                             .collect(),
                     )
                 };
@@ -1062,7 +1075,7 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             for i in (0..shape.lookup_table.len()).rev() {
                 let coords: Vec<(Fq, Fq)> = branch_definitions
                     .iter()
-                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or((zero, zero)))
+                    .map(|b| b.lookup.as_ref().map(|l| l.lookup_table[i]).unwrap_or(gen_coords))
                     .collect();
                 lookup_table.push(choose_pt(sys, coords)?);
             }
