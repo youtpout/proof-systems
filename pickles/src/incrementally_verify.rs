@@ -276,6 +276,36 @@ impl<F: PrimeField> Transcript<F> {
         }
     }
 
+    /// Absorbs a commitment's chunks under an optional `keep` flag (OCaml
+    /// `Opt.Maybe(flag, comm)`). When `flag` is constant true (single-branch /
+    /// all-lookup) the opt sponge folds it to a plain absorb, keeping those
+    /// wraps byte-identical; when `flag` is a variable (a mixed feature set
+    /// across branches) the opt sponge inserts the conditional pending/pair
+    /// gates that jsoo emits for a Maybe lookup. No-op distinction on the plain
+    /// (step-side) sponge, which never carries Maybe elements.
+    fn absorb_commitment_maybe(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        flag: &Boolean<F>,
+        chunks: &[PointVar<F>],
+    ) {
+        match self {
+            Transcript::Plain(sponge) => {
+                for (x, y) in chunks {
+                    sponge.absorb(sys, loc.clone(), std::slice::from_ref(x));
+                    sponge.absorb(sys, loc.clone(), std::slice::from_ref(y));
+                }
+            }
+            Transcript::Opt(sponge) => {
+                for (x, y) in chunks {
+                    sponge.absorb((flag.clone(), x.clone()));
+                    sponge.absorb((flag.clone(), y.clone()));
+                }
+            }
+        }
+    }
+
     fn squeeze(
         &mut self,
         sys: &mut RunState<F>,
@@ -549,10 +579,18 @@ where
     // places the witness permutations BEFORE the `combine_table` endo — the opt
     // sponge otherwise defers every permutation to the next squeeze.
     if let Some(lk) = &messages.lookup {
+        // The Maybe flag of the lookup section: a variable when only some
+        // branches use lookup (OCaml `Opt.Maybe`), constant true otherwise.
+        let lookup_flag = vk
+            .lookup
+            .as_ref()
+            .map(|l| l.flag.clone())
+            .unwrap_or_else(Boolean::true_);
         if let Some(runtime) = &lk.runtime {
-            sponge.absorb_commitment(
+            sponge.absorb_commitment_maybe(
                 sys,
                 Cow::Owned(format!("{loc} | absorb lookup runtime")),
+                &lookup_flag,
                 &to_pvs(runtime),
             );
         }
@@ -582,9 +620,10 @@ where
         out_joint_combiner = Some(jc.clone());
         // absorb the sorted columns (queued; flushed at the beta squeeze).
         for com in &lk.sorted {
-            sponge.absorb_commitment(
+            sponge.absorb_commitment_maybe(
                 sys,
                 Cow::Owned(format!("{loc} | absorb lookup sorted")),
+                &lookup_flag,
                 &to_pvs(com),
             );
         }
@@ -639,9 +678,15 @@ where
     // Lookup: absorb the aggregation commitment (kimchi absorbs it after gamma,
     // before z_comm).
     if let Some(lk) = &messages.lookup {
-        sponge.absorb_commitment(
+        let lookup_flag = vk
+            .lookup
+            .as_ref()
+            .map(|l| l.flag.clone())
+            .unwrap_or_else(Boolean::true_);
+        sponge.absorb_commitment_maybe(
             sys,
             Cow::Owned(format!("{loc} | absorb lookup aggreg")),
+            &lookup_flag,
             &to_pvs(&lk.aggreg),
         );
     }
