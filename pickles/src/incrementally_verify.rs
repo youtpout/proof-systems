@@ -142,6 +142,16 @@ pub struct LookupMsgComm<F: PrimeField> {
     pub sorted: Vec<Vec<Point<F>>>,
     pub aggreg: Vec<Point<F>>,
     pub runtime: Option<Vec<Point<F>>>,
+    /// The `uses_lookups` Opt flag WITNESSED in the messages (OCaml
+    /// `Messages.wrap_opt_typ` outer `Opt uses_lookup`): a fresh boolean-checked
+    /// var when Maybe, constant `true` when Yes. This is the `Opt.Maybe(b, …)`
+    /// flag reused across the whole lookup verification (joint_combiner,
+    /// commitment absorbs, combine) — distinct from choose_key's derived
+    /// `is_yes`, and the one jsoo's copy constraints thread through.
+    pub flag: Boolean<F>,
+    /// The `lookups_per_row_4` Opt flag WITNESSED in the messages
+    /// (`sorted_5th_column: Opt lookups_per_row_4`).
+    pub lppr4_flag: Boolean<F>,
 }
 
 /// The IPA opening proof pieces (`Openings.Bulletproof.t`), plus the SRS
@@ -328,6 +338,40 @@ impl<F: PrimeField> Transcript<F> {
         match self {
             Transcript::Plain(_) => Ok(()),
             Transcript::Opt(sponge) => sponge.consume_all_pending(sys, loc),
+        }
+    }
+
+    /// `Opt.copy` — snapshot the sponge for the Maybe joint_combiner's
+    /// speculative branches (jsoo forks the sponge, absorbs into each side of a
+    /// Maybe flag, then `recombine`s under the flag).
+    fn opt_clone(&self) -> Self {
+        match self {
+            Transcript::Opt(s) => Transcript::Opt(s.clone()),
+            Transcript::Plain(s) => Transcript::Plain(s.clone()),
+        }
+    }
+
+    /// `Opt.recombine b ~original` — merge a forked sponge back: each state
+    /// element becomes `if_ b self original`. No-op on the plain sponge.
+    fn recombine(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        b: &Boolean<F>,
+        original: &Self,
+    ) -> SnarkyResult<()> {
+        match (self, original) {
+            (Transcript::Opt(s), Transcript::Opt(o)) => s.recombine(sys, loc, b, o),
+            _ => Ok(()),
+        }
+    }
+
+    /// `Opt.needs_final_permute := v` — jsoo clears this after the Maybe
+    /// joint_combiner so an empty pending queue does not force a trailing
+    /// permutation. No-op on the plain sponge.
+    fn set_needs_final_permute(&mut self, v: bool) {
+        if let Transcript::Opt(s) = self {
+            s.set_needs_final_permute(v);
         }
     }
 
@@ -579,13 +623,12 @@ where
     // places the witness permutations BEFORE the `combine_table` endo — the opt
     // sponge otherwise defers every permutation to the next squeeze.
     if let Some(lk) = &messages.lookup {
-        // The Maybe flag of the lookup section: a variable when only some
-        // branches use lookup (OCaml `Opt.Maybe`), constant true otherwise.
-        let lookup_flag = vk
-            .lookup
-            .as_ref()
-            .map(|l| l.flag.clone())
-            .unwrap_or_else(Boolean::true_);
+        // The Maybe flag of the lookup section: the boolean WITNESSED in the
+        // messages (`Opt.Maybe(b, …)`), a variable when only some branches use
+        // lookup, constant true otherwise. This is the flag jsoo threads through
+        // the joint_combiner / absorbs / combine (distinct from choose_key's
+        // derived `is_yes`).
+        let lookup_flag = lk.flag.clone();
         if let Some(runtime) = &lk.runtime {
             sponge.absorb_commitment_maybe(
                 sys,
@@ -597,36 +640,99 @@ where
         // Opt.consume_all_pending (wrap_verifier.ml:1078/1090): flush witness
         // (+runtime) absorbs so their permutations land before the endo.
         sponge.consume_all_pending(sys, Cow::Owned(format!("{loc} | consume_all_pending (pre-jc)")))?;
-        // The joint combiner: squeezed (128-bit) for a multi-column table,
-        // otherwise the CONSTANT 0 (OCaml `{ inner = Field.zero }`,
-        // wrap_verifier.ml:1039). A constant scalar is inlined into the endo's
-        // coefficients rather than wired, so the table endo's copy constraints
-        // match jsoo — a witnessed 0 would add spurious permutation cells.
-        let jc: FieldVar<F> = if vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used()) {
-            let squeezed =
-                sponge.squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
-            // The joint combiner is a SCALAR challenge (OCaml `Opt.scalar_challenge`,
-            // wrap_verifier.ml:1030) — `constrain_low_bits:false`, like alpha/zeta;
-            // `true` would double the EndoMulScalar (constrain both hi AND lo).
-            crate::challenge::lowest_128_bits(
+        let joint = vk.lookup.as_ref().is_some_and(|l| l.joint_lookup_used());
+        // The joint combiner: squeezed (128-bit, `Opt.scalar_challenge`
+        // constrain_low_bits=false) for a multi-column table, else the CONSTANT 0
+        // (OCaml `{ inner = Field.zero }`, wrap_verifier.ml:1039/1030).
+        let squeeze_jc =
+            |sys: &mut RunState<F>, sponge: &mut Transcript<F>| -> SnarkyResult<FieldVar<F>> {
+                if joint {
+                    let sq = sponge
+                        .squeeze(sys, Cow::Owned(format!("{loc} | squeeze joint_combiner")))?;
+                    crate::challenge::lowest_128_bits(
+                        sys,
+                        Cow::Owned(format!("{loc} | joint_combiner")),
+                        &sq,
+                        false,
+                    )
+                } else {
+                    Ok(FieldVar::constant(F::zero()))
+                }
+            };
+        let jc: FieldVar<F> = if lookup_flag.to_constant().is_none() {
+            // OCaml `compute_joint_combiner` Maybe path (wrap_verifier.ml:1002-1091):
+            // fork the sponge, squeeze the jc on the `true` branch (also absorbing
+            // sorted[0]) vs no squeeze on the `false` branch, then `recombine`
+            // under the flag. The 5 sorted columns split 1 / 3 / 1, the last being
+            // the `sorted_5th_column: Opt lookups_per_row_4`.
+            let b = &lookup_flag;
+            let sponge2 = sponge.opt_clone();
+            let mut sponge2b = sponge.opt_clone();
+            let jc_true = squeeze_jc(sys, &mut sponge)?;
+            let n = lk.sorted.len();
+            if n >= 1 {
+                // absorb_sorted_1 on both jc branches (flag true).
+                sponge.absorb_commitment_maybe(
+                    sys,
+                    Cow::Owned(format!("{loc} | absorb lookup sorted[0]")),
+                    &Boolean::true_(),
+                    &to_pvs(&lk.sorted[0]),
+                );
+                sponge2b.absorb_commitment_maybe(
+                    sys,
+                    Cow::Owned(format!("{loc} | absorb lookup sorted[0] (jc_false)")),
+                    &Boolean::true_(),
+                    &to_pvs(&lk.sorted[0]),
+                );
+            }
+            sponge.recombine(sys, Cow::Owned(format!("{loc} | jc recombine")), b, &sponge2b)?;
+            // absorb_sorted_2_to_4 (indices 1..4), flag true.
+            for com in lk.sorted.iter().take(4).skip(1) {
+                sponge.absorb_commitment_maybe(
+                    sys,
+                    Cow::Owned(format!("{loc} | absorb lookup sorted[1..4]")),
+                    &Boolean::true_(),
+                    &to_pvs(com),
+                );
+            }
+            // absorb_sorted_5 (`sorted_5th_column`) under its own Maybe flag.
+            if n >= 5 {
+                sponge.absorb_commitment_maybe(
+                    sys,
+                    Cow::Owned(format!("{loc} | absorb lookup sorted[4]")),
+                    &lk.lppr4_flag,
+                    &to_pvs(&lk.sorted[4]),
+                );
+            }
+            // jc = Field.if_ b jc_true jc_false(=0).
+            let jc = sys.if_(
+                Cow::Owned(format!("{loc} | jc if_")),
+                b.clone(),
+                jc_true,
+                FieldVar::constant(F::zero()),
+            )?;
+            sponge.consume_all_pending(
                 sys,
-                Cow::Owned(format!("{loc} | joint_combiner")),
-                &squeezed,
-                false,
-            )?
+                Cow::Owned(format!("{loc} | consume_all_pending (post-jc)")),
+            )?;
+            sponge.recombine(sys, Cow::Owned(format!("{loc} | jc outer recombine")), b, &sponge2)?;
+            sponge.set_needs_final_permute(false);
+            jc
         } else {
-            FieldVar::constant(F::zero())
+            // Just path (alllookup / single-branch): flat, byte-identical to the
+            // pre-Maybe behaviour (the flag folds to constant true).
+            let jc = squeeze_jc(sys, &mut sponge)?;
+            for com in &lk.sorted {
+                sponge.absorb_commitment_maybe(
+                    sys,
+                    Cow::Owned(format!("{loc} | absorb lookup sorted")),
+                    &lookup_flag,
+                    &to_pvs(com),
+                );
+            }
+            jc
         };
         out_joint_combiner = Some(jc.clone());
-        // absorb the sorted columns (queued; flushed at the beta squeeze).
-        for com in &lk.sorted {
-            sponge.absorb_commitment_maybe(
-                sys,
-                Cow::Owned(format!("{loc} | absorb lookup sorted")),
-                &lookup_flag,
-                &to_pvs(com),
-            );
-        }
         // Combined `table` commitment (OCaml `compute_lookup_table_comm`,
         // wrap_verifier.ml:1093-1206; kimchi `combine_table`): fold from
         // `table_ids` over the columns IN REVERSE, `acc = endo(acc, jc) + column`
@@ -678,11 +784,7 @@ where
     // Lookup: absorb the aggregation commitment (kimchi absorbs it after gamma,
     // before z_comm).
     if let Some(lk) = &messages.lookup {
-        let lookup_flag = vk
-            .lookup
-            .as_ref()
-            .map(|l| l.flag.clone())
-            .unwrap_or_else(Boolean::true_);
+        let lookup_flag = lk.flag.clone();
         sponge.absorb_commitment_maybe(
             sys,
             Cow::Owned(format!("{loc} | absorb lookup aggreg")),

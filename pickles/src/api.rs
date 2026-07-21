@@ -1638,21 +1638,31 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                         let is_maybe = |v: &[bool]| v.iter().any(|&p| p) && !v.iter().all(|&p| p);
                         let uses_lookups_maybe = is_maybe(&present);
                         let lppr4_maybe = is_maybe(&has_5th);
-                        // outer `Opt uses_lookup` Maybe flag.
-                        if uses_lookups_maybe {
+                        // outer `Opt uses_lookup` Maybe flag: witness + boolean-check
+                        // when Maybe, else constant true (Yes). Captured as the
+                        // `Opt.Maybe` flag threaded through the lookup verification.
+                        let flag = if uses_lookups_maybe {
                             let f = sys.compute(loc!(), |_| Fq::one())?;
-                            Boolean::create_unsafe(f).check(sys, loc!())?;
-                        }
+                            let b = Boolean::create_unsafe(f);
+                            b.check(sys, loc!())?;
+                            b
+                        } else {
+                            Boolean::true_()
+                        };
                         let n_fixed = w.lookup_sorted.len().min(4);
                         let mut sorted = Vec::with_capacity(w.lookup_sorted.len());
                         for &p in &w.lookup_sorted[..n_fixed] {
                             sorted.push(vec![mkpt(sys, p)?]);
                         }
                         // `sorted_5th_column: Opt lookups_per_row_4` Maybe flag.
-                        if lppr4_maybe {
+                        let lppr4_flag = if lppr4_maybe {
                             let f = sys.compute(loc!(), |_| Fq::one())?;
-                            Boolean::create_unsafe(f).check(sys, loc!())?;
-                        }
+                            let b = Boolean::create_unsafe(f);
+                            b.check(sys, loc!())?;
+                            b
+                        } else {
+                            Boolean::true_()
+                        };
                         for &p in &w.lookup_sorted[n_fixed..] {
                             sorted.push(vec![mkpt(sys, p)?]);
                         }
@@ -1665,6 +1675,8 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                             sorted,
                             aggreg,
                             runtime,
+                            flag,
+                            lppr4_flag,
                         })
                     } else {
                         None
