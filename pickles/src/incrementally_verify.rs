@@ -611,7 +611,7 @@ where
 
     // The combined lookup `table` commitment (`Column::LookupTable`), computed
     // in the lookup block below and fed to the polyscale.
-    let mut combined_table: Option<Point<F>> = None;
+    let mut combined_table: Option<(Boolean<F>, Point<F>)> = None;
     // The joint combiner (for the caller's `assert_eq_plonk` against the
     // statement slot), captured when the branch uses lookup.
     let mut out_joint_combiner: Option<FieldVar<F>> = None;
@@ -768,7 +768,8 @@ where
                             None => col.clone(),
                         });
                     }
-                    combined_table = acc;
+                    // Just path: the combined table is always present.
+                    combined_table = acc.map(|p| (Boolean::true_(), p));
                 } else {
                     // Maybe path (OCaml `compute_lookup_table_comm` Opt fold,
                     // wrap_verifier.ml:1155-1176). Every column shares the
@@ -842,7 +843,7 @@ where
                             }
                         });
                     }
-                    combined_table = acc.map(|(_, p)| p);
+                    combined_table = acc;
                 }
             }
         }
@@ -951,7 +952,15 @@ where
     // commitments, in kimchi evaluation order (verifier.rs:1067-1130): the
     // optional GATE selectors, then the proof lookup `sorted[]` and `aggreg`,
     // then the fixed lookup `table` (and runtime table if present).
+    // For a mixed feature set the lookup commitments are `Opt.Maybe` — they
+    // enter the polyscale under a flag so `combine_commitments` emits the
+    // `if_(keep)` selects jsoo does (folded away when the flag is constant, so
+    // alllookup / single-branch stay byte-identical). VK commitments carry the
+    // choose_key flag (`vk.lookup.flag` = is_yes); the proof `sorted`/`aggreg`
+    // carry the witnessed messages flag (`mlk.flag`); the combined table its
+    // own accumulated fold flag.
     if let Some(lk) = &vk.lookup {
+        let f = lk.flag.clone();
         for g in [
             &lk.gate_range_check0,
             &lk.gate_range_check1,
@@ -961,24 +970,30 @@ where
             &lk.gate_rot,
         ] {
             if let Some(p) = g {
-                commitments.push(just(p));
+                commitments.push(CommitmentOpt::Maybe(f.clone(), p.clone()));
             }
         }
     }
     if let Some(mlk) = &messages.lookup {
         for s in &mlk.sorted {
-            commitments.extend(s.iter().map(just));
+            for p in s {
+                commitments.push(CommitmentOpt::Maybe(mlk.flag.clone(), p.clone()));
+            }
         }
-        commitments.extend(mlk.aggreg.iter().map(just));
+        for p in &mlk.aggreg {
+            commitments.push(CommitmentOpt::Maybe(mlk.flag.clone(), p.clone()));
+        }
     }
     // The `LookupTable` column enters the polyscale as the single combined
     // table commitment computed above (before the `sorted[]` absorb).
-    if let Some(table) = &combined_table {
-        commitments.push(just(table));
+    if let Some((flag, table)) = &combined_table {
+        commitments.push(CommitmentOpt::Maybe(flag.clone(), table.clone()));
     }
     if let Some(mlk) = &messages.lookup {
         if let Some(rt) = &mlk.runtime {
-            commitments.extend(rt.iter().map(just));
+            for p in rt {
+                commitments.push(CommitmentOpt::Maybe(mlk.flag.clone(), p.clone()));
+            }
         }
     }
     // Then, in kimchi order (verifier.rs:616-648), the runtime-table selector
@@ -987,6 +1002,7 @@ where
     // (distinct from the optional GATE selectors above), each present iff the
     // step evaluates that lookup pattern.
     if let Some(lk) = &vk.lookup {
+        let f = lk.flag.clone();
         for s in [
             &lk.runtime_tables_selector,
             &lk.selector_xor,
@@ -995,7 +1011,7 @@ where
             &lk.selector_ffmul,
         ] {
             if let Some(p) = s {
-                commitments.push(just(p));
+                commitments.push(CommitmentOpt::Maybe(f.clone(), p.clone()));
             }
         }
     }
