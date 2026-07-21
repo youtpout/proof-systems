@@ -992,9 +992,13 @@ where
         }
     }
     if let Some(mlk) = &messages.lookup {
-        for s in &mlk.sorted {
+        // The first 4 sorted columns enter under the `uses_lookups` flag; the
+        // 5th (`sorted_5th_column: Opt lookups_per_row_4`, OCaml
+        // Messages.wrap_opt_typ) enters under `lppr4_flag`.
+        for (i, s) in mlk.sorted.iter().enumerate() {
+            let keep = if i >= 4 { &mlk.lppr4_flag } else { &mlk.flag };
             for p in s {
-                commitments.push(CommitmentOpt::Maybe(mlk.flag.clone(), p.clone()));
+                commitments.push(CommitmentOpt::Maybe(keep.clone(), p.clone()));
             }
         }
         for p in &mlk.aggreg {
