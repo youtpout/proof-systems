@@ -18,6 +18,7 @@ const RATE: usize = 2;
 type FlaggedInput<F> = (Boolean<F>, FieldVar<F>);
 
 /// The sponge's mode.
+#[derive(Clone)]
 enum SpongeState<F: PrimeField> {
     /// Accumulating flagged inputs (lazily; they are consumed on squeeze).
     Absorbing {
@@ -29,6 +30,7 @@ enum SpongeState<F: PrimeField> {
 }
 
 /// A sponge with conditional absorption.
+#[derive(Clone)]
 pub struct OptSponge<F: PrimeField> {
     state: [FieldVar<F>; M],
     sponge_state: SpongeState<F>,
@@ -129,6 +131,54 @@ impl<F: PrimeField> OptSponge<F> {
     /// Sets `needs_final_permute_if_empty` (OCaml `wrap_verifier.ml:1087`).
     pub fn set_needs_final_permute(&mut self, v: bool) {
         self.needs_final_permute_if_empty = v;
+    }
+
+    /// Conditionally merges `self` with an `original` copy (OCaml
+    /// `Opt_sponge.recombine ~original_sponge b t`, opt_sponge.ml:260): keeps
+    /// `self`'s state when `b` is true, `original`'s when false, per state
+    /// element (`state[i] = if_ b self[i] original[i]`). Used by the Maybe
+    /// joint_combiner, which speculatively squeezes on one copy. Requires the
+    /// two sponges to be in matching modes with the same pending length.
+    pub fn recombine(
+        &mut self,
+        sys: &mut RunState<F>,
+        loc: Cow<'static, str>,
+        b: &Boolean<F>,
+        original: &Self,
+    ) -> SnarkyResult<()> {
+        for i in 0..M {
+            self.state[i] =
+                sys.if_(loc.clone(), b.clone(), self.state[i].clone(), original.state[i].clone())?;
+        }
+        match (&original.sponge_state, &self.sponge_state) {
+            (SpongeState::Squeezed(oi), SpongeState::Squeezed(ci)) => {
+                assert_eq!(oi, ci, "recombine: squeezed {oi} vs {ci}");
+            }
+            (
+                SpongeState::Absorbing { next_index: no, xs: xo },
+                SpongeState::Absorbing { next_index: nc, xs: xc },
+            ) => {
+                assert_eq!(
+                    xo.len(),
+                    xc.len(),
+                    "recombine: pending absorptions {} vs {}",
+                    xo.len(),
+                    xc.len()
+                );
+                let next_index = sys.if_(
+                    loc.clone(),
+                    b.clone(),
+                    nc.to_field_var(),
+                    no.to_field_var(),
+                )?;
+                self.sponge_state = SpongeState::Absorbing {
+                    next_index: Boolean::create_unsafe(next_index),
+                    xs: xc.clone(),
+                };
+            }
+            _ => panic!("recombine: incompatible sponge states"),
+        }
+        Ok(())
     }
 
     /// Flushes the pending queue WITHOUT squeezing a challenge (OCaml
