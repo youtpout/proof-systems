@@ -1215,11 +1215,119 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
             sigma_last,
             lookup,
         };
-        // For the N0 o1js branch, the feature set used by
-        // `expand_feature_flags` is part of the selected verification key and
-        // is statically `Features.none`. OCaml folds the consistency checks at
-        // compile time. The similarly-shaped slots in the wrap statement are
-        // not the `plonk.feature_flags` consumed by this block.
+        // OCaml `wrap_main.ml:216-300` consistency block: assert that each
+        // optional commitment's presence flag equals the corresponding
+        // (derived) feature flag from the statement's `plonk.feature_flags`.
+        // `commitment_flag`: Just -> true_, Nothing -> false_, Maybe -> is_yes
+        // (sum of the one-hot bits of the branches that carry it). The feature
+        // flag: Yes (all branches) -> true_, No (none) -> false_, Maybe (some)
+        // -> the witnessed statement slot. When a feature is Yes/No BOTH sides
+        // fold to constants and `assert_equals` emits nothing (why nolookup /
+        // alllookup / single-branch stay byte-identical); only Maybe (mixed)
+        // branches emit real Generic gates, which shift `prev_step_accs` down
+        // exactly as jsoo's mixed wrap does. Derived flags follow
+        // `Plonk_types.Features.to_full` and are forced in OCaml's LAZY order
+        // (driven by `table_width_at_least_1 = any[tw2; lprc; ffmul]`).
+        {
+            // Per-branch usage of each raw feature (false for no-lookup branches).
+            let uses = |g: &dyn Fn(&LookupBranchData) -> bool| -> Vec<bool> {
+                branch_definitions
+                    .iter()
+                    .map(|b| b.lookup.as_ref().map(|l| g(l)).unwrap_or(false))
+                    .collect()
+            };
+            // One-hot bit sum over the branches where `present[k]` holds.
+            let is_yes = |present: &[bool]| -> FieldVar<Fq> {
+                let bits: Vec<FieldVar<Fq>> = branches
+                    .iter()
+                    .zip(present)
+                    .filter(|(_, &p)| p)
+                    .map(|(b, _)| b.to_field_var())
+                    .collect();
+                let refs: Vec<&FieldVar<Fq>> = bits.iter().collect();
+                FieldVar::sum(&refs)
+            };
+            // `commitment_flag`: Just -> true_, Nothing -> false_, Maybe -> is_yes.
+            let comm_flag = |present: &[bool]| -> Boolean<Fq> {
+                if present.iter().all(|&p| p) {
+                    Boolean::true_()
+                } else if !present.iter().any(|&p| p) {
+                    Boolean::false_()
+                } else {
+                    Boolean::create_unsafe(is_yes(present))
+                }
+            };
+            // Raw feature flag: Yes -> true_, No -> false_, Maybe -> stmt slot.
+            let feat_base = stmt.len() - 10;
+            let raw_flag = |used: &[bool], slot_off: usize| -> Boolean<Fq> {
+                if used.iter().all(|&u| u) {
+                    Boolean::true_()
+                } else if !used.iter().any(|&u| u) {
+                    Boolean::false_()
+                } else {
+                    Boolean::create_unsafe(stmt[feat_base + slot_off].clone())
+                }
+            };
+
+            // Raw feature statuses (Plonk_types.Features.to_data order).
+            let f_rc0 = raw_flag(&uses(&|l| l.range_check0), 0);
+            let f_rc1 = raw_flag(&uses(&|l| l.range_check1), 1);
+            let f_ffadd = raw_flag(&uses(&|l| l.foreign_field_add), 2);
+            let f_ffmul = raw_flag(&uses(&|l| l.foreign_field_mul), 3);
+            let f_xor = raw_flag(&uses(&|l| l.xor), 4);
+            let f_rot = raw_flag(&uses(&|l| l.rot), 5);
+            let f_lookup = raw_flag(&uses(&|l| l.lookup), 6);
+            let f_rt = raw_flag(&uses(&|l| l.uses_runtime_tables), 7);
+
+            // Commitment presence flags (choose_key `commitment_flag`).
+            let c_xor = comm_flag(&uses(&|l| l.gate_xor.is_some()));
+            let c_rc0 = comm_flag(&uses(&|l| l.gate_range_check0.is_some()));
+            let c_rc1 = comm_flag(&uses(&|l| l.gate_range_check1.is_some()));
+            let c_ffadd = comm_flag(&uses(&|l| l.gate_foreign_field_add.is_some()));
+            let c_ffmul = comm_flag(&uses(&|l| l.gate_foreign_field_mul.is_some()));
+            let c_rot = comm_flag(&uses(&|l| l.gate_rot.is_some()));
+            let c_lut0 = comm_flag(&uses(&|l| !l.lookup_table.is_empty()));
+            let c_lut1 = comm_flag(&uses(&|l| l.lookup_table.len() >= 2));
+            let c_lut2 = comm_flag(&uses(&|l| l.lookup_table.len() >= 3));
+            let c_lut3 = comm_flag(&uses(&|l| l.lookup_table.len() >= 4));
+            let c_rt_sel = comm_flag(&uses(&|l| l.runtime_tables_selector.is_some()));
+            let c_lookup_sel = comm_flag(&uses(&|l| l.selector_lookup.is_some()));
+            let c_xor_sel = comm_flag(&uses(&|l| l.selector_xor.is_some()));
+            let c_rc_sel = comm_flag(&uses(&|l| l.selector_range_check.is_some()));
+            let c_ffmul_sel = comm_flag(&uses(&|l| l.selector_ffmul.is_some()));
+
+            let ae = |sys: &mut RunState<Fq>, a: &Boolean<Fq>, b: &Boolean<Fq>| -> SnarkyResult<()> {
+                a.to_field_var().assert_equals(sys, loc!(), &b.to_field_var())
+            };
+
+            // OCaml order (wrap_main.ml:284-299). Derived flags are computed in
+            // LAZY force order, first forced by `table_width_at_least_1` at the
+            // lookup_table_comm0 check.
+            ae(sys, &c_xor, &f_xor)?; // xor
+            ae(sys, &c_rc0, &f_rc0)?; // range_check0
+            ae(sys, &c_rc1, &f_rc1)?; // range_check1
+            ae(sys, &c_ffadd, &f_ffadd)?; // foreign_field_add
+            ae(sys, &c_ffmul, &f_ffmul)?; // foreign_field_mul
+            ae(sys, &c_rot, &f_rot)?; // rot
+            // table_width_at_least_1 = any[table_width_at_least_2; lookup_pattern_range_check; ffmul]
+            // Force order: tw2 (tw3=xor ||| lookup), then lprc (rc0|||rc1|||rot), then any.
+            let tw3 = f_xor.clone(); // lookup_pattern_xor
+            let tw2 = tw3.or(&f_lookup, loc!(), sys); // table_width_at_least_2
+            let lprc = {
+                let a = f_rc0.or(&f_rc1, loc!(), sys);
+                a.or(&f_rot, loc!(), sys) // lookup_pattern_range_check
+            };
+            let tw1 = Boolean::any(&[&tw2, &lprc, &f_ffmul], sys, loc!())?;
+            ae(sys, &c_lut0, &tw1)?; // table_width_at_least_1
+            ae(sys, &c_lut1, &tw2)?; // table_width_at_least_2
+            ae(sys, &c_lut2, &tw3)?; // table_width_3
+            ae(sys, &c_lut3, &Boolean::false_())?; // lookup_table_comm3 <-> false
+            ae(sys, &c_rt_sel, &f_rt)?; // runtime_tables
+            ae(sys, &c_lookup_sel, &f_lookup)?; // lookup
+            ae(sys, &c_xor_sel, &tw3)?; // lookup_pattern_xor
+            ae(sys, &c_rc_sel, &lprc)?; // lookup_pattern_range_check
+            ae(sys, &c_ffmul_sel, &f_ffmul)?; // foreign_field_mul
+        }
 
         // OCaml witness order (wrap_main.ml): `prev_step_accs` (sg_olds), then
         // `openings_proof` (:440), then `messages` (:470).
