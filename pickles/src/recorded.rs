@@ -1767,6 +1767,7 @@ impl RecordedCompiledBase {
         struct Dump {
             public_input_size: usize,
             gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+            labels: Vec<String>,
         }
         let wrap_prover = &self
             .compiled
@@ -1777,6 +1778,7 @@ impl RecordedCompiledBase {
         let dump = Dump {
             public_input_size: wrap_prover.index.cs.public,
             gates: wrap_prover.index.cs.gates.to_vec(),
+            labels: wrap_prover.gate_labels().to_vec(),
         };
         serde_json::to_string(&dump)
             .map_err(|err| RecordedProveError::Program(format!("wrap dump: {err}")))
@@ -1954,6 +1956,97 @@ pub fn shared_base_vk_from_step_verifiers(
     Ok((base64, stable.mina_hash().to_string()))
 }
 
+/// Debug: the shared wrap's Lagrange basis (one commitment per row of the wrap
+/// domain) and its 28 VK commitments — for locating which coefficient-column
+/// row diverges from jsoo (`coeff_commitment = sum_R c[R] * L_R`).
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn shared_wrap_lagrange_and_commitments(
+    branches: Vec<RecordedProgramBranch>,
+) -> Result<
+    (
+        Vec<(Fp, Fp)>,
+        Vec<(Fp, Fp)>,
+        Vec<Vec<mina_curves::pasta::Fq>>,
+    ),
+    RecordedProveError,
+> {
+    use poly_commitment::SRS as _;
+    if branches.is_empty() {
+        return Err(RecordedProveError::Program("empty program".into()));
+    }
+    let bases: Vec<RecordedCompiledBase> = branches
+        .into_iter()
+        .map(|branch| RecordedCompiledBase::compile(branch.circuit, branch.witness))
+        .collect::<Result<_, _>>()?;
+    let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = bases
+        .iter()
+        .map(|base| {
+            &base
+                .compiled
+                .step_indexes
+                .as_ref()
+                .expect("compiled Step indexes")
+                .1
+                .index
+        })
+        .collect();
+    let (wrap_prover, wrap_verifier) = crate::api::build_shared_base_wrap(&step_verifiers);
+    let domain = wrap_prover.index.cs.domain.d1;
+    let lagrange = wrap_prover.index.srs.get_lagrange_basis(domain);
+    let lagrange_pts: Vec<(Fp, Fp)> = lagrange
+        .iter()
+        .map(|c| {
+            let p = c.chunks[0];
+            (p.x, p.y)
+        })
+        .collect();
+    let commitments = crate::api::wrap_verification_key_points(&wrap_verifier);
+    // Self-check: reconstruct coefficient columns 1 and 6 from the gate rows as
+    // sum_R c_j[R] * L_R and confirm they equal the VK commitments (proves the
+    // Lagrange basis / row indexing is right before trusting the row finder).
+    if std::env::var_os("COEFF_SELFCHECK").is_some() {
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::Zero;
+        let gates = &wrap_prover.index.cs.gates;
+        for j in [1usize, 6usize] {
+            let mut acc = mina_curves::pasta::Pallas::zero().into_group();
+            for (r, g) in gates.iter().enumerate() {
+                let c = g
+                    .coeffs
+                    .get(j)
+                    .copied()
+                    .unwrap_or(mina_curves::pasta::Fq::from(0u64));
+                if !c.is_zero() {
+                    let lr = mina_curves::pasta::Pallas::new_unchecked(
+                        lagrange_pts[r].0,
+                        lagrange_pts[r].1,
+                    );
+                    acc += lr.into_group() * c;
+                }
+            }
+            let recon = acc.into_affine();
+            let vk = commitments[7 + j];
+            eprintln!(
+                "[selfcheck] coeff[{j}] recon {} VK ({}, {})",
+                if (recon.x, recon.y) == vk { "==" } else { "!=" },
+                vk.0,
+                vk.1
+            );
+        }
+    }
+    // Per-row coefficient columns (15 columns), Fq — for the row-diff finder.
+    let ncols = 15usize;
+    let mut coeff_cols: Vec<Vec<mina_curves::pasta::Fq>> =
+        vec![Vec::with_capacity(wrap_prover.index.cs.gates.len()); ncols];
+    for g in wrap_prover.index.cs.gates.iter() {
+        for j in 0..ncols {
+            coeff_cols[j].push(g.coeffs.get(j).copied().unwrap_or(mina_curves::pasta::Fq::from(0u64)));
+        }
+    }
+    Ok((lagrange_pts, commitments, coeff_cols))
+}
+
 /// Dumps the SHARED multi-branch wrap circuit gates (structure) in the
 /// `{ public_input_size, gates }` schema — for gate-level diff against the jsoo
 /// shared wrap (`fq_prover_to_json`).
@@ -1964,6 +2057,7 @@ pub fn dump_shared_base_wrap_json(
     struct Dump {
         public_input_size: usize,
         gates: Vec<kimchi::circuits::gate::CircuitGate<mina_curves::pasta::Fq>>,
+        labels: Vec<String>,
     }
     if branches.is_empty() {
         return Err(RecordedProveError::Program(
@@ -1990,6 +2084,7 @@ pub fn dump_shared_base_wrap_json(
     let dump = Dump {
         public_input_size: wrap_prover.index.cs.public,
         gates: wrap_prover.index.cs.gates.to_vec(),
+        labels: wrap_prover.gate_labels().to_vec(),
     };
     serde_json::to_string(&dump)
         .map_err(|err| RecordedProveError::Program(format!("shared wrap dump: {err}")))

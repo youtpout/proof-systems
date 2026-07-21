@@ -275,6 +275,200 @@ fn main() {
         return;
     }
 
+    if mode == "coeffdiff" {
+        // Pinpoint which wrap ROW's coefficient diverges from jsoo, for the
+        // differing coefficient columns. coeff_commitment = sum_R c[R]*L_R, so
+        // jsoo-rust = sum_R (dc[R])*L_R; if one row differs, diff = s*L_R with
+        // a small s. Usage: coeffdiff <jsoo_base64> <branches_json> [vk_indices]
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::{Field, Zero};
+        use base64::prelude::*;
+        use mina_curves::pasta::{Fq as PFq, Pallas};
+        let jsoo_b64 = std::env::args().nth(2).expect("jsoo base64");
+        let path = std::env::args().nth(3).expect("branches json path");
+        let idx_arg = std::env::args().nth(4).unwrap_or_else(|| "8,13".into());
+        #[derive(serde::Deserialize)]
+        struct BranchJson {
+            #[serde(rename = "proofsVerified")]
+            proofs_verified: u8,
+            circuit: pickles::recorded::RecordedCircuit,
+        }
+        let raw = std::fs::read_to_string(&path).expect("read branches json");
+        let parsed: Vec<BranchJson> = serde_json::from_str(&raw).expect("parse branches json");
+        let branches: Vec<pickles::recorded::RecordedProgramBranch> = parsed
+            .into_iter()
+            .map(|b| pickles::recorded::RecordedProgramBranch {
+                witness: vec![Fp::from(0u64); b.circuit.aux_count as usize],
+                circuit: b.circuit,
+                proofs_verified: b.proofs_verified,
+            })
+            .collect();
+        let (lagrange, rust_c, coeff_cols) =
+            pickles::recorded::shared_wrap_lagrange_and_commitments(branches).expect("lagrange");
+        let bytes = BASE64_STANDARD.decode(jsoo_b64.trim()).expect("base64");
+        let jsoo_c = pickles::mina_bin_prot::SideLoadedVerificationKeyV2::from_bin_prot(&bytes)
+            .expect("bin_prot")
+            .commitments;
+        use ark_ff::PrimeField;
+        use std::collections::HashMap;
+        let to_pallas = |(x, y): (Fp, Fp)| Pallas::new_unchecked(x, y);
+        // Map each Lagrange point -> row index, keyed by the x-coordinate limbs
+        // (fast, collision-free enough for a lookup key).
+        let key = |p: &Pallas| p.x.into_bigint().0;
+        let lag: Vec<Pallas> = lagrange.iter().map(|&p| to_pallas(p)).collect();
+        let mut lag_map: HashMap<[u64; 4], usize> = HashMap::new();
+        for (r, p) in lag.iter().enumerate() {
+            lag_map.insert(key(p), r);
+        }
+        for vk_idx in idx_arg.split(',').map(|s| s.trim().parse::<usize>().unwrap()) {
+            let d = (to_pallas(jsoo_c[vk_idx]).into_group()
+                - to_pallas(rust_c[vk_idx]).into_group())
+            .into_affine();
+            if d.is_zero() {
+                println!("vk[{vk_idx}]: identical");
+                continue;
+            }
+            // d = s*L_R  =>  L_R = s^{-1}*d. For each small s, test membership.
+            let mut hit = false;
+            for s in 1..=5000i64 {
+                for sign in [1i64, -1] {
+                    let sf = {
+                        let v = PFq::from(s as u64);
+                        if sign < 0 {
+                            -v
+                        } else {
+                            v
+                        }
+                    };
+                    let sinv = sf.inverse().unwrap();
+                    let cand = (d.into_group() * sinv).into_affine();
+                    if let Some(&r) = lag_map.get(&key(&cand)) {
+                        println!(
+                            "vk[{vk_idx}] coeff diff at ROW {r}, s = {} (jsoo - rust)",
+                            sign * s
+                        );
+                        hit = true;
+                        break;
+                    }
+                }
+                if hit {
+                    break;
+                }
+            }
+            if hit {
+                continue;
+            }
+            // Candidate-restricted exhaustive search: if CAND_ROWS is set, look
+            // for diff = sum_i s_i * L_{R_i} over those rows with small integer
+            // s_i (meet-in-the-middle via the single-row hashmap for the last row).
+            if let Ok(cr) = std::env::var("CAND_ROWS") {
+                let cand: Vec<usize> = cr.split(',').map(|s| s.trim().parse().unwrap()).collect();
+                let rng: Vec<i64> = (-5..=5).collect();
+                // enumerate small combos over cand[..n-1], solve last row via hashmap
+                let last = *cand.last().unwrap();
+                let head = &cand[..cand.len() - 1];
+                // recursive-ish: only handle up to 6 head rows with a simple odometer
+                let base = rng.len();
+                let total = base.pow(head.len() as u32);
+                let mut found = false;
+                for combo in 0..total {
+                    let mut acc = d.into_group();
+                    let mut c = combo;
+                    let mut coeffs = vec![];
+                    for &r in head {
+                        let si = rng[c % base];
+                        c /= base;
+                        let sf = if si >= 0 {
+                            PFq::from(si as u64)
+                        } else {
+                            -PFq::from((-si) as u64)
+                        };
+                        acc -= lag[r].into_group() * sf;
+                        coeffs.push((r, si));
+                    }
+                    // remaining = s_last * L_last
+                    let rem = acc.into_affine();
+                    if rem.is_zero() {
+                        if coeffs.iter().any(|&(_, s)| s != 0) {
+                            println!("vk[{vk_idx}] COMBO: {coeffs:?} (last row 0)");
+                            found = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    // try small s_last
+                    for sl in -200..=200i64 {
+                        if sl == 0 {
+                            continue;
+                        }
+                        let sf = if sl >= 0 {
+                            PFq::from(sl as u64)
+                        } else {
+                            -PFq::from((-sl) as u64)
+                        };
+                        if (lag[last].into_group() * sf).into_affine() == rem {
+                            let mut all = coeffs.clone();
+                            all.push((last, sl));
+                            println!("vk[{vk_idx}] COMBO: {all:?}");
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                if !found {
+                    println!("vk[{vk_idx}]: no combo over CAND_ROWS with |s|<=200");
+                }
+                continue;
+            }
+            // Two-row search: diff = s1*L_R1 + s2*L_R2, restricted to rows where
+            // this coefficient column is nonzero, small s1,s2 (precomputed).
+            let col = vk_idx - 7;
+            let nz_rows: Vec<usize> = (0..lag.len())
+                .filter(|&r| !coeff_cols[col][r].is_zero())
+                .collect();
+            let smalls: Vec<(i64, PFq, PFq)> = (1..=80i64)
+                .flat_map(|k| [k, -k])
+                .map(|k| {
+                    let f = if k >= 0 {
+                        PFq::from(k as u64)
+                    } else {
+                        -PFq::from((-k) as u64)
+                    };
+                    (k, f, f.inverse().unwrap())
+                })
+                .collect();
+            let mut found2 = false;
+            'two: for &r2 in &nz_rows {
+                let l2 = lag[r2].into_group();
+                for &(s2i, s2, _) in &smalls {
+                    let target = (d.into_group() - l2 * s2).into_affine();
+                    if target.is_zero() {
+                        continue;
+                    }
+                    let tg = target.into_group();
+                    for &(s1i, _, s1inv) in &smalls {
+                        let cand = (tg * s1inv).into_affine();
+                        if let Some(&r1) = lag_map.get(&key(&cand)) {
+                            println!("vk[{vk_idx}] TWO-ROW: row {r1} s={s1i}, row {r2} s={s2i}");
+                            found2 = true;
+                            break 'two;
+                        }
+                    }
+                }
+            }
+            if !found2 {
+                println!(
+                    "vk[{vk_idx}]: no 1- or 2-row small-s match ({} nz rows)",
+                    nz_rows.len()
+                );
+            }
+        }
+        return;
+    }
+
     if mode == "sharedwrap" {
         // Dump the SHARED multi-branch wrap circuit gates for a gate-level diff
         // against the jsoo shared wrap.
