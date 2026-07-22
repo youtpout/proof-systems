@@ -77,23 +77,28 @@ Commits : proof-systems `3e60573e21` (sérialiseur sexp) ; o1js `86dd95406`
 (Poseidon), `038b7844c` (câblage), `bb685d256` (proof transaction). Tâches
 #29/#30/#31 DONE.
 
-**Reste pour la suite lumina `Factory.test` complète — 2 blocages distincts
-diagnostiqués (tâches #32, #33), PAS dans le chemin core (Counter marche
-bout-en-bout) :**
-- **#32 divergence circuit compile/prove sur méthodes zkApp à état.** `FungibleToken.
-  initialize` throw "circuit shape changed" : le circuit PROVE a 12 contraintes en
-  trop (6 seals generic `-var+out=0` sur les args {2,3,5} + 6 `equal` no-op) juste
-  avant un poseidon, vs le circuit COMPILE (VK-canonique, == jsoo). Cause : compile
-  enregistre sous `{inAnalyze}` + instance de compte dummy, prove sous `{inProver}` +
-  compte réel → o1js seale les vars d'args sous inProver (callData ?) mais pas sous
-  inAnalyze. Fix : faire coïncider les deux enregistrements sans changer la VK (#24).
-- **#33 mémoire wasm multi-contrat.** `beforeAll` compile 5 contrats → worker à 7 Go
-  RSS puis DEADLOCK (0 CPU, 40 threads futex ; 15 Go libres, pas OOM). Cause probable :
-  `_rustCompiledMethods` (#29) RETIENT toutes les branches (index prover complets) de
-  TOUS les contrats simultanément → dépasse le plafond 4 Go de la mémoire linéaire
-  wasm32 (le path compile-only d'avant les jetait). 1 contrat Counter passe ; 5 gros
-  non. Fix : retenir les verifiers compacts + rebuild prover paresseux (lié #28), ou
-  éviction. Dépend de #32 (pour atteindre la phase prove multi-contrat).
+**Tâches #32/#33 résolues — Lumina `Factory.test` complet (2026-07-22).**
+Le recorder ignore désormais toute contrainte/gate exécutée à l'intérieur d'un
+callback `Provable.witness` : ces calculs servent à produire des valeurs privées et
+ne font pas partie du circuit Snarky. `ProofAuthorization.setKind` compare aussi les
+valeurs déjà witnessées en JavaScript au lieu d'émettre des `equals/and` checked.
+Compile (`inAnalyze`, structure seule) et prove (`inProver`, données transaction
+réelles) redeviennent donc strictement isomorphes sur les gros SmartContracts.
+
+Les programmes multi-méthodes N0 utilisent maintenant un seul Wrap partagé : un Step
+par branche, un Wrap canonique compilé après les Step VK, et suppression immédiate des
+Wrap temporaires par branche pour contenir le pic mémoire WASM. Le Wrap mixte
+lookup/non-lookup conserve la payload structurelle `Opt.Maybe` avec valeurs dummy
+masquées sur la branche sans lookup. La statement Mina sérialise les vrais feature
+flags et le joint combiner (Sexp ET bin_prot), et la preuve transporte la clé canonique
+fondée sur le domaine Step maximal du programme.
+
+Validation : `Factory.test` **8/8 natif** (323 s) puis **8/8 rust-wasm** avec la
+commande exacte `npm run test factory.test` (640 s), proving + `send()` compris.
+Les `{data,hash}` des VK des 6 contrats Lumina sont identiques octet pour octet entre
+Rust et jsoo (`FungibleTokenAdmin`, `FungibleToken`, `Faucet`, `PoolTokenHolder`,
+`Pool`, `PoolFactory`). Régression Rust dédiée : les branches lookup ET no-lookup
+prouvent contre la même clé canonique d'un programme mixte.
 
 ## REPRISE (état exact 2026-07-18 — OBJECTIF CIRCUITS/VK ATTEINT)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓ ; wrap

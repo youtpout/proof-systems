@@ -3051,6 +3051,9 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         step_proof,
         &public_comm,
         svi.digest::<VestaBase>(),
+        svi.lookup_index
+            .as_ref()
+            .is_some_and(|lookup| lookup.joint_lookup_used),
         &sg_olds,
         Some(&sg_old_mask),
         o.combined_inner_product,

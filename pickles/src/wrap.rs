@@ -76,6 +76,7 @@ pub fn wrap_witness(
     proof: &ProverProof<Vesta, OpeningProof<Vesta, FULL_ROUNDS>, FULL_ROUNDS>,
     public_comm: &poly_commitment::commitment::PolyComm<Vesta>,
     vk_digest: Fq,
+    joint_lookup_used: bool,
     sg_olds: &[Vesta],
     sg_old_mask: Option<&[bool]>,
     combined_inner_product: Fp,
@@ -121,8 +122,23 @@ pub fn wrap_witness(
     for w in &proof.commitments.w_comm {
         abpt(&mut s, &w.chunks[0]);
     }
+    if let Some(lookup) = &proof.commitments.lookup {
+        if let Some(runtime) = &lookup.runtime {
+            abpt(&mut s, &runtime.chunks[0]);
+        }
+        // Kimchi squeezes this challenge only for a multi-column lookup.
+        if joint_lookup_used {
+            let _joint_combiner_raw = low_128(s.squeeze());
+        }
+        for sorted in &lookup.sorted {
+            abpt(&mut s, &sorted.chunks[0]);
+        }
+    }
     let beta_raw = low_128(s.squeeze());
     let gamma_raw = low_128(s.squeeze());
+    if let Some(lookup) = &proof.commitments.lookup {
+        abpt(&mut s, &lookup.aggreg.chunks[0]);
+    }
     abpt(&mut s, &proof.commitments.z_comm.chunks[0]);
     let alpha_raw = low_128(s.squeeze());
     for t in &proof.commitments.t_comm.chunks {
@@ -284,6 +300,7 @@ mod tests {
             &proof,
             &public_comm,
             vi.digest::<BaseSponge>(),
+            false,
             &[],
             None,
             o.combined_inner_product,

@@ -297,24 +297,39 @@ fn statement_sexp(st: &WrapStatementMinimalV1) -> Sexp {
     let rounds = fl.len() - WrapStatementMinimalV1::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES;
     let branch_idx = 13 + rounds;
 
-    let feature = |name: &str| kv(name, a("false"));
+    let feature_base = branch_idx + 1;
+    let feature = |name: &str, slot: usize| {
+        kv(
+            name,
+            a(if fl[feature_base + slot] == Fq::from(0u64) {
+                "false"
+            } else {
+                "true"
+            }),
+        )
+    };
+    let joint_combiner = if fl[feature_base + 8] == Fq::from(0u64) {
+        Sexp::List(vec![])
+    } else {
+        Sexp::List(vec![scalar_challenge(&fl[feature_base + 9])])
+    };
     let plonk = Sexp::List(vec![
         kv("alpha", scalar_challenge(&fl[7])),
         kv("beta", plain_challenge(&fl[5])),
         kv("gamma", plain_challenge(&fl[6])),
         kv("zeta", scalar_challenge(&fl[8])),
-        kv("joint_combiner", Sexp::List(vec![])),
+        kv("joint_combiner", joint_combiner),
         kv(
             "feature_flags",
             Sexp::List(vec![
-                feature("range_check0"),
-                feature("range_check1"),
-                feature("foreign_field_add"),
-                feature("foreign_field_mul"),
-                feature("xor"),
-                feature("rot"),
-                feature("lookup"),
-                feature("runtime_tables"),
+                feature("range_check0", 0),
+                feature("range_check1", 1),
+                feature("foreign_field_add", 2),
+                feature("foreign_field_mul", 3),
+                feature("xor", 4),
+                feature("rot", 5),
+                feature("lookup", 6),
+                feature("runtime_tables", 7),
             ]),
         ),
     ]);
@@ -372,7 +387,11 @@ fn point_eval_chunked(pe: &PointEvaluations<Vec<Fp>>) -> Sexp {
 }
 fn opt_eval(o: &Option<PointEvaluations<Vec<Fp>>>) -> Sexp {
     match o {
-        Some(pe) => point_eval_chunked(pe),
+        // Sexplib represents `Some x` as the singleton list `(x)` and
+        // `None` as `()`. A PointEvaluations value is itself a two-element
+        // list, so omitting this wrapper is parsed as an option with two
+        // payloads (`option_of_sexp: list must represent optional value`).
+        Some(pe) => Sexp::List(vec![point_eval_chunked(pe)]),
         None => Sexp::List(vec![]),
     }
 }
@@ -658,6 +677,8 @@ mod tests {
         // branch_data (byte = domain_log2<<2 | proofs_verified_mask).
         let mut flattened: Vec<Fq> = (0..40).map(Fq::from).collect();
         flattened[29] = Fq::from(40u64); // domain_log2=10, proofs_verified=0
+        // Fixture is the historical no-lookup statement.
+        flattened[30..40].fill(Fq::from(0u64));
         let messages_for_next_wrap_proof = WrapMessagesForNextWrapProofV1 {
             challenge_polynomial_commitment: (Fq::from(3u64), Fq::from(4u64)),
             old_bulletproof_challenges: vec![

@@ -398,7 +398,11 @@ pub mod wrap {
             out.push(if flag { F::one() } else { F::zero() });
         }
         // joint_combiner opt (2): flag boolean + scalar challenge
-        out.push(F::zero());
+        out.push(if plonk.joint_combiner.is_some() {
+            F::one()
+        } else {
+            F::zero()
+        });
         out.push(match &plonk.joint_combiner {
             Some(joint_combiner) => joint_combiner.0,
             None => F::zero(),

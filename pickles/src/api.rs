@@ -372,6 +372,22 @@ pub(crate) fn proof_lookup_commitments(
     }
 }
 
+fn plonk_features_from_lookup(lookup: &Option<LookupBranchData>) -> Features<bool> {
+    match lookup {
+        None => Features::none(),
+        Some(l) => Features {
+            range_check0: l.range_check0,
+            range_check1: l.range_check1,
+            foreign_field_add: l.foreign_field_add,
+            foreign_field_mul: l.foreign_field_mul,
+            xor: l.xor,
+            rot: l.rot,
+            lookup: l.lookup,
+            runtime_tables: l.uses_runtime_tables,
+        },
+    }
+}
+
 impl LookupBranchData {
     /// Number of `sorted` lookup polynomials in the proof = kimchi's
     /// `max_lookups_per_row + 1` over the used patterns (Xor/RangeCheck/
@@ -1773,7 +1789,25 @@ impl<const ROUNDS: usize, const STMT_LEN: usize> SnarkyCircuit for WrapCircuit<R
                         }
                         // `sorted_5th_column: Opt lookups_per_row_4` Maybe flag.
                         let lppr4_flag = if lppr4_maybe {
-                            let f = sys.compute(loc!(), |_| Fq::one())?;
+                            let selected_has_5th = if w.branches.is_empty() {
+                                w.lookup
+                                    .as_ref()
+                                    .map(|l| l.sorted_count() >= 5)
+                                    .unwrap_or(false)
+                            } else {
+                                w.branches
+                                    .get(w.which_branch)
+                                    .and_then(|branch| branch.lookup.as_ref())
+                                    .map(|l| l.sorted_count() >= 5)
+                                    .unwrap_or(false)
+                            };
+                            let f = sys.compute(loc!(), move |_| {
+                                if selected_has_5th {
+                                    Fq::one()
+                                } else {
+                                    Fq::from(0u64)
+                                }
+                            })?;
                             let b = Boolean::create_unsafe(f);
                             b.check(sys, loc!())?;
                             b
@@ -2157,6 +2191,7 @@ where
             None,
             None,
             None,
+            None,
         ) {
             BaseCaseBuild::Compiled {
                 step_prover,
@@ -2173,6 +2208,7 @@ where
         actual_points.clone(),
         true,
         Some((step_prover, step_verifier)),
+        None,
         None,
         None,
     ) {
@@ -2355,12 +2391,23 @@ type StepIndexes<A> = (
     snarky::api::ProverIndexWrapper<StepCircuit<A>>,
     snarky::api::VerifierIndexWrapper<StepCircuit<A>>,
 );
-type WrapIndexes<const ROUNDS: usize, const STMT_LEN: usize> = (
+pub(crate) type WrapIndexes<const ROUNDS: usize, const STMT_LEN: usize> = (
     snarky::api::ProverIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
     snarky::api::VerifierIndexWrapper<WrapCircuit<ROUNDS, STMT_LEN>>,
 );
 pub(crate) type RawWrapIndex =
     kimchi::prover_index::ProverIndex<FULL_ROUNDS, Pallas, poly_commitment::ipa::SRS<Pallas>>;
+
+/// Program-level data baked into a shared width-0 Wrap. A base proof still
+/// carries the commitments of its selected Step branch at the top level, but
+/// the circuit selects the matching constants from these complete branch and
+/// Lagrange tables via `which_branch`.
+#[derive(Clone)]
+pub(crate) struct SharedBaseWrapData {
+    pub which_branch: usize,
+    pub branches: Vec<WrapBranchData>,
+    pub step_statement_lagranges: Vec<Vec<((Fq, Fq), (Fq, Fq))>>,
+}
 
 pub(crate) enum BaseCaseBuild<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize> {
     Compiled {
@@ -2410,6 +2457,7 @@ where
                 None,
                 None,
                 None,
+                None,
             ) {
                 BaseCaseBuild::Compiled {
                     step_prover,
@@ -2444,6 +2492,7 @@ where
             Some(step_indexes),
             Some(wrap_indexes),
             None,
+            None,
         ) {
             BaseCaseBuild::Proof {
                 proof,
@@ -2467,7 +2516,7 @@ pub fn prove_base_case_with_wrap_dump<A: StepApp, const ROUNDS: usize, const STM
     witness: A::Witness,
     wrap_vk_pts: Vec<(Fp, Fp)>,
 ) -> (BaseCaseProof<A, ROUNDS, STMT_LEN>, WrapCircuitDump) {
-    match build_base_case(app, witness, wrap_vk_pts, true, None, None, None) {
+    match build_base_case(app, witness, wrap_vk_pts, true, None, None, None, None) {
         BaseCaseBuild::Proof { proof, dump, .. } => (proof, dump),
         BaseCaseBuild::Compiled { .. } => unreachable!("proof mode returns a complete proof"),
     }
@@ -2595,6 +2644,7 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
     step_indexes: Option<StepIndexes<A>>,
     wrap_indexes: Option<WrapIndexes<ROUNDS, STMT_LEN>>,
     cached_wrap_index: Option<RawWrapIndex>,
+    shared_wrap: Option<SharedBaseWrapData>,
 ) -> BaseCaseBuild<A, ROUNDS, STMT_LEN> {
     assert_eq!(
         STMT_LEN,
@@ -2761,13 +2811,15 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         log2_size: svi.domain.log_size_of_group,
         generator: svi.domain.group_gen,
     };
+    let selected_lookup = LookupBranchData::from_step_verifier(svi);
+    let selected_features = plonk_features_from_lookup(&selected_lookup);
     let minimal = plonk::Minimal::<Fp, Fp, bool> {
         alpha: oracles.alpha,
         beta: oracles.beta,
         gamma: oracles.gamma,
         zeta: oracles.zeta,
-        joint_combiner: None,
-        feature_flags: Features::none(),
+        joint_combiner: oracles.joint_combiner.as_ref().map(|(_, field)| *field),
+        feature_flags: selected_features,
     };
     let env = crate::plonk_checks::scalars_env::<Fp, bool>(&domain, srs_log2, &minimal);
     let evals = crate::plonk_checks::Evals {
@@ -2789,12 +2841,19 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         &step_proof,
         &public_comm,
         svi.digest::<VestaBase>(),
+        selected_lookup
+            .as_ref()
+            .is_some_and(|lookup| lookup.joint_lookup_used),
         &sg_old_points,
         None,
         o.combined_inner_product,
         oracles.zeta,
         oracles.u,
         perm,
+    );
+    assert_eq!(
+        ww.sponge_digest, o.digest,
+        "host wrap transcript must match kimchi's pre-evaluations digest"
     );
 
     let claimed_xi_raw: Fp = {
@@ -2848,8 +2907,11 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         zeta_to_srs_length: fp_to_fq(ww.zeta_to_srs_length_repr),
         zeta_to_domain_size: fp_to_fq(ww.zeta_to_domain_size_repr),
         perm: fp_to_fq(ww.perm_repr),
-        feature_flags: Features::none(),
-        joint_combiner: None,
+        feature_flags: selected_features,
+        joint_combiner: oracles
+            .joint_combiner
+            .as_ref()
+            .map(|(raw, _)| ScalarChallenge(fp_to_fq(raw.inner()))),
     };
     let bp_chals: Vec<BulletproofChallenge<ScalarChallenge<Fq>>> = ww
         .bulletproof_prechallenges
@@ -2901,15 +2963,30 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         .iter()
         .map(|rc| co(&rc.comm.chunks[0]))
         .collect();
-    let wdata = WrapWitnessData {
+    let mut wdata = WrapWitnessData {
         which_branch: 0,
         branches: vec![],
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
-        lookup: LookupBranchData::from_step_verifier(svi),
-        lookup_sorted: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).0,
-        lookup_aggreg: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).1,
-        lookup_runtime: proof_lookup_commitments(&LookupBranchData::from_step_verifier(svi)).2,
+        lookup: selected_lookup,
+        lookup_sorted: step_proof
+            .commitments
+            .lookup
+            .as_ref()
+            .map(|lookup| lookup.sorted.iter().map(|c| co(&c.chunks[0])).collect())
+            .unwrap_or_default(),
+        lookup_aggreg: step_proof
+            .commitments
+            .lookup
+            .as_ref()
+            .map(|lookup| co(&lookup.aggreg.chunks[0]))
+            .unwrap_or((Fq::from(0u64), Fq::from(0u64))),
+        lookup_runtime: step_proof
+            .commitments
+            .lookup
+            .as_ref()
+            .and_then(|lookup| lookup.runtime.as_ref())
+            .map(|runtime| co(&runtime.chunks[0])),
         generic: co(&svi.generic_comm.chunks[0]),
         psm: co(&svi.psm_comm.chunks[0]),
         complete_add: co(&svi.complete_add_comm.chunks[0]),
@@ -2960,6 +3037,32 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
         h: (srs_h.x, srs_h.y),
         new_acc_dummies: dummy_wrap_chals.clone(),
     };
+    if let Some(shared) = shared_wrap {
+        // A mixed program has one fixed Wrap circuit. OCaml's `Opt.Maybe`
+        // keeps the lookup payload in that circuit even when the selected
+        // branch does not use lookups; its public presence flag masks dummy
+        // values. Keep the same structural payload here so witness generation
+        // consumes exactly the variables compiled into the shared Wrap index.
+        let structural_lookup = shared
+            .branches
+            .iter()
+            .find_map(|branch| branch.lookup.clone());
+        let selected_uses_lookup = wdata.lookup.is_some();
+        wdata.which_branch = shared.which_branch;
+        wdata.branches = shared.branches;
+        wdata.step_statement_lagranges = shared.step_statement_lagranges;
+        if !selected_uses_lookup {
+            if let Some(shape) = structural_lookup {
+                use ark_ec::{AffineRepr as _, CurveGroup as _};
+                let generator = Vesta::generator().into_group().into_affine();
+                let dummy = (generator.x, generator.y);
+                wdata.lookup_sorted = vec![dummy; shape.sorted_count()];
+                wdata.lookup_aggreg = dummy;
+                wdata.lookup_runtime = shape.uses_runtime_tables.then_some(dummy);
+                wdata.lookup = Some(shape);
+            }
+        }
+    }
 
     let stmt_arr: [Fq; STMT_LEN] = statement
         .clone()

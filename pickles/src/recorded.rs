@@ -12,6 +12,7 @@
 
 use ark_ff::Zero;
 use mina_curves::pasta::{Fp, Pallas, Vesta};
+use mina_curves::pasta::Fq;
 use snarky::{
     constraint_system::{
         BasicInput, BasicSnarkyConstraint, EcAddCompleteInput, EcEndoscaleInput, EndoscaleRound,
@@ -1681,6 +1682,7 @@ impl RecordedCompiledBase {
             Some((step_prover, step_verifier)),
             None,
             Some(restore_wrap_index(wrap_index)),
+            None,
         );
         let crate::api::BaseCaseBuild::Compiled {
             step_prover,
@@ -1749,7 +1751,12 @@ impl RecordedCompiledBase {
             step_domain_log2,
             wrap_verifier,
         )
-        .map_err(|err| RecordedProveError::Program(format!("side-loaded key: {err:?}")))?;
+        .map_err(|err| {
+            RecordedProveError::Program(format!(
+                "side-loaded key (step domain {step_domain_log2}, wrap domain {}): {err:?}",
+                wrap_verifier.index.domain.log_size_of_group
+            ))
+        })?;
         let stable = key.to_stable_v2();
         let base64 = BASE64_STANDARD.encode(
             stable
@@ -1856,6 +1863,225 @@ impl RecordedCompiledBase {
             app_state,
             proof,
             inner: RecordedProofInner::R16(base),
+        })
+    }
+}
+
+/// A non-recursive, multi-branch Pickles program with one Step prover per
+/// branch and one canonical shared width-0 Wrap prover. This is the shape
+/// produced by OCaml `Pickles.compile` for SmartContracts whose methods all
+/// verify zero previous proofs.
+pub struct RecordedCompiledBaseProgram {
+    branches: Vec<RecordedCompiledBase>,
+    wrap_indexes: Option<crate::api::WrapIndexes<16, 40>>,
+    wrap_vk_pts: Vec<(Fp, Fp)>,
+    wrap_branches: Vec<crate::api::WrapBranchData>,
+    wrap_statement_lagranges: Vec<Vec<((Fq, Fq), (Fq, Fq))>>,
+}
+
+impl RecordedCompiledBaseProgram {
+    pub fn compile(
+        branches: Vec<RecordedProgramBranch>,
+    ) -> Result<Self, RecordedProveError> {
+        if branches.is_empty() {
+            return Err(RecordedProveError::Program(
+                "a program has at least one branch".into(),
+            ));
+        }
+        if branches.iter().any(|branch| branch.proofs_verified != 0) {
+            return Err(RecordedProveError::Program(
+                "a base program requires every branch to be non-recursive".into(),
+            ));
+        }
+        // A standalone base compilation also creates a per-branch Wrap index.
+        // It is not used by a shared program, and retaining one for every
+        // method creates a large transient peak in browser WASM. Keep only
+        // each Step index as soon as its compilation finishes.
+        let mut compiled = Vec::with_capacity(branches.len());
+        for branch in branches {
+            let mut base = RecordedCompiledBase::compile(branch.circuit, branch.witness)?;
+            base.compiled.wrap_indexes = None;
+            compiled.push(base);
+        }
+        let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = compiled
+            .iter()
+            .map(|base| {
+                &base
+                    .compiled
+                    .step_indexes
+                    .as_ref()
+                    .expect("compiled Step indexes")
+                    .1
+                    .index
+            })
+            .collect();
+        let wrap_branches = step_verifiers
+            .iter()
+            .map(|svi| crate::api::WrapBranchData::from_step_verifier(svi, 0))
+            .collect();
+        let step_statement = vec![crate::api::WrapStepStatementSlot::Packed {
+            value: Fq::from(0u64),
+            num_bits: 255,
+        }];
+        let wrap_statement_lagranges = step_verifiers
+            .iter()
+            .map(|svi| {
+                crate::recursive_step::step_statement_lagranges_for_domain(
+                    svi.domain.log_size_of_group as u32,
+                    &step_statement,
+                )
+            })
+            .collect();
+        let wrap_indexes = crate::api::build_shared_base_wrap(&step_verifiers);
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        Ok(Self {
+            branches: compiled,
+            wrap_indexes: Some(wrap_indexes),
+            wrap_vk_pts,
+            wrap_branches,
+            wrap_statement_lagranges,
+        })
+    }
+
+    pub fn verification_key_envelope(&self) -> Result<(String, String), RecordedProveError> {
+        use base64::prelude::*;
+        let step_domain_log2 = self
+            .branches
+            .iter()
+            .map(|branch| {
+                branch
+                    .compiled
+                    .step_indexes
+                    .as_ref()
+                    .expect("compiled Step indexes")
+                    .1
+                    .index
+                    .domain
+                    .log_size_of_group as u8
+            })
+            .max()
+            .expect("at least one branch");
+        let wrap_verifier = &self
+            .wrap_indexes
+            .as_ref()
+            .expect("compiled shared Wrap indexes")
+            .1;
+        let key = crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+            step_domain_log2,
+            wrap_verifier,
+        )
+        .map_err(|err| {
+            RecordedProveError::Program(format!(
+                "side-loaded key (step domain {step_domain_log2}, wrap domain {}): {err:?}",
+                wrap_verifier.index.domain.log_size_of_group
+            ))
+        })?;
+        let stable = key.to_stable_v2();
+        let base64 = BASE64_STANDARD.encode(
+            stable
+                .to_bin_prot()
+                .map_err(|err| RecordedProveError::Program(format!("VK encoding: {err:?}")))?,
+        );
+        Ok((base64, stable.mina_hash().to_string()))
+    }
+
+    pub fn prove_keep(
+        &mut self,
+        branch_index: usize,
+        witness: Vec<Fp>,
+    ) -> Result<RecordedProofHandle, RecordedProveError> {
+        let branch = self.branches.get_mut(branch_index).ok_or_else(|| {
+            RecordedProveError::Program(format!("invalid base program branch {branch_index}"))
+        })?;
+        if witness.len() != branch.circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness.len()),
+            ));
+        }
+        let app_state = branch.circuit.state(&witness);
+        let step_indexes = branch
+            .compiled
+            .step_indexes
+            .take()
+            .expect("compiled program Step indexes");
+        let wrap_indexes = self
+            .wrap_indexes
+            .take()
+            .expect("compiled program Wrap indexes");
+        let built = crate::api::build_base_case::<RecordedApp, 16, 40>(
+            branch.compiled.app.clone(),
+            witness,
+            self.wrap_vk_pts.clone(),
+            true,
+            Some(step_indexes),
+            Some(wrap_indexes),
+            None,
+            Some(crate::api::SharedBaseWrapData {
+                which_branch: branch_index,
+                branches: self.wrap_branches.clone(),
+                step_statement_lagranges: self.wrap_statement_lagranges.clone(),
+            }),
+        );
+        let crate::api::BaseCaseBuild::Proof {
+            proof,
+            step_indexes,
+            wrap_indexes,
+            ..
+        } = built
+        else {
+            unreachable!("program prove mode returns a proof")
+        };
+        branch.compiled.step_indexes = Some(step_indexes);
+        self.wrap_indexes = Some(wrap_indexes);
+        let mut network_proof = proof
+            .to_mina_network_proof()
+            .map_err(RecordedProveError::Backend)?;
+        // Every branch of a Pickles program authorizes against the program's
+        // ONE side-loaded key. Its `max_step_domain_log2` is the maximum over
+        // all branches, not the selected method's Step domain. The Wrap
+        // commitments are already shared; stamp the matching canonical key
+        // metadata into the transaction proof as OCaml Pickles.compile does.
+        let max_step_domain_log2 = self
+            .branches
+            .iter()
+            .map(|branch| {
+                branch
+                    .compiled
+                    .step_indexes
+                    .as_ref()
+                    .expect("compiled Step indexes")
+                    .1
+                    .index
+                    .domain
+                    .log_size_of_group as u8
+            })
+            .max()
+            .expect("at least one branch");
+        network_proof.side_loaded_verification_key =
+            crate::side_loaded::SideLoadedVerificationKey::from_wrap_verifier(
+                max_step_domain_log2,
+                &self
+                    .wrap_indexes
+                    .as_ref()
+                    .expect("compiled shared Wrap indexes")
+                    .1,
+            )
+            .map_err(|err| {
+                RecordedProveError::Program(format!("canonical program key: {err:?}"))
+            })?
+            .to_stable_v2_base58()
+            .map_err(|err| {
+                RecordedProveError::Program(format!("canonical program key encoding: {err:?}"))
+            })?;
+        crate::verify::verify_side_loaded_base_case(&app_state, &network_proof).map_err(|err| {
+            RecordedProveError::Program(format!(
+                "shared base proof failed standalone network verification: {err:?}"
+            ))
+        })?;
+        Ok(RecordedProofHandle {
+            app_state,
+            proof: network_proof,
+            inner: RecordedProofInner::R16(proof),
         })
     }
 }
@@ -3119,7 +3345,6 @@ fn compile_recorded_program_steps_single_pass<const STEP_PI: usize, const ACTIVE
     >,
     finalize_domain_log2s: &[u32],
 ) -> Vec<Option<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>>> {
-    use rayon::prelude::*;
     let first_n0 = branches.iter().position(|b| b.proofs_verified == 0);
     let n0_indexes = first_n0.map(|i| {
         compile_recorded_program_step_branch::<STEP_PI, ACTIVE>(
@@ -6014,5 +6239,53 @@ mod wrap_wdata_independence_tests {
             "{} rows diverge between bootstrap-wdata and real-wdata wrap indexes",
             diverging.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_base_lookup_tests {
+    use super::*;
+
+    fn branch(circuit: RecordedCircuit, witness: Vec<Fp>) -> RecordedProgramBranch {
+        RecordedProgramBranch {
+            circuit,
+            witness,
+            proofs_verified: 0,
+        }
+    }
+
+    #[test]
+    fn mixed_lookup_program_proves_lookup_branch() {
+        let plain = RecordedCircuit {
+            previous_proof_widths: vec![],
+            aux_count: 1,
+            output: vec![LinComb::var(0)],
+            constraints: vec![RecordedConstraint::Equal {
+                l: LinComb::var(0),
+                r: LinComb::default(),
+            }],
+            previous_state_slots: vec![],
+        };
+        let lookup = RecordedCircuit {
+            previous_proof_widths: vec![],
+            aux_count: 15,
+            output: vec![LinComb::var(0)],
+            constraints: vec![RecordedConstraint::RangeCheck0 {
+                row: (0..15).map(LinComb::var).collect(),
+                compact: Fp::from(0u64),
+            }],
+            previous_state_slots: vec![],
+        };
+        let mut program = RecordedCompiledBaseProgram::compile(vec![
+            branch(plain, vec![Fp::from(0u64)]),
+            branch(lookup, vec![Fp::from(0u64); 15]),
+        ])
+        .expect("compile mixed lookup program");
+        program
+            .prove_keep(0, vec![Fp::from(0u64)])
+            .expect("prove no-lookup branch against canonical max-domain key");
+        program
+            .prove_keep(1, vec![Fp::from(0u64); 15])
+            .expect("prove lookup branch");
     }
 }

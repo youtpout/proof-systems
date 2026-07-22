@@ -446,6 +446,71 @@ pub fn rust_pickles_compile_recorded_base_bytes(
     Ok(External::new(compiled))
 }
 
+fn parse_recorded_program_branches(
+    branches_json: &str,
+) -> Result<Vec<pickles::recorded::RecordedProgramBranch>> {
+    #[derive(serde::Deserialize)]
+    struct Branch {
+        circuit: pickles::recorded::RecordedCircuit,
+        witness: Vec<String>,
+        #[serde(rename = "proofsVerified")]
+        proofs_verified: u8,
+    }
+    let branches: Vec<Branch> = serde_json::from_str(branches_json)
+        .map_err(|err| Error::from_reason(format!("invalid program JSON: {err}")))?;
+    branches
+        .into_iter()
+        .map(|branch| {
+            let witness = branch
+                .witness
+                .iter()
+                .map(|value| parse_fp_decimal(value, "witness"))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(pickles::recorded::RecordedProgramBranch {
+                circuit: branch.circuit,
+                witness,
+                proofs_verified: branch.proofs_verified,
+            })
+        })
+        .collect()
+}
+
+/// Native direct-binding counterpart of the browser's shared width-0
+/// multi-branch program. It owns every Step index and one shared Wrap index.
+#[napi(js_name = "rust_pickles_compile_recorded_program_shared")]
+pub fn rust_pickles_compile_recorded_program_shared(
+    branches_json: String,
+) -> Result<External<pickles::recorded::RecordedCompiledBaseProgram>> {
+    let branches = parse_recorded_program_branches(&branches_json)?;
+    let compiled = pickles::recorded::RecordedCompiledBaseProgram::compile(branches)
+        .map_err(|err| Error::from_reason(format!("program compile failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
+#[napi(js_name = "rust_pickles_recorded_program_vk_envelope")]
+pub fn rust_pickles_recorded_program_vk_envelope(
+    program: &External<pickles::recorded::RecordedCompiledBaseProgram>,
+) -> Result<String> {
+    let (base64, hash) = program
+        .verification_key_envelope()
+        .map_err(|err| Error::from_reason(format!("program VK envelope failed: {err:?}")))?;
+    serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
+        .map_err(|err| Error::from_reason(format!("VK envelope encoding failed: {err}")))
+}
+
+#[napi(js_name = "rust_pickles_program_prove_n0_bytes")]
+pub fn rust_pickles_program_prove_n0_bytes(
+    program: &mut External<pickles::recorded::RecordedCompiledBaseProgram>,
+    branch_index: u32,
+    witness_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedBaseHandle>> {
+    let witness = parse_fp_bytes(witness_bytes.as_ref(), "witness")?;
+    let handle = program
+        .prove_keep(branch_index as usize, witness)
+        .map_err(|err| Error::from_reason(format!("program N0 proving failed: {err:?}")))?;
+    Ok(External::new(handle))
+}
+
 #[napi(js_name = "rust_pickles_recorded_base_cache_key")]
 pub fn rust_pickles_recorded_base_cache_key(circuit_json: String) -> Result<String> {
     let circuit: pickles::recorded::RecordedCircuit = serde_json::from_str(&circuit_json)
@@ -741,6 +806,18 @@ pub fn rust_pickles_recorded_base_envelope(
     });
     serde_json::to_string(&envelope)
         .map_err(|err| Error::from_reason(format!("envelope encoding failed: {err}")))
+}
+
+/// The canonical Mina account-update authorization proof for a kept N0
+/// proof. Keep the native API identical to the browser WASM binding so the
+/// high-level SmartContract prover can serialize either transport.
+#[napi(js_name = "rust_pickles_recorded_base_transaction_base64")]
+pub fn rust_pickles_recorded_base_transaction_base64(
+    handle: &External<pickles::recorded::RecordedBaseHandle>,
+) -> Result<String> {
+    handle
+        .to_transaction_base64()
+        .map_err(|err| Error::from_reason(format!("transaction proof encoding failed: {err:?}")))
 }
 
 /// Proves one recursive (N1) Pickles cycle whose step *runs a new recorded

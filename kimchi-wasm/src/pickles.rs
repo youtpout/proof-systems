@@ -847,7 +847,12 @@ pub fn rust_pickles_debug_enable_console_trace() {
 /// One compiled shared-wrap program (OCaml `Pickles.compile` shape): every
 /// branch shares a single wrap index and canonical verification key.
 #[wasm_bindgen]
-pub struct WasmRecordedProgram(pickles::recorded::RecordedCompiledProgram);
+pub struct WasmRecordedProgram(WasmRecordedProgramInner);
+
+enum WasmRecordedProgramInner {
+    Recursive(pickles::recorded::RecordedCompiledProgram),
+    Base(pickles::recorded::RecordedCompiledBaseProgram),
+}
 
 /// Compiles a recorded program with ONE shared wrap circuit. Same input as
 /// [`rust_pickles_compile_recorded_program`].
@@ -874,9 +879,17 @@ pub fn rust_pickles_compile_recorded_program_shared(
             proofs_verified: branch.proofs_verified,
         });
     }
-    let program =
-        crate::rayon::run_in_pool(|| pickles::recorded::RecordedCompiledProgram::compile(parsed))
-            .map_err(|err| JsError::new(&format!("program compile failed: {err:?}")))?;
+    let all_base = parsed.iter().all(|branch| branch.proofs_verified == 0);
+    let program = crate::rayon::run_in_pool(|| {
+        if all_base {
+            pickles::recorded::RecordedCompiledBaseProgram::compile(parsed)
+                .map(WasmRecordedProgramInner::Base)
+        } else {
+            pickles::recorded::RecordedCompiledProgram::compile(parsed)
+                .map(WasmRecordedProgramInner::Recursive)
+        }
+    })
+    .map_err(|err| JsError::new(&format!("program compile failed: {err:?}")))?;
     Ok(WasmRecordedProgram(program))
 }
 
@@ -917,10 +930,14 @@ pub fn rust_pickles_recorded_program_cache_key(branches_json: String) -> Result<
 pub fn rust_pickles_recorded_program_cache_bytes(
     program: &WasmRecordedProgram,
 ) -> Result<Vec<u8>, JsError> {
-    program
-        .0
-        .to_cache_bytes()
-        .map_err(|err| JsError::new(&format!("program cache encode failed: {err}")))
+    match &program.0 {
+        WasmRecordedProgramInner::Recursive(program) => program
+            .to_cache_bytes()
+            .map_err(|err| JsError::new(&format!("program cache encode failed: {err}"))),
+        WasmRecordedProgramInner::Base(_) => Err(JsError::new(
+            "shared base-program cache serialization is not implemented",
+        )),
+    }
 }
 
 /// Restores a compiled program from a prover-key cache payload (the jsoo
@@ -936,7 +953,7 @@ pub fn rust_pickles_compile_recorded_program_from_cache_bytes(
         pickles::recorded::RecordedCompiledProgram::from_cache_bytes(parsed, &cache_bytes)
     })
     .map_err(|err| JsError::new(&format!("program cache restore failed: {err:?}")))?;
-    Ok(WasmRecordedProgram(program))
+    Ok(WasmRecordedProgram(WasmRecordedProgramInner::Recursive(program)))
 }
 
 /// Debug bisection of the shared program compile: runs up to phase `stage`
@@ -1010,9 +1027,11 @@ pub fn rust_pickles_debug_probe_branch(
 pub fn rust_pickles_recorded_program_vk_envelope(
     program: &WasmRecordedProgram,
 ) -> Result<String, JsError> {
-    let (base64, hash) = program
-        .0
-        .verification_key_envelope()
+    let envelope = match &program.0 {
+        WasmRecordedProgramInner::Recursive(program) => program.verification_key_envelope(),
+        WasmRecordedProgramInner::Base(program) => program.verification_key_envelope(),
+    };
+    let (base64, hash) = envelope
         .map_err(|err| JsError::new(&format!("program VK envelope failed: {err:?}")))?;
     serde_json::to_string(&serde_json::json!({ "base64": base64, "hash": hash }))
         .map_err(|err| JsError::new(&format!("VK envelope encoding failed: {err}")))
@@ -1053,7 +1072,14 @@ pub fn rust_pickles_program_prove_n0_bytes(
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
-    let handle = crate::rayon::run_in_pool(|| program.0.prove_n0(branch_index as usize, witness))
+    let handle = crate::rayon::run_in_pool(|| match &mut program.0 {
+        WasmRecordedProgramInner::Recursive(program) => {
+            program.prove_n0(branch_index as usize, witness)
+        }
+        WasmRecordedProgramInner::Base(program) => {
+            program.prove_keep(branch_index as usize, witness)
+        }
+    })
         .map_err(|err| JsError::new(&format!("program N0 proving failed: {err:?}")))?;
     Ok(WasmRecordedBaseHandle(handle))
 }
@@ -1067,10 +1093,15 @@ pub fn rust_pickles_program_prove_n1_bytes(
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
-    let handle = crate::rayon::run_in_pool(|| {
-        program
-            .0
-            .prove_n1(branch_index as usize, &previous.0, witness)
+    let handle = crate::rayon::run_in_pool(|| match &mut program.0 {
+        WasmRecordedProgramInner::Recursive(program) => {
+            program.prove_n1(branch_index as usize, &previous.0, witness)
+        }
+        WasmRecordedProgramInner::Base(_) => Err(
+            pickles::recorded::RecordedProveError::Program(
+                "a base-only program cannot prove an N1 branch".into(),
+            ),
+        ),
     })
     .map_err(|err| JsError::new(&format!("program N1 proving failed: {err:?}")))?;
     Ok(WasmRecordedBaseHandle(handle))
@@ -1086,10 +1117,15 @@ pub fn rust_pickles_program_prove_n2_bytes(
 ) -> Result<WasmRecordedBaseHandle, JsError> {
     console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
-    let handle = crate::rayon::run_in_pool(|| {
-        program
-            .0
-            .prove_n2(branch_index as usize, [&first.0, &second.0], witness)
+    let handle = crate::rayon::run_in_pool(|| match &mut program.0 {
+        WasmRecordedProgramInner::Recursive(program) => {
+            program.prove_n2(branch_index as usize, [&first.0, &second.0], witness)
+        }
+        WasmRecordedProgramInner::Base(_) => Err(
+            pickles::recorded::RecordedProveError::Program(
+                "a base-only program cannot prove an N2 branch".into(),
+            ),
+        ),
     })
     .map_err(|err| JsError::new(&format!("program N2 proving failed: {err:?}")))?;
     Ok(WasmRecordedBaseHandle(handle))
@@ -1107,13 +1143,18 @@ pub fn rust_pickles_program_debug_prove_n1(
 ) -> Result<String, JsError> {
     console_error_panic_hook::set_once();
     let witness = parse_fp_bytes(witness_bytes, "witness")?;
-    crate::rayon::run_in_pool(|| {
-        program.0.debug_prove_recursive_stage(
+    crate::rayon::run_in_pool(|| match &mut program.0 {
+        WasmRecordedProgramInner::Recursive(program) => program.debug_prove_recursive_stage(
             branch_index as usize,
             &[&previous.0],
             witness,
             stage as usize,
-        )
+        ),
+        WasmRecordedProgramInner::Base(_) => Err(
+            pickles::recorded::RecordedProveError::Program(
+                "a base-only program has no recursive prove stages".into(),
+            ),
+        ),
     })
     .map_err(|err| JsError::new(&format!("prove debug failed: {err:?}")))
 }

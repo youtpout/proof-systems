@@ -860,14 +860,24 @@ impl WrapStatementMinimalV1 {
             });
         }
         let branch_data_index = 13 + rounds;
+        let feature_base = branch_data_index + 1;
 
         // proof_state.deferred_values.plonk
         encode_challenge_constant(self.flattened[7], out)?; // alpha.inner
         encode_challenge_constant(self.flattened[5], out)?; // beta
         encode_challenge_constant(self.flattened[6], out)?; // gamma
         encode_challenge_constant(self.flattened[8], out)?; // zeta.inner
-        encode_option_none(out); // joint_combiner
-        encode_features_none(out); // feature_flags
+        if self.flattened[feature_base + 8] == Fq::from(0u64) {
+            encode_option_none(out); // joint_combiner
+        } else {
+            out.push(1);
+            encode_challenge_constant(self.flattened[feature_base + 9], out)?;
+        }
+        for slot in 0..8 {
+            out.push(u8::from(
+                self.flattened[feature_base + slot] != Fq::from(0u64),
+            ));
+        }
 
         // proof_state.deferred_values.bulletproof_challenges
         for &challenge in &self.flattened[13..branch_data_index] {
@@ -927,8 +937,6 @@ impl WrapStatementMinimalV1 {
                 value => return Err(BinProtError::InvalidProofsVerified(value)),
             };
         }
-        let _ = joint_combiner;
-
         // proof_state.deferred_values.bulletproof_challenges (fixed 16)
         let mut bulletproof_challenges = Vec::with_capacity(Self::MAX_BP_CHALLENGES);
         for _ in 0..Self::MAX_BP_CHALLENGES {
@@ -1007,6 +1015,10 @@ impl WrapStatementMinimalV1 {
             } else {
                 Fq::from(0u64)
             };
+        }
+        if let Some(joint_combiner) = joint_combiner {
+            flattened[22 + Self::MAX_BP_CHALLENGES] = Fq::from(1u64);
+            flattened[23 + Self::MAX_BP_CHALLENGES] = joint_combiner;
         }
 
         Ok(Self {
@@ -1358,10 +1370,6 @@ fn encode_u8_len_exact(len: usize, max: usize, out: &mut Vec<u8>) -> Result<(), 
 
 fn encode_option_none(out: &mut Vec<u8>) {
     out.push(0);
-}
-
-fn encode_features_none(out: &mut Vec<u8>) {
-    out.extend([0u8; 8]);
 }
 
 fn encode_int64(value: u64, out: &mut Vec<u8>) {
@@ -1770,9 +1778,15 @@ mod tests {
         let rounds = s.len() - WrapStatementMinimalV1::FIXED_FLATTENED_LEN_WITHOUT_BP_CHALLENGES;
         assert_eq!(&s[13..13 + rounds], &d[13..13 + rounds]);
         assert_eq!(s[13 + rounds], d[13 + 16], "branch data");
-        // the encoder always writes `features_none` (no optional gates in
-        // our programs), so decoded flags are zero regardless of input
-        assert!(d[14 + 16..].iter().all(|flag| *flag == Fq::from(0u64)));
+        for slot in 0..8 {
+            assert_eq!(
+                d[14 + 16 + slot],
+                Fq::from(u64::from(s[14 + rounds + slot] != Fq::from(0u64))),
+                "feature flag {slot}"
+            );
+        }
+        assert_eq!(d[22 + 16], Fq::from(1u64), "joint-combiner option");
+        assert_eq!(s[23 + rounds], d[23 + 16], "joint combiner");
         assert_eq!(
             proof.stable_statement.messages_for_next_wrap_proof,
             decoded.stable_statement.messages_for_next_wrap_proof
