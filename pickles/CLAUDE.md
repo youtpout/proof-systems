@@ -20,6 +20,81 @@ refactor « fidèle mais gate-neutre » : le committer avec un message qui
 dit qu'il aligne la structure sur l'OCaml sans effet gate. Vérifier
 toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
+## 🎉 JALON 2026-07-22 — PROVING DE TRANSACTION zkApp COMPLET (bout-en-bout)
+
+**Un SmartContract o1js se compile, se prouve ET se soumet au ledger sur le
+backend rust-wasm.** Le zkApp `Counter` (lecture d'état + `@method`) : `compile`
+(VK) → `tx.prove()` → `tx.send()` → état on-chain mis à jour, validé bout-en-bout
+sur `Mina.LocalBlockchain({proofsEnabled:true})` (le ledger jsoo parse ET vérifie
+la preuve rust). Trois blocages levés cette session :
+
+**1. Câblage du proving zkApp (o1js, branche `pickle-rust`).** `SmartContract.compile`
+posait la VG canonique mais installait des provers stubbés ("not wired yet").
+Désormais : on RETIENT les branches compilées (`_rustCompiledMethods`), un vrai
+prover (`makeRustZkappProver`) re-enregistre la méthode avec le witness réel de
+l'account-update, prouve le base case (`proveBaseCaseWithWitness`), et pose
+l'autorisation. Bug clé trouvé : `recordCircuit` entre son PROPRE snarkContext
+(witness-gen) qui masquait le flag `inProver` → la ré-exécution tombait dans la
+branche "hors transaction" et fuyait le public input comme argument de méthode ;
+le mode prove ré-établit `{inProver, proverData, witnesses}`. Fichiers o1js :
+`src/lib/mina/v1/{zkapp.ts,account-update.ts}`, `proof-system/zkprogram.ts`.
+
+**2. Fix du witness Poseidon (proof-systems, commit 86dd95406).** Le recorder
+émettait les états de rounds Poseidon en ordre séquentiel naïf, mais kimchi
+Poseidon2 empaquette `ROUNDS_PER_ROW=5` rounds/ligne dans l'ordre de colonnes
+permuté `STATE_ORDER=[0,2,3,4,1]`. Il faut réordonner chaque groupe de 5 :
+`[r0,r1,r2,r3,r4]→[r0,r4,r1,r2,r3]` (= ce qu'émet `snarky/src/poseidon.rs`
+`permute`). Sans ça, TOUT circuit avec ≥1 `Poseidon.hash` échouait à la vérif de
+witness ("permutation of state[0] -> state[1][0] is incorrect") : natif panic,
+wasm DEADLOCK. Fix d'une poignée de lignes dans `recordPermutation`
+(`rust-pickles-recorded.ts`). VK inchangées (états internes non copy-contraints).
+
+**3. Sérialisation de la preuve au format transaction Mina (proof-systems, NOUVEAU
+`pickles/src/mina_sexp.rs`).** L'autorisation d'un account-update = `Base64(Sexp.to_string
+(sexp_of_t (Pickles.Proofs_verified_2.Repr.V2.t)))` — du SEXP, pas du bin_prot
+(proof.ml:322). Porté byte-pour-byte en rust : imprimeur/parseur sexplib "mach"
+(validé par round-trip sur une vraie fixture jsoo de 24 Ko, `pickles/tests/fixtures/
+jsoo-zkapp-proof.sexp`) + sérialiseur structuré des 3 sections (statement minimal,
+`All_evals`, wire proof) construit depuis `WrapProofBaseV3` (`WrapProofBaseV3::
+to_transaction_base64`). Exposé par le binding wasm `rust_pickles_recorded_base_
+transaction_base64`, consommé dans o1js `proveRecordedBaseCaseCompiled` → `addProof`
+pose la chaîne directement (la vérif passe alors par le jsoo `Pickles.verify` normal).
+Tests cargo verts : round-trip imprimeur + shape structurée == fixture.
+
+**Détails de format sexp (pour extension/audit)** : 2 types d'atomes — challenges =
+`(lo hi)` de 2 limbs Hex64 minuscules (little-endian), scalar = `((inner (lo hi)))`,
+prechallenge = `((prechallenge ((inner (lo hi)))))` ; champs Fp/Fq = `0x`+64 hex
+MAJUSCULE big-endian. Séparateur sexplib = espace UNIQUEMENT avant un atome nu
+(pas avant `(`/`"`). Mapping flattened→structuré du statement réutilisé de
+`WrapStatementMinimalV1::encode_bin_prot` (alpha=fl[7], beta=fl[5], gamma=fl[6],
+zeta=fl[8], sponge=fl[10], bp=fl[13..29], branch=fl[29]). Ordre des evals =
+ordre record OCaml (w, coefficients, z, s, …) ≠ ordre bin_prot. `messages_for_next_
+step_proof` = tout vide (app_state unit). 15 sélecteurs optionnels = `(name())`,
+`lookup_sorted` = `(()()()()())`. Base-case (N0) uniquement pour l'instant ;
+récursif (N1/N2) non couvert par `to_transaction_base64`.
+
+Commits : proof-systems `3e60573e21` (sérialiseur sexp) ; o1js `86dd95406`
+(Poseidon), `038b7844c` (câblage), `bb685d256` (proof transaction). Tâches
+#29/#30/#31 DONE.
+
+**Reste pour la suite lumina `Factory.test` complète — 2 blocages distincts
+diagnostiqués (tâches #32, #33), PAS dans le chemin core (Counter marche
+bout-en-bout) :**
+- **#32 divergence circuit compile/prove sur méthodes zkApp à état.** `FungibleToken.
+  initialize` throw "circuit shape changed" : le circuit PROVE a 12 contraintes en
+  trop (6 seals generic `-var+out=0` sur les args {2,3,5} + 6 `equal` no-op) juste
+  avant un poseidon, vs le circuit COMPILE (VK-canonique, == jsoo). Cause : compile
+  enregistre sous `{inAnalyze}` + instance de compte dummy, prove sous `{inProver}` +
+  compte réel → o1js seale les vars d'args sous inProver (callData ?) mais pas sous
+  inAnalyze. Fix : faire coïncider les deux enregistrements sans changer la VK (#24).
+- **#33 mémoire wasm multi-contrat.** `beforeAll` compile 5 contrats → worker à 7 Go
+  RSS puis DEADLOCK (0 CPU, 40 threads futex ; 15 Go libres, pas OOM). Cause probable :
+  `_rustCompiledMethods` (#29) RETIENT toutes les branches (index prover complets) de
+  TOUS les contrats simultanément → dépasse le plafond 4 Go de la mémoire linéaire
+  wasm32 (le path compile-only d'avant les jetait). 1 contrat Counter passe ; 5 gros
+  non. Fix : retenir les verifiers compacts + rebuild prover paresseux (lié #28), ou
+  éviction. Dépend de #32 (pour atteindre la phase prove multi-contrat).
+
 ## REPRISE (état exact 2026-07-18 — OBJECTIF CIRCUITS/VK ATTEINT)
 **Scores** : init **0/0** ✓✓ ; update **0/0** ✓✓ ; merge **0/0** ✓✓ ; wrap
 **0/0** ✓✓. Le dump wrap frais contient 16384 lignes et `full-diff.mjs`
