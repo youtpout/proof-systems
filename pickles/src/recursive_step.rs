@@ -975,12 +975,9 @@ pub struct RecursiveStepData {
 /// runs in-circuit (allocating its own witness) and returns the new
 /// application state bound by the step statement's
 /// messages-for-next-step digest.
-pub type EmbeddedAppMain =
-    std::sync::Arc<
-        dyn Fn(&mut RunState<Fp>, &[FieldVar<Fp>]) -> SnarkyResult<Vec<FieldVar<Fp>>>
-            + Send
-            + Sync,
-    >;
+pub type EmbeddedAppMain = std::sync::Arc<
+    dyn Fn(&mut RunState<Fp>, &[FieldVar<Fp>]) -> SnarkyResult<Vec<FieldVar<Fp>>> + Send + Sync,
+>;
 
 pub struct RecursiveStepCircuit<
     const PREV_ROUNDS: usize,
@@ -2532,7 +2529,7 @@ pub fn prove_prepared_recursive_step_width2<
         WIDTH1_INPUT_LEN,
         PUBLIC_INPUT_LEN,
         2,
-    >(prepared, app, indexes)
+    >(prepared, app, indexes, None)
 }
 
 pub fn compile_prepared_recursive_step_width2<
@@ -2598,7 +2595,6 @@ pub fn domain_log2_prepared_recursive_step_width2<
     .domain_log2()
     .unwrap()
 }
-
 
 /// [`compile_prepared_recursive_step_width2_with_min_domain`] generic over
 /// the program arity (`ACTIVE_PROOFS` = 2 for width-2 programs, 1 for the
@@ -2747,6 +2743,7 @@ pub fn prove_prepared_recursive_step_width2_arity<
             ACTIVE_PROOFS,
         >,
     >,
+    scratch: Option<&mut kimchi::prover::ProverScratch<Fp>>,
 ) -> (
     RecursiveStepWidth2Proof<
         PREV_ROUNDS,
@@ -2921,8 +2918,8 @@ pub fn prove_prepared_recursive_step_width2_arity<
         );
     }
     let (proof, _) = prover
-        .prove_with_recursion_mask::<VestaBase, VestaScalar>(
-            statement, private, true, recursions, None,
+        .prove_with_recursion_mask_and_scratch::<VestaBase, VestaScalar>(
+            statement, private, true, recursions, None, scratch,
         )
         .unwrap();
     if recursion_mask.iter().all(|keep| *keep) {
@@ -3233,9 +3230,18 @@ fn prepare_recursive_wrap_from_parts<const STEP_PROOF_ROUNDS: usize, const WRAP_
         which_branch: 0,
         branches: vec![],
         lookup: crate::api::LookupBranchData::from_step_verifier(svi),
-        lookup_sorted: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).0,
-        lookup_aggreg: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).1,
-        lookup_runtime: crate::api::proof_lookup_commitments(&crate::api::LookupBranchData::from_step_verifier(svi)).2,
+        lookup_sorted: crate::api::proof_lookup_commitments(
+            &crate::api::LookupBranchData::from_step_verifier(svi),
+        )
+        .0,
+        lookup_aggreg: crate::api::proof_lookup_commitments(
+            &crate::api::LookupBranchData::from_step_verifier(svi),
+        )
+        .1,
+        lookup_runtime: crate::api::proof_lookup_commitments(
+            &crate::api::LookupBranchData::from_step_verifier(svi),
+        )
+        .2,
         step_domain_log2: svi.domain.log_size_of_group as u8,
         step_vk_digest: svi.digest::<VestaBase>(),
         generic: co(&svi.generic_comm.chunks[0]),
@@ -3373,8 +3379,7 @@ pub fn prepare_recursive_wrap_n1<
         fixed_old_challenges.clone(),
         2,
     );
-    let real =
-        normalize_program_unfinalized(real, real_prev_step_acc, fixed_old_challenges, 2);
+    let real = normalize_program_unfinalized(real, real_prev_step_acc, fixed_old_challenges, 2);
     prepare_recursive_wrap_from_parts::<STEP_PROOF_ROUNDS, WRAP_STMT_LEN>(
         &step.verifier.index,
         &step.proof,
@@ -3435,7 +3440,13 @@ pub fn prepare_recursive_wrap_n0_arity<
     const ACTIVE: usize,
 >(
     template: &BaseCaseProof<A, BASE_ROUNDS, BASE_STMT_LEN>,
-    step: &RecursiveStepWidth2Proof<PREV_ROUNDS, WRAP_ROUNDS, WIDTH1_INPUT_LEN, STEP_STMT_LEN, ACTIVE>,
+    step: &RecursiveStepWidth2Proof<
+        PREV_ROUNDS,
+        WRAP_ROUNDS,
+        WIDTH1_INPUT_LEN,
+        STEP_STMT_LEN,
+        ACTIVE,
+    >,
     // Per-slot `local_max_proofs_verified` (OCaml: the max over branches of
     // the slot's verified-proof width) — sizes each slot's accumulator-hash
     // absorption and finalize pad.
@@ -3605,7 +3616,7 @@ pub fn prepare_program_recursive_wrap<
 pub fn prove_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
     prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
 ) -> RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN> {
-    prove_prepared_recursive_wrap(prepared, None).0
+    prove_prepared_recursive_wrap(prepared, None, None).0
 }
 
 pub fn compile_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
@@ -3624,6 +3635,7 @@ pub fn compile_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT
 pub fn prove_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_LEN: usize>(
     prepared: PreparedRecursiveWrap<STEP_ROUNDS, WRAP_STMT_LEN>,
     indexes: Option<RecursiveWrapIndexes<STEP_ROUNDS, WRAP_STMT_LEN>>,
+    scratch: Option<&mut kimchi::prover::ProverScratch<Fq>>,
 ) -> (
     RecursiveWrapProof<STEP_ROUNDS, WRAP_STMT_LEN>,
     RecursiveWrapIndexes<STEP_ROUNDS, WRAP_STMT_LEN>,
@@ -3648,7 +3660,14 @@ pub fn prove_prepared_recursive_wrap<const STEP_ROUNDS: usize, const WRAP_STMT_L
             .unwrap(),
     };
     let (proof, _) = prover
-        .prove_with_recursion::<PallasBase, PallasScalar>(statement, wrap_witness, true, recursions)
+        .prove_with_recursion_mask_and_scratch::<PallasBase, PallasScalar>(
+            statement,
+            wrap_witness,
+            true,
+            recursions,
+            None,
+            scratch,
+        )
         .unwrap();
     verifier.verify::<PallasBase, PallasScalar>(proof.clone(), statement, ());
 
@@ -4785,11 +4804,10 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // `Wrap_proof.typ` checks every LR point here. The wrap verification key
     // itself is the already-witnessed `dlog_index`; witnessing/checking a
     // second copy put the right on-curve gates on the wrong cvars.
-    let lr = d
-        .lr
-        .iter()
-        .map(|&(l, r)| Ok((mkpt(sys, l)?, mkpt(sys, r)?)))
-        .collect::<SnarkyResult<Vec<_>>>()?;
+    let lr =
+        d.lr.iter()
+            .map(|&(l, r)| Ok((mkpt(sys, l)?, mkpt(sys, r)?)))
+            .collect::<SnarkyResult<Vec<_>>>()?;
     let vk = VerificationKeyComm {
         generic: dlog_index.generic_comm.clone(),
         psm: dlog_index.psm_comm.clone(),
@@ -5065,8 +5083,7 @@ fn recursive_per_proof_input<'a, const PREV_ROUNDS: usize, const WRAP_ROUNDS: us
     // vector: [b0 = pv≥2, b1 = pv≥1] ⇒ N0=[F,F], N1=[F,T], N2=[T,T].
     // `Vector.trim_front` (step_main.ml:63): the accumulator-hash /
     // finalize mask keeps the LAST `active` prefix-mask bits.
-    let proofs_verified_mask =
-        branch_mask.map(|mask| mask[mask.len() - active..].to_vec());
+    let proofs_verified_mask = branch_mask.map(|mask| mask[mask.len() - active..].to_vec());
 
     // `prev_proof_evals` follows the wrap proof and proof state in
     // `Per_proof_witness.typ`.  These allocations emit no constraints, but
@@ -5205,7 +5222,10 @@ impl<
         private: Option<&Self::PrivateInput>,
     ) -> SnarkyResult<()> {
         assert_eq!(WIDTH1_INPUT_LEN, width1_step_statement_len(WRAP_ROUNDS));
-        assert_eq!(PUBLIC_INPUT_LEN, step_statement_len(ACTIVE_PROOFS, WRAP_ROUNDS));
+        assert_eq!(
+            PUBLIC_INPUT_LEN,
+            step_statement_len(ACTIVE_PROOFS, WRAP_ROUNDS)
+        );
         // o1js prepends `dummy_constraints ()` to every rule's main
         // (pickles_bindings.ml) so each step circuit uses every EC gate type.
         crate::api::o1js_dummy_constraints(sys)?;
@@ -5292,15 +5312,14 @@ impl<
                 })
         });
         if !has_self_slot {
-            let mk_next_point =
-                |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
-                    let point = Point::new(
-                        sys.compute(loc!(), move |_| p.0)?,
-                        sys.compute(loc!(), move |_| p.1)?,
-                    );
-                    point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
-                    Ok(point)
-                };
+            let mk_next_point = |sys: &mut RunState<Fp>, p: (Fp, Fp)| -> SnarkyResult<Point<Fp>> {
+                let point = Point::new(
+                    sys.compute(loc!(), move |_| p.0)?,
+                    sys.compute(loc!(), move |_| p.1)?,
+                );
+                point.assert_on_curve(sys, loc!(), Fp::from(0u64), Fp::from(5u64))?;
+                Ok(point)
+            };
             let next_vk_pts = messages_for_next_step_vk_pts
                 .iter()
                 .map(|&p| mk_next_point(sys, p))
@@ -5655,7 +5674,7 @@ impl<
                 .iter()
                 .map(|&p| mkpt(sys, p))
                 .collect::<SnarkyResult<Vec<_>>>()?,
-        lookup: None,
+            lookup: None,
         };
         let mut lr = vec![];
         for &(l, r) in &d.lr {

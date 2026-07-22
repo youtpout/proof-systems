@@ -709,7 +709,7 @@ where
         plnm: &Evaluations<G::ScalarField, D<G::ScalarField>>,
     ) -> PolyComm<G> {
         let basis = &*self.get_lagrange_basis(domain);
-        let commit_evaluations = |evals: &Vec<G::ScalarField>, basis: &Vec<PolyComm<G>>| {
+        let commit_evaluations = |evals: &[G::ScalarField], basis: &[PolyComm<G>]| {
             let basis_refs: Vec<_> = basis.iter().collect();
             PolyComm::<G>::multi_scalar_mul(&basis_refs, evals)
         };
@@ -717,7 +717,7 @@ where
             core::cmp::Ordering::Less => {
                 #[allow(clippy::cast_possible_truncation)]
                 let s = (plnm.domain().size / domain.size) as usize;
-                let v: Vec<_> = (0..(domain.size())).map(|i| plnm.evals[s * i]).collect();
+                let v: Vec<_> = (0..domain.size()).map(|i| plnm.evals[s * i]).collect();
                 commit_evaluations(&v, basis)
             }
             core::cmp::Ordering::Equal => commit_evaluations(&plnm.evals, basis),
@@ -725,6 +725,24 @@ where
                 panic!("desired commitment domain size ({}) greater than evaluations' domain size ({}):", domain.size, plnm.domain().size)
             }
         }
+    }
+
+    fn commit_evaluations_non_hiding_from_slice(
+        &self,
+        domain: D<G::ScalarField>,
+        evals: &[G::ScalarField],
+    ) -> PolyComm<G> {
+        let basis = &*self.get_lagrange_basis(domain);
+        let commit_evaluations = |evals: &[G::ScalarField], basis: &[PolyComm<G>]| {
+            let basis_refs: Vec<_> = basis.iter().collect();
+            PolyComm::<G>::multi_scalar_mul(&basis_refs, evals)
+        };
+        assert_eq!(
+            domain.size(),
+            evals.len(),
+            "evaluation slice must exactly match the commitment domain"
+        );
+        commit_evaluations(evals, basis)
     }
 
     #[cfg(feature = "std")]

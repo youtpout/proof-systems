@@ -173,6 +173,21 @@ pub trait SRS<G: CommitmentCurve>: Clone + Sized + Sync + Send {
         plnm: &Evaluations<G::ScalarField, D<G::ScalarField>>,
     ) -> PolyComm<G>;
 
+    /// Commit directly from evaluations already stored by the caller.
+    /// Implementations may override this to avoid cloning a domain-sized
+    /// vector merely to wrap it in [`Evaluations`].
+    #[cfg(feature = "std")]
+    fn commit_evaluations_non_hiding_from_slice(
+        &self,
+        domain: D<G::ScalarField>,
+        evals: &[G::ScalarField],
+    ) -> PolyComm<G> {
+        self.commit_evaluations_non_hiding(
+            domain,
+            &Evaluations::from_vec_and_domain(evals.to_vec(), domain),
+        )
+    }
+
     /// Commit to evaluations with blinding factors.
     ///
     /// Generated using the random number generator `rng`.

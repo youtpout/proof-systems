@@ -11,8 +11,7 @@
 //! host-language callback re-entering Rust.
 
 use ark_ff::Zero;
-use mina_curves::pasta::{Fp, Pallas, Vesta};
-use mina_curves::pasta::Fq;
+use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
 use snarky::{
     constraint_system::{
         BasicInput, BasicSnarkyConstraint, EcAddCompleteInput, EcEndoscaleInput, EndoscaleRound,
@@ -650,9 +649,8 @@ pub struct RecordedApp {
 /// witnessed by the APP replay (OCaml `Side_loaded.in_circuit` runs inside
 /// the rule's main) and consumed by the same-thread step machinery.
 pub(crate) struct SideLoadedVkVars {
-    pub index: crate::composition_types::PlonkVerificationKeyEvals<
-        snarky::gadgets::curve::Point<Fp>,
-    >,
+    pub index:
+        crate::composition_types::PlonkVerificationKeyEvals<snarky::gadgets::curve::Point<Fp>>,
     #[allow(dead_code)]
     pub max_pv_one_hot: Vec<snarky::Boolean<Fp>>,
     #[allow(dead_code)]
@@ -682,8 +680,7 @@ fn side_loaded_vk_gadget(
     vk_hash: FieldVar<Fp>,
 ) -> SnarkyResult<SideLoadedVkVars> {
     use ark_ec::{AffineRepr, CurveGroup};
-    use snarky::gadgets::curve::Point;
-    use snarky::Boolean;
+    use snarky::{gadgets::curve::Point, Boolean};
 
     let one_hot = |sys: &mut RunState<Fp>, selected: usize| -> SnarkyResult<Vec<Boolean<Fp>>> {
         let bools = (0..3)
@@ -816,8 +813,8 @@ impl RecordedApp {
             .map(|&(dense, flat)| (dense as usize, flat as usize))
             .collect();
         SIDE_LOADED_VK_STASH.with(|stash| stash.borrow_mut().clear());
-        let reuse_previous = slot_map.is_empty()
-            && self.has_program_previous_state_slots(previous_app_state.len());
+        let reuse_previous =
+            slot_map.is_empty() && self.has_program_previous_state_slots(previous_app_state.len());
         let mut vars = Vec::with_capacity(self.circuit.aux_count as usize);
         for index in 0..self.circuit.aux_count as usize {
             let var = if let Some(&flat) = slot_map.get(&index) {
@@ -1107,19 +1104,23 @@ impl RecordedApp {
                     )?
                 }
                 RecordedConstraint::ForeignFieldAdd { row, coeffs } => sys.add_constraint(
-                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::ForeignFieldAdd(
-                        row.iter().map(resolve).collect(),
-                        coeffs.clone(),
-                    )),
+                    snarky::runner::Constraint::KimchiConstraint(
+                        KimchiConstraint::ForeignFieldAdd(
+                            row.iter().map(resolve).collect(),
+                            coeffs.clone(),
+                        ),
+                    ),
                     None,
                     loc!(),
                 )?,
                 RecordedConstraint::ForeignFieldMul { curr, next, coeffs } => sys.add_constraint(
-                    snarky::runner::Constraint::KimchiConstraint(KimchiConstraint::ForeignFieldMul(
-                        curr.iter().map(resolve).collect(),
-                        next.iter().map(resolve).collect(),
-                        coeffs.clone(),
-                    )),
+                    snarky::runner::Constraint::KimchiConstraint(
+                        KimchiConstraint::ForeignFieldMul(
+                            curr.iter().map(resolve).collect(),
+                            next.iter().map(resolve).collect(),
+                            coeffs.clone(),
+                        ),
+                    ),
                     None,
                     loc!(),
                 )?,
@@ -1133,7 +1134,6 @@ impl RecordedApp {
             .map(|lincomb| lincomb.resolve(&vars))
             .collect())
     }
-
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1880,9 +1880,7 @@ pub struct RecordedCompiledBaseProgram {
 }
 
 impl RecordedCompiledBaseProgram {
-    pub fn compile(
-        branches: Vec<RecordedProgramBranch>,
-    ) -> Result<Self, RecordedProveError> {
+    pub fn compile(branches: Vec<RecordedProgramBranch>) -> Result<Self, RecordedProveError> {
         if branches.is_empty() {
             return Err(RecordedProveError::Program(
                 "a program has at least one branch".into(),
@@ -2066,9 +2064,7 @@ impl RecordedCompiledBaseProgram {
                     .expect("compiled shared Wrap indexes")
                     .1,
             )
-            .map_err(|err| {
-                RecordedProveError::Program(format!("canonical program key: {err:?}"))
-            })?
+            .map_err(|err| RecordedProveError::Program(format!("canonical program key: {err:?}")))?
             .to_stable_v2_base58()
             .map_err(|err| {
                 RecordedProveError::Program(format!("canonical program key encoding: {err:?}"))
@@ -2267,7 +2263,12 @@ pub fn shared_wrap_lagrange_and_commitments(
         vec![Vec::with_capacity(wrap_prover.index.cs.gates.len()); ncols];
     for g in wrap_prover.index.cs.gates.iter() {
         for j in 0..ncols {
-            coeff_cols[j].push(g.coeffs.get(j).copied().unwrap_or(mina_curves::pasta::Fq::from(0u64)));
+            coeff_cols[j].push(
+                g.coeffs
+                    .get(j)
+                    .copied()
+                    .unwrap_or(mina_curves::pasta::Fq::from(0u64)),
+            );
         }
     }
     Ok((lagrange_pts, commitments, coeff_cols))
@@ -2352,13 +2353,22 @@ pub fn debug_step_vk_selectors(branches: Vec<RecordedProgramBranch>) -> Result<S
             .expect("compiled Step indexes")
             .1
             .index;
-        out.push_str(&format!("branch {i} domain=2^{}\n", svi.domain.log_size_of_group));
+        out.push_str(&format!(
+            "branch {i} domain=2^{}\n",
+            svi.domain.log_size_of_group
+        ));
         out.push_str(&format!("  generic {}\n", xhex(&svi.generic_comm)));
         out.push_str(&format!("  psm {}\n", xhex(&svi.psm_comm)));
-        out.push_str(&format!("  complete_add {}\n", xhex(&svi.complete_add_comm)));
+        out.push_str(&format!(
+            "  complete_add {}\n",
+            xhex(&svi.complete_add_comm)
+        ));
         out.push_str(&format!("  mul {}\n", xhex(&svi.mul_comm)));
         out.push_str(&format!("  emul {}\n", xhex(&svi.emul_comm)));
-        out.push_str(&format!("  endomul_scalar {}\n", xhex(&svi.endomul_scalar_comm)));
+        out.push_str(&format!(
+            "  endomul_scalar {}\n",
+            xhex(&svi.endomul_scalar_comm)
+        ));
         for (j, c) in svi.sigma_comm.iter().enumerate() {
             out.push_str(&format!("  sigma[{j}] {}\n", xhex(c)));
         }
@@ -2712,8 +2722,11 @@ impl RecordedCompiledN1 {
         prepared_wrap.data.which_branch = 1;
         prepared_wrap.data.branches = wrap_branches.clone();
         let wrap_indexes = crate::recursive_step::compile_prepared_recursive_wrap(&prepared_wrap);
-        let (bootstrap_wrap, wrap_indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(wrap_indexes));
+        let (bootstrap_wrap, wrap_indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
+            prepared_wrap,
+            Some(wrap_indexes),
+            None,
+        );
         let bootstrap_cycle = crate::recursive_step::RecursiveCycleProof {
             step: bootstrap_step,
             wrap: bootstrap_wrap,
@@ -2843,6 +2856,7 @@ impl RecordedCompiledN1 {
             let (wrap, stable_wrap_indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
                 prepared_wrap,
                 Some(stable_wrap_indexes),
+                None,
             );
             self.stable_wrap_indexes = Some(stable_wrap_indexes);
             let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
@@ -2893,7 +2907,7 @@ impl RecordedCompiledN1 {
         prepared_wrap.data.branches = self.wrap_branches.clone();
         let wrap_indexes = self.wrap_indexes.take();
         let (wrap, wrap_indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, wrap_indexes);
+            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, wrap_indexes, None);
         self.wrap_indexes = Some(wrap_indexes);
         let cycle = crate::recursive_step::RecursiveCycleProof { step, wrap };
         let proof = crate::recursive_step::DirectN1Proof::<
@@ -3247,8 +3261,11 @@ impl RecordedCompiledN2 {
         >([first_base, second_base], &step);
         prepared_wrap.data.branches = self.wrap_branches.clone();
         let indexes = self.wrap_indexes.take().expect("compiled N2 Wrap indexes");
-        let (wrap, indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(indexes));
+        let (wrap, indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
+            prepared_wrap,
+            Some(indexes),
+            None,
+        );
         self.wrap_indexes = Some(indexes);
         let encoded = wrap
             .to_mina_network_proof(step.verifier.index.domain.log_size_of_group as u8)
@@ -3416,10 +3433,7 @@ fn build_recorded_program_step_prepared<const STEP_PI: usize, const ACTIVE: usiz
     finalize_index: Option<&StepFinalizeIndex>,
     finalize_domain_log2s: &[u32],
 ) -> (
-    crate::recursive_step::PreparedRecursiveStepWidth2<
-        RECORDED_N1_STEP_STMT_LEN,
-        STEP_PI,
-    >,
+    crate::recursive_step::PreparedRecursiveStepWidth2<RECORDED_N1_STEP_STMT_LEN, STEP_PI>,
     crate::recursive_step::EmbeddedAppMain,
 ) {
     let branch = branch.clone();
@@ -3538,7 +3552,10 @@ fn side_loaded_x_hat_lagranges() -> &'static Vec<Vec<((Fp, Fp), (Fp, Fp))>> {
 
 /// Debug-only: the probe's prepared step WITHOUT the Selected domain list
 /// (historical fixed-finalize path).
-fn build_recorded_program_step_prepared_fixed_for_debug<const STEP_PI: usize, const ACTIVE: usize>(
+fn build_recorded_program_step_prepared_fixed_for_debug<
+    const STEP_PI: usize,
+    const ACTIVE: usize,
+>(
     branch: &RecordedProgramBranch,
     template: &crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
     wrap_vk: &[(Fp, Fp)],
@@ -3685,10 +3702,11 @@ pub fn debug_probe_branch(
     branch_index: usize,
     mode: u32,
 ) -> Result<String, RecordedProveError> {
-    let template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
-        RecordedProgramTemplateApp,
-        (),
-    );
+    let template_compiled =
+        crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+            RecordedProgramTemplateApp,
+            (),
+        );
     let mut template_compiled = template_compiled;
     let template = template_compiled.prove(());
     let bootstrap_vk = crate::api::wrap_verification_key_points(&template.wrap_verifier);
@@ -3835,12 +3853,18 @@ type RecordedRawWrapVerifier = kimchi::verifier_index::VerifierIndex<
 >;
 
 fn restore_step_verifier(mut vi: RecordedRawStepVerifier) -> RecordedRawStepVerifier {
-    crate::template_dummy::fixup_vi(&mut vi, crate::common::tick_srs(1 << crate::common::TICK_ROUNDS));
+    crate::template_dummy::fixup_vi(
+        &mut vi,
+        crate::common::tick_srs(1 << crate::common::TICK_ROUNDS),
+    );
     vi
 }
 
 fn restore_wrap_verifier(mut vi: RecordedRawWrapVerifier) -> RecordedRawWrapVerifier {
-    crate::template_dummy::fixup_vi(&mut vi, crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS));
+    crate::template_dummy::fixup_vi(
+        &mut vi,
+        crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS),
+    );
     vi
 }
 
@@ -3912,7 +3936,7 @@ fn manufacture_bootstrap_step<const STEP_PI: usize, const ACTIVE: usize>(
         RECORDED_N1_STEP_STMT_LEN,
         STEP_PI,
         ACTIVE,
-    >(bootstrap, None, None)
+    >(bootstrap, None, None, None)
     .0
 }
 
@@ -3921,10 +3945,11 @@ fn manufacture_bootstrap_step<const STEP_PI: usize, const ACTIVE: usize>(
 /// [`crate::template_dummy`] embeds; the program compile only runs it when
 /// the embedded blob is absent or stale.
 fn manufacture_template_dummies() -> (RecordedTemplateBase, RecordedBootstrapStep) {
-    let mut template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
-        RecordedProgramTemplateApp,
-        (),
-    );
+    let mut template_compiled =
+        crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+            RecordedProgramTemplateApp,
+            (),
+        );
     let template = template_compiled.prove(());
     let bootstrap_step = manufacture_bootstrap_step::<RECORDED_N2_STEP_STMT_LEN, 2>(&template);
     (template, bootstrap_step)
@@ -3948,14 +3973,12 @@ impl ProgramTemplateDummies for RecordedBootstrapStepShaped<RECORDED_N2_STEP_STM
 
 impl ProgramTemplateDummies for RecordedBootstrapStepShaped<RECORDED_N1_STEP_STMT_LEN, 1> {
     fn template_dummies() -> (RecordedTemplateBase, Self) {
-        let template = match crate::template_dummy::decode_embedded()
-            .and_then(assemble_template_dummies)
-        {
-            Some((template, _)) => template,
-            None => manufacture_template_dummies().0,
-        };
-        let bootstrap_step =
-            manufacture_bootstrap_step::<RECORDED_N1_STEP_STMT_LEN, 1>(&template);
+        let template =
+            match crate::template_dummy::decode_embedded().and_then(assemble_template_dummies) {
+                Some((template, _)) => template,
+                None => manufacture_template_dummies().0,
+            };
+        let bootstrap_step = manufacture_bootstrap_step::<RECORDED_N1_STEP_STMT_LEN, 1>(&template);
         (template, bootstrap_step)
     }
 }
@@ -4006,18 +4029,16 @@ fn synthetic_structure_wrap_index(
 > {
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_poly::EvaluationDomain as _;
-    use kimchi::circuits::polynomials::permutation::{
-        permutation_vanishing_polynomial, zk_w, Shifts,
+    use kimchi::{
+        circuits::polynomials::permutation::{permutation_vanishing_polynomial, zk_w, Shifts},
+        curve::KimchiCurve as _,
+        linearization::expr_linearization,
     };
-    use kimchi::curve::KimchiCurve as _;
-    use kimchi::linearization::expr_linearization;
-    use poly_commitment::commitment::PolyComm;
-    use poly_commitment::SRS as _;
+    use poly_commitment::{commitment::PolyComm, SRS as _};
 
-    let domain = ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(
-        1usize << wrap_domain_log2,
-    )
-    .expect("wrap domain size is a supported power of two");
+    let domain =
+        ark_poly::Radix2EvaluationDomain::<mina_curves::pasta::Fq>::new(1usize << wrap_domain_log2)
+            .expect("wrap domain size is a supported power of two");
     let srs = crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS);
     srs.get_lagrange_basis(domain);
 
@@ -4124,10 +4145,11 @@ type TemplatePallasSponge = mina_poseidon::sponge::DefaultFqSponge<
 /// Digest freshness probe for the guard test: the step and wrap verifier
 /// digests of a LIVE template base compile (no proving).
 pub fn template_live_digests() -> (mina_curves::pasta::Fq, Fp) {
-    let template_compiled = crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
-        RecordedProgramTemplateApp,
-        (),
-    );
+    let template_compiled =
+        crate::api::CompiledBaseCase::<RecordedProgramTemplateApp, 16, 40>::compile(
+            RecordedProgramTemplateApp,
+            (),
+        );
     let step_vi = &template_compiled.step_indexes.as_ref().expect("compiled").1;
     let wrap_vi = &template_compiled.wrap_indexes.as_ref().expect("compiled").1;
     (
@@ -4179,6 +4201,10 @@ pub struct RecordedCompiledProgramShaped<const STEP_PI: usize, const ACTIVE: usi
         >,
     >,
     template: crate::api::BaseCaseProof<RecordedProgramTemplateApp, 16, 40>,
+    #[cfg(target_arch = "wasm32")]
+    step_scratch: kimchi::prover::ProverScratch<Fp>,
+    #[cfg(target_arch = "wasm32")]
+    wrap_scratch: kimchi::prover::ProverScratch<mina_curves::pasta::Fq>,
 }
 
 /// The public program handle: one compiled program at either supported
@@ -4494,14 +4520,12 @@ where
             // near the 2^14/2^15 boundary), so probe it from the constraint
             // system alone — no SRS work, no polynomial commitments.
             use snarky::api::SnarkyCircuit as _;
-            let donor_domain_log2 = crate::api::WrapCircuit::<
-                RECORDED_N2_STEP_ROUNDS,
-                RECORDED_N2_WRAP_STMT_LEN,
-            > {
-                w: Some(prepared_wrap.data.clone()),
-            }
-            .domain_log2()
-            .expect("wrap domain probe");
+            let donor_domain_log2 =
+                crate::api::WrapCircuit::<RECORDED_N2_STEP_ROUNDS, RECORDED_N2_WRAP_STMT_LEN> {
+                    w: Some(prepared_wrap.data.clone()),
+                }
+                .domain_log2()
+                .expect("wrap domain probe");
             synthetic_structure_wrap_index(donor_domain_log2)
         });
         let structure_vk = crate::api::wrap_verification_key_points(&structure_wrap);
@@ -4652,9 +4676,12 @@ where
             step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
+            #[cfg(target_arch = "wasm32")]
+            step_scratch: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            wrap_scratch: Default::default(),
         })
     }
-
 }
 
 impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
@@ -4928,9 +4955,12 @@ impl RecordedCompiledProgramShaped<RECORDED_N2_STEP_STMT_LEN, 2> {
             step_indexes: stable_step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
+            #[cfg(target_arch = "wasm32")]
+            step_scratch: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            wrap_scratch: Default::default(),
         })
     }
-
 }
 
 #[allow(private_bounds)]
@@ -5029,7 +5059,6 @@ where
             list
         };
 
-
         // Steps: first N0 (its restored verifier is the finalize alignment
         // index for the rest), then the others — the SAME preparation flow
         // as `compile_recorded_program_steps_single_pass`.
@@ -5041,7 +5070,10 @@ where
         let restore_branch = |branch: &RecordedProgramBranch,
                               finalize_index: Option<&StepFinalizeIndex>,
                               raw: RecordedRawStepVerifier|
-         -> Result<RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>, RecordedProveError> {
+         -> Result<
+            RecordedProgramStepIndexesShaped<STEP_PI, ACTIVE>,
+            RecordedProveError,
+        > {
             let (prepared, main) = build_recorded_program_step_prepared::<STEP_PI, ACTIVE>(
                 branch,
                 &template,
@@ -5065,7 +5097,9 @@ where
         }
         let finalize_holder = first_n0.map(|i| step_indexes[i].as_ref().expect("set").1.clone());
         let finalize_index = finalize_holder.as_ref().map(|v| &v.index);
-        let rest: Vec<usize> = (0..branches.len()).filter(|&i| Some(i) != first_n0).collect();
+        let rest: Vec<usize> = (0..branches.len())
+            .filter(|&i| Some(i) != first_n0)
+            .collect();
         let mut raws: Vec<(usize, RecordedRawStepVerifier)> = rest
             .iter()
             .map(|&i| (i, step_raws[i].take().expect("raw present")))
@@ -5135,7 +5169,6 @@ where
             crate::recursive_step::restore_prepared_recursive_wrap(&prepared_wrap, wrap_raw)
                 .map_err(RecordedProveError::Program)?;
 
-
         Ok(Self {
             branches,
             wrap_branches,
@@ -5144,6 +5177,10 @@ where
             step_indexes,
             wrap_indexes: Some(wrap_indexes),
             template,
+            #[cfg(target_arch = "wasm32")]
+            step_scratch: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            wrap_scratch: Default::default(),
         })
     }
 
@@ -5320,10 +5357,15 @@ where
         let indexes = self.step_indexes[branch_index]
             .take()
             .expect("compiled program Step indexes");
+        #[cfg(target_arch = "wasm32")]
+        let step_scratch = Some(&mut self.step_scratch);
+        #[cfg(not(target_arch = "wasm32"))]
+        let step_scratch = None;
         let (step, indexes) = crate::recursive_step::prove_prepared_recursive_step_width2_arity(
             prepared,
             Some(main),
             Some(indexes),
+            step_scratch,
         );
         self.step_indexes[branch_index] = Some(indexes);
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0_arity::<
@@ -5359,8 +5401,15 @@ where
             .wrap_indexes
             .take()
             .expect("compiled program Wrap indexes");
-        let (wrap, indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(indexes));
+        #[cfg(target_arch = "wasm32")]
+        let wrap_scratch = Some(&mut self.wrap_scratch);
+        #[cfg(not(target_arch = "wasm32"))]
+        let wrap_scratch = None;
+        let (wrap, indexes) = crate::recursive_step::prove_prepared_recursive_wrap(
+            prepared_wrap,
+            Some(indexes),
+            wrap_scratch,
+        );
         self.wrap_indexes = Some(indexes);
         let proof = wrap
             .to_mina_network_proof(step.verifier.index.domain.log_size_of_group as u8)
@@ -5628,6 +5677,16 @@ where
             prepared,
             Some(main),
             Some(indexes),
+            {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Some(&mut self.step_scratch)
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    None
+                }
+            },
         );
         self.step_indexes[branch_index] = Some(indexes);
         prove_stage!("step proved");
@@ -5676,7 +5735,16 @@ where
             .take()
             .expect("compiled program Wrap indexes");
         let (wrap, indexes) =
-            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(indexes));
+            crate::recursive_step::prove_prepared_recursive_wrap(prepared_wrap, Some(indexes), {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Some(&mut self.wrap_scratch)
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    None
+                }
+            });
         self.wrap_indexes = Some(indexes);
         let proof = wrap
             .to_mina_network_proof(step.verifier.index.domain.log_size_of_group as u8)

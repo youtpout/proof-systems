@@ -163,7 +163,11 @@ where
     pub fn from_cached_verifier(
         circuit: Circuit,
         srs_log2: Option<u32>,
-        verifier: kimchi::verifier_index::VerifierIndex<FULL_ROUNDS, Circuit::Curve, SrsOf<Circuit>>,
+        verifier: kimchi::verifier_index::VerifierIndex<
+            FULL_ROUNDS,
+            Circuit::Curve,
+            SrsOf<Circuit>,
+        >,
     ) -> Result<(Self, VerifierIndexWrapper<Circuit>), String>
     where
         <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
@@ -273,6 +277,38 @@ where
         EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
         EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
     {
+        self.prove_with_recursion_mask_and_scratch::<EFqSponge, EFrSponge>(
+            public_input,
+            private_input,
+            debug,
+            prev_challenges,
+            prev_challenges_mask,
+            None,
+        )
+    }
+
+    /// Scratch-aware variant used by long-lived Pickles program handles.
+    pub fn prove_with_recursion_mask_and_scratch<EFqSponge, EFrSponge>(
+        &mut self,
+        public_input: <Circuit::PublicInput as SnarkyType<ScalarField<Circuit::Curve>>>::OutOfCircuit,
+        private_input: Circuit::PrivateInput,
+        debug: bool,
+        prev_challenges: Vec<kimchi::proof::RecursionChallenge<Circuit::Curve>>,
+        prev_challenges_mask: Option<&[bool]>,
+        scratch: Option<&mut kimchi::prover::ProverScratch<ScalarField<Circuit::Curve>>>,
+    ) -> SnarkyResult<(Proof<Circuit>, Box<Output<Circuit>>)>
+    where
+        <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
+        EFqSponge: Clone
+            + FqSponge<
+                BaseField<Circuit::Curve>,
+                Circuit::Curve,
+                ScalarField<Circuit::Curve>,
+                FULL_ROUNDS,
+            >,
+        EFrSponge: FrSponge<ScalarField<Circuit::Curve>>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<ScalarField<Circuit::Curve>, FULL_ROUNDS>>,
+    {
         kimchi::live_trace::checkpoint("snarky: prove begin");
         // create public input
         let public_input_without_output =
@@ -348,7 +384,10 @@ where
                             eprintln!("[witness-debug] PI[{i}] DIVERGES: claimed={expected} recomputed={got}");
                         }
                     }
-                    eprintln!("[witness-debug] PI comparison done ({} slots)", public_input_and_output.len());
+                    eprintln!(
+                        "[witness-debug] PI comparison done ({} slots)",
+                        public_input_and_output.len()
+                    );
                 }
                 let labels = self.gate_labels();
                 let gates = &self.index.cs.gates;
@@ -385,7 +424,11 @@ where
 
         // TODO: return error instead of panicking
         let proof: Proof<Circuit> =
-            ProverProof::create_recursive_with_recursion_mask::<EFqSponge, EFrSponge, _>(
+            ProverProof::create_recursive_with_recursion_mask_and_scratch::<
+                EFqSponge,
+                EFrSponge,
+                _,
+            >(
                 &group_map,
                 witness.0,
                 &[],
@@ -393,6 +436,7 @@ where
                 prev_challenges,
                 prev_challenges_mask,
                 None,
+                scratch,
                 &mut rand::rngs::OsRng,
             )
             .unwrap();

@@ -57,6 +57,14 @@ use rayon::prelude::*;
 /// The result of a proof creation or verification.
 type Result<T> = core::result::Result<T, ProverError>;
 
+/// Domain-sized witness-column allocations retained by a higher-level prover
+/// handle. This is especially useful on wasm32, where freeing a `Vec` does not
+/// shrink linear memory and a later proof would otherwise grow it again.
+#[derive(Default)]
+pub struct ProverScratch<F> {
+    witness_columns: Option<[Vec<F>; COLUMNS]>,
+}
+
 /// Helper to quickly test if a witness satisfies a constraint
 macro_rules! check_constraint {
     ($index:expr, $evaluation:expr) => {{
@@ -205,7 +213,7 @@ where
     /// Fr digest and the IPA opening.
     pub fn create_recursive_with_recursion_mask<EFqSponge, EFrSponge, RNG>(
         group_map: &G::Map,
-        mut witness: [Vec<G::ScalarField>; COLUMNS],
+        witness: [Vec<G::ScalarField>; COLUMNS],
         runtime_tables: &[RuntimeTable<G::ScalarField>],
         index: &ProverIndex<FULL_ROUNDS, G, OpeningProof::SRS>,
         prev_challenges: Vec<RecursionChallenge<G>>,
@@ -220,6 +228,58 @@ where
         RNG: RngCore + CryptoRng,
         VerifierIndex<FULL_ROUNDS, G, OpeningProof::SRS>: Clone,
     {
+        Self::create_recursive_with_recursion_mask_and_scratch::<EFqSponge, EFrSponge, RNG>(
+            group_map,
+            witness,
+            runtime_tables,
+            index,
+            prev_challenges,
+            prev_challenges_mask,
+            blinders,
+            None,
+            rng,
+        )
+    }
+
+    /// Scratch-aware variant of [`Self::create_recursive_with_recursion_mask`].
+    /// The proof is identical; only domain-sized witness allocations are
+    /// recycled between calls.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_recursive_with_recursion_mask_and_scratch<EFqSponge, EFrSponge, RNG>(
+        group_map: &G::Map,
+        mut witness: [Vec<G::ScalarField>; COLUMNS],
+        runtime_tables: &[RuntimeTable<G::ScalarField>],
+        index: &ProverIndex<FULL_ROUNDS, G, OpeningProof::SRS>,
+        prev_challenges: Vec<RecursionChallenge<G>>,
+        prev_challenges_mask: Option<&[bool]>,
+        blinders: Option<[Option<PolyComm<G::ScalarField>>; COLUMNS]>,
+        mut scratch: Option<&mut ProverScratch<G::ScalarField>>,
+        rng: &mut RNG,
+    ) -> Result<Self>
+    where
+        EFqSponge: Clone + FqSponge<G::BaseField, G, G::ScalarField, FULL_ROUNDS>,
+        EFrSponge: FrSponge<G::ScalarField>,
+        EFrSponge: From<&'static ArithmeticSpongeParams<G::ScalarField, FULL_ROUNDS>>,
+        RNG: RngCore + CryptoRng,
+        VerifierIndex<FULL_ROUNDS, G, OpeningProof::SRS>: Clone,
+    {
+        if let Some(columns) = scratch
+            .as_deref_mut()
+            .and_then(|scratch| scratch.witness_columns.take())
+        {
+            let destinations: Vec<_> = columns
+                .into_iter()
+                .zip(witness)
+                .map(|(mut destination, source)| {
+                    destination.clear();
+                    destination.extend(source);
+                    destination
+                })
+                .collect();
+            witness = destinations
+                .try_into()
+                .expect("one scratch buffer per witness column");
+        }
         let default_prev_challenges_mask;
         let prev_challenges_mask = if let Some(mask) = prev_challenges_mask {
             assert_eq!(
@@ -374,20 +434,13 @@ where
                 .collect(),
         };
         let w_comm_opt_res: Vec<Result<_>> = witness
-            .clone()
-            .into_par_iter()
+            .par_iter()
             .zip(blinders_final.into_par_iter())
             .map(|(witness, blinder)| {
-                let witness_eval =
-                    Evaluations::<G::ScalarField, D<G::ScalarField>>::from_vec_and_domain(
-                        witness,
-                        index.cs.domain.d1,
-                    );
-
                 // TODO: make this a function rather no? mask_with_custom()
                 let witness_com = index
                     .srs
-                    .commit_evaluations_non_hiding(index.cs.domain.d1, &witness_eval);
+                    .commit_evaluations_non_hiding_from_slice(index.cs.domain.d1, witness);
                 let com = index
                     .srs
                     .mask_custom(witness_com, &blinder)
@@ -409,23 +462,6 @@ where
         w_comm
             .iter()
             .for_each(|c| absorb_commitment(&mut fq_sponge, &c.commitment));
-
-        //~ 1. Compute the witness polynomials by interpolating each `COLUMNS` of the witness.
-        //~    As mentioned above, we commit using the evaluations form rather than the coefficients
-        //~    form so we can take advantage of the sparsity of the evaluations (i.e., there are many
-        //~    0 entries and entries that have less-than-full-size field elemnts.)
-        let witness_poly: [DensePolynomial<G::ScalarField>; COLUMNS] = (0..COLUMNS)
-            .into_par_iter()
-            .map(|i| {
-                Evaluations::<G::ScalarField, D<G::ScalarField>>::from_vec_and_domain(
-                    witness[i].clone(),
-                    index.cs.domain.d1,
-                )
-                .interpolate()
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
 
         let mut lookup_context = LookupContext::default();
 
@@ -706,6 +742,22 @@ where
         internal_tracing::checkpoint!(internal_traces; z_permutation_aggregation_polynomial);
         crate::live_trace::checkpoint("z_permutation_aggregation_polynomial");
         let z_poly = index.perm_aggreg(&witness, &beta, &gamma, rng)?;
+
+        //~ 1. Interpolate after the last evaluation-form consumer. The
+        //~    columns become the coefficient buffers in place instead of
+        //~    cloning another complete witness.
+        let witness_poly: [DensePolynomial<G::ScalarField>; COLUMNS] = Vec::from(witness)
+            .into_par_iter()
+            .map(|column| {
+                Evaluations::<G::ScalarField, D<G::ScalarField>>::from_vec_and_domain(
+                    column,
+                    index.cs.domain.d1,
+                )
+                .interpolate()
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
 
         //~ 1. Commit (hiding) to the permutation aggregation polynomial $z$.
         let z_comm = index.srs.commit(&z_poly, num_chunks, rng);
@@ -1545,6 +1597,22 @@ where
             ft_eval1,
             prev_challenges,
         };
+
+        drop(polynomials);
+        if let Some(scratch) = scratch {
+            let columns: Vec<_> = witness_poly
+                .into_iter()
+                .map(|mut polynomial| {
+                    polynomial.coeffs.clear();
+                    polynomial.coeffs
+                })
+                .collect();
+            scratch.witness_columns = Some(
+                columns
+                    .try_into()
+                    .expect("one scratch buffer per witness column"),
+            );
+        }
 
         internal_tracing::checkpoint!(internal_traces; create_recursive_done);
         crate::live_trace::checkpoint("create_recursive_done");

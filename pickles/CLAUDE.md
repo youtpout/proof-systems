@@ -22,6 +22,23 @@ toujours l'absence de régression (recorded 9/9 : N0/N1/N2).
 
 ## 🎉 JALON 2026-07-22 — PROVING DE TRANSACTION zkApp COMPLET (bout-en-bout)
 
+### PERF Rust-WASM — witness sans doubles clones + scratch partagé (2026-07-22)
+
+Le prover Kimchi sait engager directement les 15 colonnes witness depuis des
+slices, puis les consomme pour l'interpolation après leur dernier usage. Les
+allocations des polynômes witness sont rendues à un `ProverScratch` Fp/Fq
+conservé dans le handle `RecordedCompiledProgram` sur `wasm32` et partagé entre
+les branches Step/Wrap successives. Arkworks et jsoo sont inchangés ; le chemin
+natif ne conserve pas le scratch.
+
+Benchmark `zkapp-rust`, 3 runs, cache désactivé, 16 workers, N2 : proving total
+**21 430 → 16 773 ms (−21,7 %)**. Le pic RSS médian est inchangé dans la
+variance (**2 300,7 → 2 319,1 Mio**) : le prochain chantier mémoire doit viser
+les polynômes quotient/lookup/opening, pas les colonnes witness. Tests :
+`recorded_square_circuit_proves_and_verifies_standalone` et programme partagé
+N0/N1/N2 verts ; build `kimchi_wasm` release vert. Hash VK Add identique sur
+jsoo-wasm, jsoo-natif, rust-wasm et rust-natif : `1095939296623350971574867830…`.
+
 **Un SmartContract o1js se compile, se prouve ET se soumet au ledger sur le
 backend rust-wasm.** Le zkApp `Counter` (lecture d'état + `@method`) : `compile`
 (VK) → `tx.prove()` → `tx.send()` → état on-chain mis à jour, validé bout-en-bout
