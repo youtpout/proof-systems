@@ -30,6 +30,7 @@ pub mod incrementally_verify;
 pub mod inductive_rule;
 pub mod ipa;
 pub mod mina_bin_prot;
+pub mod mina_sexp;
 pub mod opt_sponge;
 pub mod oracles;
 pub mod plonk_checks;

@@ -1435,7 +1435,7 @@ fn field_low_u8<F: PrimeField>(field: &F) -> u8 {
         .unwrap_or(0)
 }
 
-fn branch_data_proofs_verified(field: &Fq) -> Result<usize, BinProtError> {
+pub(crate) fn branch_data_proofs_verified(field: &Fq) -> Result<usize, BinProtError> {
     let byte = field_low_u8(field);
     // The low two bits are the proofs-verified prefix mask
     // (`Proofs_verified.to_bool_vec`): 0b00 → 0, 0b10 → 1, 0b11 → 2 proofs;
@@ -1448,7 +1448,7 @@ fn branch_data_proofs_verified(field: &Fq) -> Result<usize, BinProtError> {
     }
 }
 
-fn branch_data_domain_log2(field: &Fq) -> Result<u8, BinProtError> {
+pub(crate) fn branch_data_domain_log2(field: &Fq) -> Result<u8, BinProtError> {
     Ok(field_low_u8(field) >> 2)
 }
 

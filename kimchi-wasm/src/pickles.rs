@@ -1388,6 +1388,19 @@ pub fn rust_pickles_prove_recorded_base_keep(
     Ok(WasmRecordedBaseHandle(handle))
 }
 
+/// The Mina transaction authorization proof string (base64 of the OCaml
+/// `Side_loaded.Proof.to_base64` sexp) for a kept base proof — the value that
+/// goes in an account update's `authorization.proof`.
+#[wasm_bindgen]
+pub fn rust_pickles_recorded_base_transaction_base64(
+    handle: &WasmRecordedBaseHandle,
+) -> Result<String, JsError> {
+    handle
+        .0
+        .to_transaction_base64()
+        .map_err(|err| JsError::new(&format!("transaction proof encoding failed: {err:?}")))
+}
+
 /// The `{ appState, proof }` envelope of a kept base proof.
 #[wasm_bindgen]
 pub fn rust_pickles_recorded_base_envelope(

@@ -5482,6 +5482,20 @@ impl RecordedProofHandle {
         }
     }
 
+    /// The Mina transaction authorization proof: base64 of the OCaml
+    /// `Pickles.Side_loaded.Proof.to_base64` S-expression, i.e. the string
+    /// that goes in an account update's `authorization.proof`. Only base-case
+    /// (N0) proofs are supported for now.
+    pub fn to_transaction_base64(&self) -> Result<String, RecordedProveError> {
+        match &self.inner {
+            RecordedProofInner::R16(base) => Ok(base
+                .to_mina_stable_v3()
+                .map_err(RecordedProveError::Backend)?
+                .to_transaction_base64()),
+            _ => Err(RecordedProveError::UnsupportedStepRounds(0)),
+        }
+    }
+
     /// Returns the recursive verification envelope, or `None` for a base
     /// handle that has not entered a recursive cycle yet.
     pub fn to_recorded_n1_proof(&self) -> Option<RecordedN1Proof> {
