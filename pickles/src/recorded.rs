@@ -1176,8 +1176,9 @@ pub struct RecordedProof {
 
 macro_rules! prove_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $($rounds:literal),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {
@@ -1287,8 +1288,9 @@ const RECORDED_N2_WRAP_STMT_LEN: usize = 13 + RECORDED_N2_STEP_ROUNDS + 11;
 
 macro_rules! prove_n1_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $($rounds:literal),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {
@@ -1362,8 +1364,9 @@ pub fn prove_recorded_n1(
 
 macro_rules! prove_stable_n1_at_rounds {
     ($app:ident, $witness:ident, $public:ident, $additional_stable_cycles:ident; $($rounds:literal),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {
@@ -1432,8 +1435,9 @@ pub fn prove_recorded_stable_n1(
 
 macro_rules! prove_n2_at_rounds {
     ($app:ident, $first_witness:ident, $second_witness:ident, $first_state:ident, $second_state:ident, $public:ident; $($rounds:literal),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {
@@ -1716,8 +1720,9 @@ impl RecordedCompiledBase {
             circuit: circuit.clone(),
         };
         crate::common::warm_recursion_caches(false);
-        let domain_log2 = measure_step_rounds(app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?;
+        let domain_log2 = measure_step_rounds(app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?;
         if domain_log2 != 16 {
             return Err(RecordedProveError::UnsupportedStepRounds(domain_log2));
         }
@@ -1745,8 +1750,9 @@ impl RecordedCompiledBase {
             circuit: circuit.clone(),
         };
         crate::common::warm_recursion_caches(false);
-        let domain_log2 = measure_step_rounds(app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?;
+        let domain_log2 = measure_step_rounds(app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?;
         if domain_log2 != 16 {
             return Err(RecordedProveError::UnsupportedStepRounds(domain_log2));
         }
@@ -6087,8 +6093,9 @@ enum RecordedProofInner {
 
 macro_rules! prove_base_keep_at_rounds {
     ($app:ident, $witness:ident, $public:ident; $(($rounds:literal, $variant:ident)),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {
@@ -6316,8 +6323,9 @@ pub fn prove_recorded_n2_over_base_handles(
 
 macro_rules! wrap_dump_at_rounds {
     ($app:ident, $witness:ident; $($rounds:literal),+) => {
-        match measure_step_rounds($app.clone())
-            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?
+        match measure_step_rounds($app.clone()).map_err(|err| {
+            RecordedProveError::Program(format!("step domain measurement failed: {err:?}"))
+        })?
         {
             $(
                 $rounds => {

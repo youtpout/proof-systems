@@ -333,6 +333,58 @@ where
 /// Seeds the in-memory Lagrange-basis cache for `curve` ("vesta"/"pallas")
 /// and `2^domain_log2` from a jsoo cache payload. Returns `false` on any
 /// mismatch (the basis is then recomputed on demand).
+/// Seeds a Lagrange basis from a raw payload ([`LAGRANGE_RAW_MAGIC`]), the
+/// counterpart of [`seed_lagrange_basis_jsoo`] for hosts that keep their own
+/// cache rather than sharing o1js's.
+pub fn seed_lagrange_basis_raw(curve: &str, domain_log2: u32, bytes: &[u8]) -> bool {
+    let domain_size = 1usize << domain_log2;
+    match curve {
+        "vesta" => {
+            let Some(basis) = decode_lagrange_basis_raw::<Vesta>(bytes, domain_size) else {
+                return false;
+            };
+            tick_srs(1 << TICK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        "pallas" => {
+            let Some(basis) = decode_lagrange_basis_raw::<Pallas>(bytes, domain_size) else {
+                return false;
+            };
+            tock_srs(1 << TOCK_ROUNDS)
+                .lagrange_bases()
+                .set_once(domain_size, basis);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Exports a computed Lagrange basis as a raw payload; `None` when the basis
+/// is not (yet) in the in-memory cache.
+pub fn export_lagrange_basis_raw(curve: &str, domain_log2: u32) -> Option<Vec<u8>> {
+    let domain_size = 1usize << domain_log2;
+    fn export<G>(srs: &SRS<G>, domain_size: usize) -> Option<Vec<u8>>
+    where
+        G: poly_commitment::commitment::CommitmentCurve,
+        G::BaseField: ark_ff::PrimeField,
+    {
+        if !srs.lagrange_bases().contains_key(&domain_size) {
+            return None;
+        }
+        let basis = srs
+            .lagrange_bases()
+            .get_or_generate(domain_size, || unreachable!("checked contains_key"));
+        encode_lagrange_basis_raw(&basis)
+    }
+    match curve {
+        "vesta" => export(&tick_srs(1 << TICK_ROUNDS), domain_size),
+        "pallas" => export(&tock_srs(1 << TOCK_ROUNDS), domain_size),
+        _ => None,
+    }
+}
+
 pub fn seed_lagrange_basis_jsoo(curve: &str, domain_log2: u32, bytes: &[u8]) -> bool {
     let domain_size = 1usize << domain_log2;
     match curve {
