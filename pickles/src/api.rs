@@ -2481,6 +2481,25 @@ where
         }
     }
 
+    /// Compiles the Step indexes alone, leaving the Wrap indexes empty.
+    ///
+    /// A branch of a shared program never uses a Wrap index of its own: the
+    /// program builds ONE shared Wrap from every branch's Step verifier, and
+    /// both the verification key and `prove_keep` read that shared index.
+    /// Compiling a per-branch Wrap only to drop it costs most of the
+    /// per-branch compile time, so a program compiles its branches this way.
+    ///
+    /// The resulting case cannot prove on its own; only a program that owns a
+    /// shared Wrap can drive it.
+    pub fn compile_step_only(app: A) -> Self {
+        Self {
+            step_indexes: Some(build_step_indexes::<A>(app.clone())),
+            app,
+            wrap_vk_pts: Vec::new(),
+            wrap_indexes: None,
+        }
+    }
+
     pub fn prove(&mut self, witness: A::Witness) -> BaseCaseProof<A, ROUNDS, STMT_LEN> {
         let step_indexes = self.step_indexes.take().expect("compiled Step indexes");
         let wrap_indexes = self.wrap_indexes.take().expect("compiled Wrap indexes");
@@ -2636,6 +2655,15 @@ pub(crate) fn build_shared_base_wrap(
     (wrap_prover, wrap_verifier)
 }
 
+/// Compiles a Step circuit to its prover and verifier indexes. Mina proves
+/// over the full Tick SRS (2^16) regardless of the circuit's domain, so step
+/// IPA proofs always have 16 rounds.
+pub(crate) fn build_step_indexes<A: StepApp>(app: A) -> StepIndexes<A> {
+    StepCircuit { app }
+        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
+        .unwrap()
+}
+
 pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: usize>(
     app: A,
     witness: A::Witness,
@@ -2653,13 +2681,9 @@ pub(crate) fn build_base_case<A: StepApp, const ROUNDS: usize, const STMT_LEN: u
     );
     // ---- step proof ----
     let app_state = app.state(&witness);
-    // Mina proves over the full Tick SRS (2^16) regardless of the circuit's
-    // domain, so step IPA proofs always have 16 rounds.
     let (mut step_pi, step_ver) = match step_indexes {
         Some(indexes) => indexes,
-        None => StepCircuit { app }
-            .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TICK_ROUNDS as u32))
-            .unwrap(),
+        None => build_step_indexes(app),
     };
     let svi = &step_ver.index;
 

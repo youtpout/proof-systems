@@ -1727,6 +1727,35 @@ impl RecordedCompiledBase {
         })
     }
 
+    /// Compiles only the Step indexes, for a branch of a shared program that
+    /// takes its Wrap from the program instead of building its own. The
+    /// result cannot prove standalone; see
+    /// [`crate::api::CompiledBaseCase::compile_step_only`].
+    pub fn compile_step_only(
+        circuit: RecordedCircuit,
+        witness_len: usize,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness_len != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness_len),
+            ));
+        }
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        crate::common::warm_recursion_caches(false);
+        let domain_log2 = measure_step_rounds(app.clone())
+            .map_err(|_| RecordedProveError::UnsupportedStepRounds(0))?;
+        if domain_log2 != 16 {
+            return Err(RecordedProveError::UnsupportedStepRounds(domain_log2));
+        }
+        Ok(Self {
+            circuit,
+            compiled: crate::api::CompiledBaseCase::compile_step_only(app),
+        })
+    }
+
     /// The canonical Mina side-loaded verification key of this circuit:
     /// the bin_prot bytes base64-encoded (what o1js `verificationKey.data`
     /// holds on the jsoo side) and its Mina account-level hash.
@@ -1891,15 +1920,16 @@ impl RecordedCompiledBaseProgram {
                 "a base program requires every branch to be non-recursive".into(),
             ));
         }
-        // A standalone base compilation also creates a per-branch Wrap index.
-        // It is not used by a shared program, and retaining one for every
-        // method creates a large transient peak in browser WASM. Keep only
-        // each Step index as soon as its compilation finishes.
+        // A shared program takes its Wrap from `build_shared_base_wrap` below,
+        // so a per-branch Wrap index would be built only to be dropped — most
+        // of the per-branch compile time, and a large transient peak in
+        // browser WASM. Compile each branch to its Step indexes alone.
         let mut compiled = Vec::with_capacity(branches.len());
         for branch in branches {
-            let mut base = RecordedCompiledBase::compile(branch.circuit, branch.witness)?;
-            base.compiled.wrap_indexes = None;
-            compiled.push(base);
+            compiled.push(RecordedCompiledBase::compile_step_only(
+                branch.circuit,
+                branch.witness.len(),
+            )?);
         }
         let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = compiled
             .iter()
