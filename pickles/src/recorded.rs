@@ -1756,6 +1756,29 @@ impl RecordedCompiledBase {
         })
     }
 
+    /// The compact counterpart of [`Self::compile_step_only`], adopting a
+    /// cached step verifier index instead of committing the circuit's fixed
+    /// columns again.
+    pub fn restore_step_only(
+        circuit: RecordedCircuit,
+        witness_len: usize,
+        verifier: RecordedRawStepVerifier,
+    ) -> Result<Self, RecordedProveError> {
+        circuit.validate()?;
+        if witness_len != circuit.aux_count as usize {
+            return Err(RecordedProveError::Circuit(
+                RecordedCircuitError::WrongWitnessLength(witness_len),
+            ));
+        }
+        let app = RecordedApp {
+            circuit: circuit.clone(),
+        };
+        crate::common::warm_recursion_caches(false);
+        let compiled = crate::api::CompiledBaseCase::restore_step_only(app, verifier)
+            .map_err(RecordedProveError::Program)?;
+        Ok(Self { circuit, compiled })
+    }
+
     /// The canonical Mina side-loaded verification key of this circuit:
     /// the bin_prot bytes base64-encoded (what o1js `verificationKey.data`
     /// holds on the jsoo side) and its Mina account-level hash.
@@ -1962,6 +1985,120 @@ impl RecordedCompiledBaseProgram {
             .collect();
         let wrap_indexes = crate::api::build_shared_base_wrap(&step_verifiers);
         let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        Ok(Self {
+            branches: compiled,
+            wrap_indexes: Some(wrap_indexes),
+            wrap_vk_pts,
+            wrap_branches,
+            wrap_statement_lagranges,
+        })
+    }
+
+    /// The program's verifier indexes, as a cache payload that
+    /// [`Self::from_cache_bytes`] can restore. Only verifier indexes travel,
+    /// so the payload is kilobytes rather than the hundreds of megabytes a
+    /// prover-index cache would need.
+    pub fn to_cache_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut step_verifiers = Vec::with_capacity(self.branches.len());
+        for branch in &self.branches {
+            let pair = branch
+                .compiled
+                .step_indexes
+                .as_ref()
+                .ok_or_else(|| "compiled Step index is temporarily in use".to_string())?;
+            step_verifiers.push(rmp_serde::to_vec(&pair.1.index).map_err(|err| err.to_string())?);
+        }
+        let wrap = self
+            .wrap_indexes
+            .as_ref()
+            .ok_or_else(|| "compiled Wrap index is temporarily in use".to_string())?;
+        rmp_serde::to_vec(&RecordedBaseProgramIndexCache {
+            version: RECORDED_BASE_PROGRAM_CACHE_VERSION,
+            branches_digest: recorded_base_program_branches_digest(&self.branches),
+            step_verifiers,
+            wrap_verifier: rmp_serde::to_vec(&wrap.1.index).map_err(|err| err.to_string())?,
+        })
+        .map_err(|err| err.to_string())
+    }
+
+    /// The warm-compile path: every constraint system is re-synthesized, but
+    /// the cached commitments replace the multi-scalar multiplications that
+    /// dominate a cold compile.
+    pub fn from_cache_bytes(
+        branches: Vec<RecordedProgramBranch>,
+        bytes: &[u8],
+    ) -> Result<Self, RecordedProveError> {
+        let fail = |message: String| RecordedProveError::Program(message);
+        if branches.is_empty() {
+            return Err(fail("a program has at least one branch".into()));
+        }
+        if branches.iter().any(|branch| branch.proofs_verified != 0) {
+            return Err(fail(
+                "a base program requires every branch to be non-recursive".into(),
+            ));
+        }
+        let cache: RecordedBaseProgramIndexCache =
+            rmp_serde::from_slice(bytes).map_err(|err| fail(err.to_string()))?;
+        if cache.version != RECORDED_BASE_PROGRAM_CACHE_VERSION {
+            return Err(fail(
+                "cached indexes belong to a different cache version".into(),
+            ));
+        }
+        if cache.step_verifiers.len() != branches.len() {
+            return Err(fail("cached step index count mismatch".into()));
+        }
+
+        let mut compiled = Vec::with_capacity(branches.len());
+        for (branch, verifier_bytes) in branches.iter().zip(&cache.step_verifiers) {
+            let raw: RecordedRawStepVerifier =
+                rmp_serde::from_slice(verifier_bytes).map_err(|err| fail(err.to_string()))?;
+            compiled.push(RecordedCompiledBase::restore_step_only(
+                branch.circuit.clone(),
+                branch.witness.len(),
+                restore_step_verifier(raw),
+            )?);
+        }
+        if cache.branches_digest != recorded_base_program_branches_digest(&compiled) {
+            return Err(fail(
+                "cached indexes belong to a different program".into(),
+            ));
+        }
+        let step_verifiers: Vec<&crate::api::SharedStepVerifierIndex> = compiled
+            .iter()
+            .map(|base| {
+                &base
+                    .compiled
+                    .step_indexes
+                    .as_ref()
+                    .expect("restored Step indexes")
+                    .1
+                    .index
+            })
+            .collect();
+        let wrap_branches = step_verifiers
+            .iter()
+            .map(|svi| crate::api::WrapBranchData::from_step_verifier(svi, 0))
+            .collect();
+        let step_statement = vec![crate::api::WrapStepStatementSlot::Packed {
+            value: Fq::from(0u64),
+            num_bits: 255,
+        }];
+        let wrap_statement_lagranges = step_verifiers
+            .iter()
+            .map(|svi| {
+                crate::recursive_step::step_statement_lagranges_for_domain(
+                    svi.domain.log_size_of_group as u32,
+                    &step_statement,
+                )
+            })
+            .collect();
+        let wrap_raw: RecordedRawWrapVerifier =
+            rmp_serde::from_slice(&cache.wrap_verifier).map_err(|err| fail(err.to_string()))?;
+        let wrap_indexes =
+            crate::api::restore_shared_base_wrap(&step_verifiers, restore_wrap_verifier(wrap_raw))
+                .map_err(fail)?;
+        let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        drop(step_verifiers);
         Ok(Self {
             branches: compiled,
             wrap_indexes: Some(wrap_indexes),
@@ -3896,6 +4033,32 @@ fn restore_wrap_verifier(mut vi: RecordedRawWrapVerifier) -> RecordedRawWrapVeri
         crate::common::tock_srs(1 << crate::common::TOCK_ROUNDS),
     );
     vi
+}
+
+const RECORDED_BASE_PROGRAM_CACHE_VERSION: u32 = 1;
+
+/// The base-program counterpart of [`RecordedProgramIndexCache`]. Every
+/// branch of a base program is non-recursive, so the payload only needs the
+/// per-branch step verifier indexes and the one shared wrap verifier.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecordedBaseProgramIndexCache {
+    version: u32,
+    branches_digest: [u8; 32],
+    /// Per-branch step VERIFIER indexes (rmp) — the prover indexes are
+    /// rebuilt from the re-synthesized circuits.
+    step_verifiers: Vec<Vec<u8>>,
+    /// The shared wrap VERIFIER index (rmp).
+    wrap_verifier: Vec<u8>,
+}
+
+fn recorded_base_program_branches_digest(branches: &[RecordedCompiledBase]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for branch in branches {
+        hasher.update([0u8]);
+        hasher.update(serde_json::to_vec(&branch.circuit).expect("circuit serializes"));
+    }
+    hasher.finalize().into()
 }
 
 fn recorded_program_branches_digest(branches: &[RecordedProgramBranch]) -> [u8; 32] {
@@ -6385,5 +6548,52 @@ mod shared_base_lookup_tests {
         program
             .prove_keep(1, vec![Fp::from(0u64); 15])
             .expect("prove lookup branch");
+    }
+
+    /// The verifier-index cache must preserve the program's verification key
+    /// and still prove, at a fraction of a cold compile's cost.
+    #[test]
+    fn base_program_cache_roundtrip_keeps_the_vk_and_proves() {
+        let square = RecordedCircuit {
+            previous_proof_widths: vec![],
+            aux_count: 2,
+            output: vec![LinComb::var(0), LinComb::var(1)],
+            constraints: vec![RecordedConstraint::Square {
+                v: LinComb::var(0),
+                square: LinComb::var(1),
+            }],
+            previous_state_slots: vec![],
+        };
+        let branches = vec![
+            branch(square.clone(), vec![Fp::from(6u64), Fp::from(36u64)]),
+            branch(square, vec![Fp::from(6u64), Fp::from(36u64)]),
+        ];
+        let compiled = RecordedCompiledBaseProgram::compile(branches.clone())
+            .expect("compile base program");
+        let vk_cold = compiled
+            .verification_key_envelope()
+            .expect("cold verification key");
+        let bytes = compiled.to_cache_bytes().expect("cache bytes");
+        drop(compiled);
+        // A verifier-index payload stays orders of magnitude below the
+        // hundreds of megabytes a prover-index cache would need.
+        assert!(
+            bytes.len() < 2 * 1024 * 1024,
+            "verifier cache unexpectedly large: {} bytes",
+            bytes.len()
+        );
+
+        let mut restored = RecordedCompiledBaseProgram::from_cache_bytes(branches, &bytes)
+            .expect("restore base program");
+        assert_eq!(
+            restored
+                .verification_key_envelope()
+                .expect("restored verification key"),
+            vk_cold,
+            "cache round-trip changed the verification key"
+        );
+        restored
+            .prove_keep(1, vec![Fp::from(6u64), Fp::from(36u64)])
+            .expect("prove from the restored program");
     }
 }

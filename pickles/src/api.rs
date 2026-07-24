@@ -2500,6 +2500,25 @@ where
         }
     }
 
+    /// The compact counterpart of [`Self::compile_step_only`]: adopts an
+    /// already-known step verifier index instead of committing the circuit's
+    /// fixed columns again. Only the constraint system is re-synthesized, so
+    /// a cache needs to carry the verifier index (kilobytes) rather than a
+    /// whole prover index (hundreds of megabytes).
+    pub fn restore_step_only(app: A, verifier: SharedStepVerifierIndex) -> Result<Self, String> {
+        let step_indexes = snarky::api::ProverIndexWrapper::from_cached_verifier(
+            StepCircuit { app: app.clone() },
+            Some(crate::common::TICK_ROUNDS as u32),
+            verifier,
+        )?;
+        Ok(Self {
+            app,
+            wrap_vk_pts: Vec::new(),
+            step_indexes: Some(step_indexes),
+            wrap_indexes: None,
+        })
+    }
+
     pub fn prove(&mut self, witness: A::Witness) -> BaseCaseProof<A, ROUNDS, STMT_LEN> {
         let step_indexes = self.step_indexes.take().expect("compiled Step indexes");
         let wrap_indexes = self.wrap_indexes.take().expect("compiled Wrap indexes");
@@ -2561,6 +2580,37 @@ pub(crate) fn build_shared_base_wrap(
     snarky::api::ProverIndexWrapper<WrapCircuit<16, 40>>,
     snarky::api::VerifierIndexWrapper<WrapCircuit<16, 40>>,
 ) {
+    WrapCircuit::<16, 40> {
+        w: Some(shared_base_wrap_witness(step_verifiers)),
+    }
+    .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
+    .unwrap()
+}
+
+/// Rebuilds the shared wrap around an already-known verifier index, skipping
+/// the multi-scalar multiplications that commit its fixed columns. The
+/// constraint system is re-synthesized (it is cheap next to the commitments)
+/// and the cached commitments are adopted as-is.
+pub(crate) fn restore_shared_base_wrap(
+    step_verifiers: &[&SharedStepVerifierIndex],
+    cached: kimchi::verifier_index::VerifierIndex<FULL_ROUNDS, Pallas, poly_commitment::ipa::SRS<Pallas>>,
+) -> Result<
+    (
+        snarky::api::ProverIndexWrapper<WrapCircuit<16, 40>>,
+        snarky::api::VerifierIndexWrapper<WrapCircuit<16, 40>>,
+    ),
+    String,
+> {
+    snarky::api::ProverIndexWrapper::from_cached_verifier(
+        WrapCircuit::<16, 40> {
+            w: Some(shared_base_wrap_witness(step_verifiers)),
+        },
+        Some(crate::common::TOCK_ROUNDS as u32),
+        cached,
+    )
+}
+
+fn shared_base_wrap_witness(step_verifiers: &[&SharedStepVerifierIndex]) -> WrapWitnessData {
     use ark_ec::{AffineRepr, CurveGroup};
     assert!(
         !step_verifiers.is_empty(),
@@ -2648,11 +2698,7 @@ pub(crate) fn build_shared_base_wrap(
         h: (svi0.srs().h.x, svi0.srs().h.y),
         new_acc_dummies: dummy_wrap_chals,
     };
-    let circuit = WrapCircuit::<16, 40> { w: Some(wdata) };
-    let (wrap_prover, wrap_verifier) = circuit
-        .compile_to_indexes_with_domain_and_srs(0, Some(crate::common::TOCK_ROUNDS as u32))
-        .unwrap();
-    (wrap_prover, wrap_verifier)
+    wdata
 }
 
 /// Compiles a Step circuit to its prover and verifier indexes. Mina proves
