@@ -211,6 +211,17 @@ where
         profile.prover_index_micros =
             (crate::wasm_instant::Instant::now() - lagrange_at).as_micros() as u64;
         record_compile_profile(profile);
+        if std::env::var_os("SNARKY_PROFILE_INDEX").is_some() {
+            eprintln!(
+                "  [restore] lowering={}ms cs={}ms lagrange={}ms prover_index={}ms gates={} domain=2^{}",
+                profile.lowering_micros / 1000,
+                profile.constraint_system_micros / 1000,
+                profile.lagrange_micros / 1000,
+                profile.prover_index_micros / 1000,
+                compiled_circuit.gates.len(),
+                verifier.domain.log_size_of_group,
+            );
+        }
         Ok((
             Self {
                 compiled_circuit,
