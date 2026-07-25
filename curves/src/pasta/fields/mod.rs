@@ -7,6 +7,10 @@ pub use self::fq::*;
 
 pub mod fft;
 
+/// Hand-written carry chains for the targets `ark-ff` leaves on portable Rust.
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum LegendreSymbol {
     Zero = 0,

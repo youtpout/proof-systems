@@ -24,6 +24,7 @@ ark-std.workspace = true
 num-bigint.workspace = true
 
 [dev-dependencies]
+rand_chacha.workspace = true
 rand.workspace = true
 ark-test-curves.workspace = true
 ark-algebra-test-templates.workspace = true
