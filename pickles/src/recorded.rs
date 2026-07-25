@@ -2274,6 +2274,27 @@ impl RecordedCompiledBaseProgram {
         else {
             unreachable!("program prove mode returns a proof")
         };
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            // Every prover phase is linear in the domain, so how much of it the
+            // circuits actually fill is where a proving budget starts.
+            let report = |label: &str, gates: usize, log2: u32| {
+                let domain = 1usize << log2;
+                eprintln!(
+                    "[base program prove] {label}: domain=2^{log2} ({domain} rows), gates={gates}, filled={:.0}%",
+                    100.0 * gates as f64 / domain as f64,
+                );
+            };
+            report(
+                &format!("step branch {branch_index}"),
+                step_indexes.0.index.cs.gates.len(),
+                step_indexes.1.index.domain.log_size_of_group,
+            );
+            report(
+                "wrap",
+                wrap_indexes.0.index.cs.gates.len(),
+                wrap_indexes.1.index.domain.log_size_of_group,
+            );
+        }
         branch.compiled.step_indexes = Some(step_indexes);
         self.wrap_indexes = Some(wrap_indexes);
         let mut network_proof = proof
@@ -2314,11 +2335,20 @@ impl RecordedCompiledBaseProgram {
             .map_err(|err| {
                 RecordedProveError::Program(format!("canonical program key encoding: {err:?}"))
             })?;
+        let verify_started = snarky::wasm_instant::Instant::now();
         crate::verify::verify_side_loaded_base_case(&app_state, &network_proof).map_err(|err| {
             RecordedProveError::Program(format!(
                 "shared base proof failed standalone network verification: {err:?}"
             ))
         })?;
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            // This self-check runs on every proof, so its cost is part of what
+            // a caller measures as proving time.
+            eprintln!(
+                "[base program prove] standalone verification: {:.2?}",
+                verify_started.elapsed()
+            );
+        }
         Ok(RecordedProofHandle {
             app_state,
             proof: network_proof,
