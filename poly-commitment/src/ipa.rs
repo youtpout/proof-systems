@@ -822,25 +822,21 @@ where
 
 /// Profiling-only breakdown of [`SRS::open`], the phase the prover spends most
 /// of its time in. `PICKLES_PROFILE` turns it on; without it nothing is
-/// allocated and no clock is read. Not available on wasm, which has no
-/// environment and no `Instant`.
+/// allocated and no clock is read. Absent on wasm, which has no environment
+/// and whose `Instant` panics at runtime.
+#[cfg(not(target_arch = "wasm32"))]
 struct OpenProfile {
     last: std::time::Instant,
     totals: Vec<(&'static str, std::time::Duration)>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl OpenProfile {
-    #[cfg(not(target_arch = "wasm32"))]
     fn new() -> Option<Self> {
         std::env::var_os("PICKLES_PROFILE").map(|_| Self {
             last: std::time::Instant::now(),
             totals: Vec::new(),
         })
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn new() -> Option<Self> {
-        None
     }
 
     /// Closes the interval opened by the previous call and adds it to `name`.
@@ -864,6 +860,21 @@ impl OpenProfile {
             );
         }
     }
+}
+
+/// Stand-in on wasm: the profiler is compiled out entirely.
+#[cfg(target_arch = "wasm32")]
+struct OpenProfile;
+
+#[cfg(target_arch = "wasm32")]
+impl OpenProfile {
+    fn new() -> Option<Self> {
+        None
+    }
+
+    fn lap(&mut self, _name: &'static str) {}
+
+    fn report(&self, _rounds: usize, _padded_length: usize) {}
 }
 
 /// Adds the time since the last lap to `name`, only when profiling is on.
