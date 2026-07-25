@@ -487,6 +487,43 @@ pub fn rust_pickles_compile_recorded_program_shared(
     Ok(External::new(compiled))
 }
 
+/// The cache id of a program, matching the browser binding of the same name
+/// so the o1js cache flow is transport-independent.
+#[napi(js_name = "rust_pickles_recorded_program_cache_key")]
+pub fn rust_pickles_recorded_program_cache_key(branches_json: String) -> Result<String> {
+    let branches = parse_recorded_program_branches(&branches_json)?;
+    Ok(pickles::recorded::RecordedCompiledBaseProgram::cache_key(
+        &branches,
+    ))
+}
+
+/// Serializes a compiled program's verifier indexes for the o1js cache.
+#[napi(js_name = "rust_pickles_recorded_program_cache_bytes")]
+pub fn rust_pickles_recorded_program_cache_bytes(
+    program: &External<pickles::recorded::RecordedCompiledBaseProgram>,
+) -> Result<Uint8Array> {
+    program
+        .to_cache_bytes()
+        .map(Uint8Array::from)
+        .map_err(|err| Error::from_reason(format!("program cache encode failed: {err}")))
+}
+
+/// Restores a compiled program from its cache payload, rebuilding the prover
+/// indexes around the cached verifiers instead of committing them again.
+#[napi(js_name = "rust_pickles_compile_recorded_program_from_cache_bytes")]
+pub fn rust_pickles_compile_recorded_program_from_cache_bytes(
+    branches_json: String,
+    cache_bytes: Uint8Array,
+) -> Result<External<pickles::recorded::RecordedCompiledBaseProgram>> {
+    let branches = parse_recorded_program_branches(&branches_json)?;
+    let compiled = pickles::recorded::RecordedCompiledBaseProgram::from_cache_bytes(
+        branches,
+        cache_bytes.as_ref(),
+    )
+    .map_err(|err| Error::from_reason(format!("program cache restore failed: {err:?}")))?;
+    Ok(External::new(compiled))
+}
+
 #[napi(js_name = "rust_pickles_recorded_program_vk_envelope")]
 pub fn rust_pickles_recorded_program_vk_envelope(
     program: &External<pickles::recorded::RecordedCompiledBaseProgram>,
