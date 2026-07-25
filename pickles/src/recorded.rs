@@ -5640,6 +5640,17 @@ where
             Some(indexes),
             step_scratch,
         );
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            // Every prover cost is linear in the domain, so how much of it the
+            // circuit actually fills is what a proving-time budget starts from.
+            let gates = indexes.0.index.cs.gates.len();
+            let domain = 1usize << indexes.1.index.domain.log_size_of_group;
+            eprintln!(
+                "[program prove] step branch {branch_index}: domain=2^{} ({domain} rows), gates={gates}, filled={:.0}%",
+                indexes.1.index.domain.log_size_of_group,
+                100.0 * gates as f64 / domain as f64,
+            );
+        }
         self.step_indexes[branch_index] = Some(indexes);
         let mut prepared_wrap = crate::recursive_step::prepare_recursive_wrap_n0_arity::<
             RecordedProgramTemplateApp,
@@ -5683,6 +5694,15 @@ where
             Some(indexes),
             wrap_scratch,
         );
+        if std::env::var_os("PICKLES_PROFILE").is_some() {
+            let gates = indexes.0.index.cs.gates.len();
+            let domain = 1usize << indexes.1.index.domain.log_size_of_group;
+            eprintln!(
+                "[program prove] wrap: domain=2^{} ({domain} rows), gates={gates}, filled={:.0}%",
+                indexes.1.index.domain.log_size_of_group,
+                100.0 * gates as f64 / domain as f64,
+            );
+        }
         self.wrap_indexes = Some(indexes);
         let proof = wrap
             .to_mina_network_proof(step.verifier.index.domain.log_size_of_group as u8)
