@@ -159,13 +159,13 @@ bcs = { git = "https://github.com/o1-labs/bcs", rev = "d9c996b0" }
 # Experiment (branch aarch64-field-mul): the ARM counterpart of the x86_64
 # assembly path, measured against the portable loop on a Pixel 3. The whole
 # family comes from the fork so the serialization traits stay one type.
-ark-ff = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-ec = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-poly = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-serialize = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-serialize-derive = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-ff-macros = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
-ark-ff-asm = { git = "https://github.com/youtpout/algebra", branch = "aarch64-mont-mul" }
+ark-ff = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-ec = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-poly = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-serialize = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-serialize-derive = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-ff-macros = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
+ark-ff-asm = { git = "https://github.com/youtpout/algebra", branch = "neon29-mont-mul" }
 
 [profile.release]
 lto = true

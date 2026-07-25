@@ -705,7 +705,7 @@ mod tests {
         fields::{Fp256, MontBackend, MontConfig},
         BigInt, UniformRand,
     };
-    use ark_std::{eprintln, rand::SeedableRng, time::Duration, time::Instant};
+    use ark_std::{eprintln, rand::SeedableRng, time::Duration, time::Instant, vec::Vec};
 
     use super::{mont_mul, mont_mul_v2, mont_mul_v3};
     use crate::pasta::fields::{fp::FqConfig, fq::FrConfig, Fp, Fq};
@@ -813,5 +813,113 @@ mod tests {
             generic.as_secs_f64() / assembly_v3.as_secs_f64(),
         );
         let _ = Fq::rand(&mut rng);
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod neon_tests {
+    use ark_ff::{
+        fields::models::fp::{lazy29, neon29},
+        UniformRand,
+    };
+    use ark_std::{eprintln, rand::SeedableRng, time::Duration, time::Instant, vec::Vec};
+
+    use crate::pasta::fields::{fp::FqConfig, Fp};
+
+    fn domain_values(count: usize) -> Vec<[u64; lazy29::LIMBS]> {
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(11);
+        let entry = lazy29::entry_constant::<FqConfig>();
+        (0..count)
+            .map(|_| lazy29::enter::<FqConfig>(&Fp::rand(&mut rng).0, &entry))
+            .collect()
+    }
+
+    /// The two lanes must agree with the scalar routine they vectorise.
+    #[test]
+    fn matches_the_scalar_domain_multiplication() {
+        let params = lazy29::params::<FqConfig>();
+        let values = domain_values(2048);
+        for quad in values.chunks_exact(4) {
+            let a = [quad[0], quad[1]];
+            let b = [quad[2], quad[3]];
+            assert_eq!(
+                neon29::mont_mul2(&params, &a, &b),
+                [
+                    lazy29::mont_mul_p(&params, &a[0], &b[0]),
+                    lazy29::mont_mul_p(&params, &a[1], &b[1]),
+                ]
+            );
+        }
+    }
+
+    /// Throughput of the three multiplications, per single field product, with
+    /// independent streams -- what the prover actually issues: the base folding
+    /// and the MSM multiply thousands of unrelated elements, so latency can be
+    /// hidden and NEON's wider results are not on a critical path.
+    #[test]
+    #[ignore = "benchmark: two-lane NEON against the scalar paths"]
+    fn measure_two_lane_throughput() {
+        const ROUNDS: u64 = 1_000_000;
+        // Four field products per iteration in every variant, so the reported
+        // figure is comparable across them.
+        const PER_ROUND: f64 = 4.0;
+        let params = lazy29::params::<FqConfig>();
+        let values = domain_values(8);
+
+        // NEON: two calls of two lanes, on independent data.
+        let mut left = [values[0], values[1]];
+        let mut right = [values[2], values[3]];
+        let factor_left = [values[4], values[5]];
+        let factor_right = [values[6], values[7]];
+        let started = Instant::now();
+        for _ in 0..ROUNDS {
+            left = neon29::mont_mul2(&params, &left, &factor_left);
+            right = neon29::mont_mul2(&params, &right, &factor_right);
+        }
+        let neon = started.elapsed();
+        core::hint::black_box((&left, &right));
+
+        // 29-bit scalar: four independent chains.
+        let mut scalars = [values[0], values[1], values[2], values[3]];
+        let factors = [values[4], values[5], values[6], values[7]];
+        let started = Instant::now();
+        for _ in 0..ROUNDS {
+            for lane in 0..4 {
+                scalars[lane] = lazy29::mont_mul_p(&params, &scalars[lane], &factors[lane]);
+            }
+        }
+        let scalar29 = started.elapsed();
+        core::hint::black_box(&scalars);
+
+        // 64-bit CIOS, the production path: four independent chains too.
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(3);
+        let mut fields = [Fp::rand(&mut rng); 4];
+        for field in fields.iter_mut() {
+            *field = Fp::rand(&mut rng);
+        }
+        let field_factors = [
+            Fp::rand(&mut rng),
+            Fp::rand(&mut rng),
+            Fp::rand(&mut rng),
+            Fp::rand(&mut rng),
+        ];
+        let started = Instant::now();
+        for _ in 0..ROUNDS {
+            for lane in 0..4 {
+                fields[lane] *= field_factors[lane];
+            }
+        }
+        let scalar64 = started.elapsed();
+        core::hint::black_box(&fields);
+
+        let per_mul =
+            |elapsed: Duration| elapsed.as_secs_f64() * 1e9 / (PER_ROUND * ROUNDS as f64);
+        eprintln!("64-bit CIOS (ark)     : {:.1} ns/mul", per_mul(scalar64));
+        eprintln!("29-bit CIOS (scalar)  : {:.1} ns/mul", per_mul(scalar29));
+        eprintln!("29-bit CIOS (NEON x2) : {:.1} ns/mul", per_mul(neon));
+        eprintln!(
+            "NEON vs 64-bit CIOS   : {:.2}x",
+            scalar64.as_secs_f64() / neon.as_secs_f64()
+        );
     }
 }

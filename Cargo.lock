@@ -170,7 +170,7 @@ dependencies = [
 [[package]]
 name = "ark-ec"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "ahash",
  "ark-ff",
@@ -191,7 +191,7 @@ dependencies = [
 [[package]]
 name = "ark-ff"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "ark-ff-asm",
  "ark-ff-macros",
@@ -211,7 +211,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-asm"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "quote",
  "syn 2.0.100",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-macros"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "ark-poly"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "ahash",
  "ark-ff",
@@ -247,7 +247,7 @@ dependencies = [
 [[package]]
 name = "ark-serialize"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "ark-serialize-derive",
  "ark-std",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "ark-serialize-derive"
 version = "0.5.0"
-source = "git+https://github.com/youtpout/algebra?branch=aarch64-mont-mul#0fd13c18c4c52dd34eceb500e09b367d6196ad0f"
+source = "git+https://github.com/youtpout/algebra?branch=neon29-mont-mul#ea2b2cde999b886cfce8f535c1311d75feff26d8"
 dependencies = [
  "proc-macro2",
  "quote",
