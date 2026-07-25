@@ -2003,7 +2003,18 @@ impl RecordedCompiledBaseProgram {
     /// The cache id of a base program (the o1js Cache persistentId). It is
     /// distinct from the recursive programs' so the two never collide.
     pub fn cache_key(branches: &[RecordedProgramBranch]) -> String {
-        let digest = recorded_base_program_circuits_digest(branches.iter().map(|b| &b.circuit));
+        Self::cache_key_of_digest(Self::circuits_digest(branches))
+    }
+
+    /// The digest the cache id is built from. Computing it re-serializes every
+    /// circuit, so callers that need both the id and the restore-time integrity
+    /// check should compute it once and pass it to
+    /// [`Self::from_cache_bytes_with_digest`].
+    pub fn circuits_digest(branches: &[RecordedProgramBranch]) -> [u8; 32] {
+        recorded_base_program_circuits_digest(branches.iter().map(|b| &b.circuit))
+    }
+
+    pub fn cache_key_of_digest(digest: [u8; 32]) -> String {
         let hex = digest
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -2047,6 +2058,26 @@ impl RecordedCompiledBaseProgram {
         branches: Vec<RecordedProgramBranch>,
         bytes: &[u8],
     ) -> Result<Self, RecordedProveError> {
+        Self::restore_from_cache_bytes(branches, bytes, None)
+    }
+
+    /// Like [`Self::from_cache_bytes`], for a caller that already holds
+    /// [`Self::circuits_digest`] — typically because it derived the cache id
+    /// this payload was looked up under. The integrity check is then a
+    /// comparison instead of a second full re-serialization of every circuit.
+    pub fn from_cache_bytes_with_digest(
+        branches: Vec<RecordedProgramBranch>,
+        bytes: &[u8],
+        circuits_digest: [u8; 32],
+    ) -> Result<Self, RecordedProveError> {
+        Self::restore_from_cache_bytes(branches, bytes, Some(circuits_digest))
+    }
+
+    fn restore_from_cache_bytes(
+        branches: Vec<RecordedProgramBranch>,
+        bytes: &[u8],
+        known_circuits_digest: Option<[u8; 32]>,
+    ) -> Result<Self, RecordedProveError> {
         let fail = |message: String| RecordedProveError::Program(message);
         if branches.is_empty() {
             return Err(fail("a program has at least one branch".into()));
@@ -2056,8 +2087,10 @@ impl RecordedCompiledBaseProgram {
                 "a base program requires every branch to be non-recursive".into(),
             ));
         }
-        let cache: RecordedBaseProgramIndexCache =
-            rmp_serde::from_slice(bytes).map_err(|err| fail(err.to_string()))?;
+        let cache: RecordedBaseProgramIndexCache = crate::restore_profile::stage(
+            "decode cache blob",
+            || rmp_serde::from_slice(bytes).map_err(|err| fail(err.to_string())),
+        )?;
         if cache.version != RECORDED_BASE_PROGRAM_CACHE_VERSION {
             return Err(fail(
                 "cached indexes belong to a different cache version".into(),
@@ -2069,17 +2102,28 @@ impl RecordedCompiledBaseProgram {
 
         let mut compiled = Vec::with_capacity(branches.len());
         for (branch, verifier_bytes) in branches.iter().zip(&cache.step_verifiers) {
-            let raw: RecordedRawStepVerifier =
-                rmp_serde::from_slice(verifier_bytes).map_err(|err| fail(err.to_string()))?;
-            compiled.push(RecordedCompiledBase::restore_step_only(
-                branch.circuit.clone(),
-                branch.witness.len(),
-                restore_step_verifier(raw),
-            )?);
+            let raw: RecordedRawStepVerifier = crate::restore_profile::stage(
+                "decode step verifiers",
+                || rmp_serde::from_slice(verifier_bytes).map_err(|err| fail(err.to_string())),
+            )?;
+            let verifier =
+                crate::restore_profile::stage("rebuild step verifiers", || {
+                    restore_step_verifier(raw)
+                });
+            compiled.push(crate::restore_profile::stage("restore step only", || {
+                RecordedCompiledBase::restore_step_only(
+                    branch.circuit.clone(),
+                    branch.witness.len(),
+                    verifier,
+                )
+            })?);
         }
-        if cache.branches_digest
-            != recorded_base_program_circuits_digest(compiled.iter().map(|base| &base.circuit))
-        {
+        if crate::restore_profile::stage("branches digest", || {
+            let digest = known_circuits_digest.unwrap_or_else(|| {
+                recorded_base_program_circuits_digest(compiled.iter().map(|base| &base.circuit))
+            });
+            cache.branches_digest != digest
+        }) {
             return Err(fail(
                 "cached indexes belong to a different program".into(),
             ));
@@ -2096,29 +2140,42 @@ impl RecordedCompiledBaseProgram {
                     .index
             })
             .collect();
-        let wrap_branches = step_verifiers
-            .iter()
-            .map(|svi| crate::api::WrapBranchData::from_step_verifier(svi, 0))
-            .collect();
+        let wrap_branches = crate::restore_profile::stage("wrap branch data", || {
+            step_verifiers
+                .iter()
+                .map(|svi| crate::api::WrapBranchData::from_step_verifier(svi, 0))
+                .collect()
+        });
         let step_statement = vec![crate::api::WrapStepStatementSlot::Packed {
             value: Fq::from(0u64),
             num_bits: 255,
         }];
-        let wrap_statement_lagranges = step_verifiers
-            .iter()
-            .map(|svi| {
-                crate::recursive_step::step_statement_lagranges_for_domain(
-                    svi.domain.log_size_of_group as u32,
-                    &step_statement,
-                )
-            })
-            .collect();
-        let wrap_raw: RecordedRawWrapVerifier =
-            rmp_serde::from_slice(&cache.wrap_verifier).map_err(|err| fail(err.to_string()))?;
-        let wrap_indexes =
-            crate::api::restore_shared_base_wrap(&step_verifiers, restore_wrap_verifier(wrap_raw))
-                .map_err(fail)?;
-        let wrap_vk_pts = crate::api::wrap_verification_key_points(&wrap_indexes.1);
+        let wrap_statement_lagranges =
+            crate::restore_profile::stage("statement lagranges", || {
+                step_verifiers
+                    .iter()
+                    .map(|svi| {
+                        crate::recursive_step::step_statement_lagranges_for_domain(
+                            svi.domain.log_size_of_group as u32,
+                            &step_statement,
+                        )
+                    })
+                    .collect()
+            });
+        let wrap_raw: RecordedRawWrapVerifier = crate::restore_profile::stage(
+            "decode wrap verifier",
+            || rmp_serde::from_slice(&cache.wrap_verifier).map_err(|err| fail(err.to_string())),
+        )?;
+        let wrap_verifier =
+            crate::restore_profile::stage("rebuild wrap verifier", || {
+                restore_wrap_verifier(wrap_raw)
+            });
+        let wrap_indexes = crate::restore_profile::stage("restore shared wrap", || {
+            crate::api::restore_shared_base_wrap(&step_verifiers, wrap_verifier).map_err(fail)
+        })?;
+        let wrap_vk_pts = crate::restore_profile::stage("wrap vk points", || {
+            crate::api::wrap_verification_key_points(&wrap_indexes.1)
+        });
         drop(step_verifiers);
         Ok(Self {
             branches: compiled,

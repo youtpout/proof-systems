@@ -928,18 +928,81 @@ fn parse_program_branches(
         #[serde(rename = "proofsVerified")]
         proofs_verified: u8,
     }
-    let branches: Vec<Branch> = serde_json::from_str(branches_json)
-        .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))?;
+    let branches: Vec<Branch> = pickles::restore_profile::stage("parse branches JSON", || {
+        serde_json::from_str(branches_json)
+            .map_err(|err| JsError::new(&format!("invalid program JSON: {err}")))
+    })?;
     let mut parsed = Vec::with_capacity(branches.len());
     for branch in branches {
-        let witness = parse_fp_decimals(branch.witness, "witness")?;
-        parsed.push(pickles::recorded::RecordedProgramBranch {
-            circuit: branch.circuit,
+        let Branch {
+            circuit,
             witness,
-            proofs_verified: branch.proofs_verified,
+            proofs_verified,
+        } = branch;
+        let witness = pickles::restore_profile::stage("witness decimals to Fp", || {
+            parse_fp_decimals(witness, "witness")
+        })?;
+        parsed.push(pickles::recorded::RecordedProgramBranch {
+            circuit,
+            witness,
+            proofs_verified,
         });
     }
     Ok(parsed)
+}
+
+/// Branches parsed once and kept on the wasm side.
+///
+/// A caller needs the cache id before it can fetch the cached payload, and the
+/// branches again to restore from it. Handing it a handle instead of taking the
+/// payload twice means the (multi-megabyte) JSON crosses the boundary once and
+/// is parsed once, and the digest behind the cache id is computed once instead
+/// of being recomputed by the restore.
+#[wasm_bindgen]
+pub struct WasmPreparedProgramBranches {
+    branches: Vec<pickles::recorded::RecordedProgramBranch>,
+    circuits_digest: Option<[u8; 32]>,
+    cache_key: String,
+    all_base: bool,
+}
+
+#[wasm_bindgen]
+impl WasmPreparedProgramBranches {
+    /// The o1js Cache persistentId of the compiled program.
+    #[wasm_bindgen(getter)]
+    pub fn cache_key(&self) -> String {
+        self.cache_key.clone()
+    }
+}
+
+/// Parses the recorded branches and derives the program's cache id.
+#[wasm_bindgen]
+pub fn rust_pickles_prepare_recorded_program(
+    branches_json: String,
+) -> Result<WasmPreparedProgramBranches, JsError> {
+    console_error_panic_hook::set_once();
+    let branches = parse_program_branches(&branches_json)?;
+    // A non-recursive program compiles to a different shape, so it takes a key
+    // of its own rather than colliding with the recursive one.
+    let all_base = branches.iter().all(|branch| branch.proofs_verified == 0);
+    let (circuits_digest, cache_key) = if all_base {
+        let digest = pickles::recorded::RecordedCompiledBaseProgram::circuits_digest(&branches);
+        (
+            Some(digest),
+            pickles::recorded::RecordedCompiledBaseProgram::cache_key_of_digest(digest),
+        )
+    } else {
+        (
+            None,
+            pickles::recorded::RecordedCompiledProgram::cache_key(&branches),
+        )
+    };
+    Ok(WasmPreparedProgramBranches {
+        branches,
+        circuits_digest,
+        cache_key,
+        all_base,
+    })
 }
 
 /// The prover-key cache id of a program (the o1js Cache persistentId).
@@ -981,17 +1044,156 @@ pub fn rust_pickles_compile_recorded_program_from_cache_bytes(
     console_error_panic_hook::set_once();
     let parsed = parse_program_branches(&branches_json)?;
     let all_base = parsed.iter().all(|branch| branch.proofs_verified == 0);
+    restore_program(parsed, &cache_bytes, all_base, None)
+}
+
+/// Restores a compiled program from a cache payload, reusing branches that
+/// [`rust_pickles_prepare_recorded_program`] already parsed.
+///
+/// Consumes the handle: on a stale or corrupt payload the branches are gone
+/// along with it, and the caller re-prepares before falling back to a cold
+/// compile. That path costs one extra parse but only ever runs on a cache that
+/// no longer matches the code.
+#[wasm_bindgen]
+pub fn rust_pickles_compile_prepared_program_from_cache_bytes(
+    prepared: WasmPreparedProgramBranches,
+    cache_bytes: Vec<u8>,
+) -> Result<WasmRecordedProgram, JsError> {
+    console_error_panic_hook::set_once();
+    let WasmPreparedProgramBranches {
+        branches,
+        circuits_digest,
+        all_base,
+        ..
+    } = prepared;
+    restore_program(branches, &cache_bytes, all_base, circuits_digest)
+}
+
+/// Compiles from scratch, reusing branches that
+/// [`rust_pickles_prepare_recorded_program`] already parsed.
+#[wasm_bindgen]
+pub fn rust_pickles_compile_prepared_program(
+    prepared: WasmPreparedProgramBranches,
+) -> Result<WasmRecordedProgram, JsError> {
+    console_error_panic_hook::set_once();
+    let WasmPreparedProgramBranches {
+        branches, all_base, ..
+    } = prepared;
     let program = crate::rayon::run_in_pool(|| {
         if all_base {
-            pickles::recorded::RecordedCompiledBaseProgram::from_cache_bytes(parsed, &cache_bytes)
+            pickles::recorded::RecordedCompiledBaseProgram::compile(branches)
                 .map(WasmRecordedProgramInner::Base)
         } else {
-            pickles::recorded::RecordedCompiledProgram::from_cache_bytes(parsed, &cache_bytes)
+            pickles::recorded::RecordedCompiledProgram::compile(branches)
                 .map(WasmRecordedProgramInner::Recursive)
         }
     })
-    .map_err(|err| JsError::new(&format!("program cache restore failed: {err:?}")))?;
+    .map_err(|err| JsError::new(&format!("program compile failed: {err:?}")))?;
     Ok(WasmRecordedProgram(program))
+}
+
+fn restore_program(
+    branches: Vec<pickles::recorded::RecordedProgramBranch>,
+    cache_bytes: &[u8],
+    all_base: bool,
+    circuits_digest: Option<[u8; 32]>,
+) -> Result<WasmRecordedProgram, JsError> {
+    reset_restore_profile();
+    pickles::set_compile_profile_hook(Some(accumulate_restore_profile));
+    pickles::restore_profile::set_restore_stage_hook(Some(accumulate_restore_stage));
+    let program = crate::rayon::run_in_pool(|| {
+        if all_base {
+            match circuits_digest {
+                Some(digest) => pickles::recorded::RecordedCompiledBaseProgram::
+                    from_cache_bytes_with_digest(branches, cache_bytes, digest),
+                None => pickles::recorded::RecordedCompiledBaseProgram::from_cache_bytes(
+                    branches, cache_bytes,
+                ),
+            }
+            .map(WasmRecordedProgramInner::Base)
+        } else {
+            pickles::recorded::RecordedCompiledProgram::from_cache_bytes(branches, cache_bytes)
+                .map(WasmRecordedProgramInner::Recursive)
+        }
+    });
+    pickles::set_compile_profile_hook(None);
+    pickles::restore_profile::set_restore_stage_hook(None);
+    log_restore_profile();
+    let program =
+        program.map_err(|err| JsError::new(&format!("program cache restore failed: {err:?}")))?;
+    Ok(WasmRecordedProgram(program))
+}
+
+/// Per-stage totals of the program cache restore, summed over every circuit it
+/// rebuilds. The profile hook fires once per completed stage with cumulative
+/// values, so only the last call of a circuit (the one that carries the prover
+/// index timing) is added to the totals.
+mod restore_profile {
+    use std::sync::atomic::AtomicU64;
+
+    pub static LOWERING: AtomicU64 = AtomicU64::new(0);
+    pub static CONSTRAINT_SYSTEM: AtomicU64 = AtomicU64::new(0);
+    pub static LAGRANGE: AtomicU64 = AtomicU64::new(0);
+    pub static PROVER_INDEX: AtomicU64 = AtomicU64::new(0);
+    pub static CIRCUITS: AtomicU64 = AtomicU64::new(0);
+
+    /// Per-stage totals of the enclosing restore, keyed by stage name. Stages
+    /// that run once per branch are summed across branches.
+    pub static STAGES: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+}
+
+fn accumulate_restore_stage(name: &str, micros: u64) {
+    let mut stages = restore_profile::STAGES.lock().unwrap();
+    match stages.iter_mut().find(|(stage, _)| stage == name) {
+        Some((_, total)) => *total += micros,
+        None => stages.push((name.to_owned(), micros)),
+    }
+}
+
+fn reset_restore_profile() {
+    use std::sync::atomic::Ordering::Relaxed;
+    restore_profile::LOWERING.store(0, Relaxed);
+    restore_profile::CONSTRAINT_SYSTEM.store(0, Relaxed);
+    restore_profile::LAGRANGE.store(0, Relaxed);
+    restore_profile::PROVER_INDEX.store(0, Relaxed);
+    restore_profile::CIRCUITS.store(0, Relaxed);
+    restore_profile::STAGES.lock().unwrap().clear();
+}
+
+fn accumulate_restore_profile(profile: pickles::CompileProfile) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if profile.prover_index_micros == 0 {
+        return;
+    }
+    restore_profile::LOWERING.fetch_add(profile.lowering_micros, Relaxed);
+    restore_profile::CONSTRAINT_SYSTEM.fetch_add(profile.constraint_system_micros, Relaxed);
+    restore_profile::LAGRANGE.fetch_add(profile.lagrange_micros, Relaxed);
+    restore_profile::PROVER_INDEX.fetch_add(profile.prover_index_micros, Relaxed);
+    restore_profile::CIRCUITS.fetch_add(1, Relaxed);
+}
+
+fn log_restore_profile() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ms = |micros: u64| micros as f64 / 1000.0;
+    let circuits = restore_profile::CIRCUITS.load(Relaxed);
+    if circuits > 0 {
+        crate::console_log(&format!(
+            "Rust Pickles restore profile ({circuits} circuits): lowering={:.1}ms cs={:.1}ms lagrange={:.1}ms index={:.1}ms",
+            ms(restore_profile::LOWERING.load(Relaxed)),
+            ms(restore_profile::CONSTRAINT_SYSTEM.load(Relaxed)),
+            ms(restore_profile::LAGRANGE.load(Relaxed)),
+            ms(restore_profile::PROVER_INDEX.load(Relaxed)),
+        ));
+    }
+    let stages = restore_profile::STAGES.lock().unwrap();
+    if !stages.is_empty() {
+        let breakdown = stages
+            .iter()
+            .map(|(name, micros)| format!("{name}={:.1}ms", ms(*micros)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        crate::console_log(&format!("Rust Pickles restore stages: {breakdown}"));
+    }
 }
 
 /// Debug bisection of the shared program compile: runs up to phase `stage`

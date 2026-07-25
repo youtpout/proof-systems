@@ -87,5 +87,43 @@ pub mod tick_tock {
     }
 }
 
+/// Coarse per-stage timings of the cache-restore paths. Recording is a no-op
+/// until a hook is installed, so the instrumentation is free in production; the
+/// wasm layer installs a hook that logs the breakdown to the console.
+pub mod restore_profile {
+    static HOOK: std::sync::Mutex<Option<fn(&str, u64)>> = std::sync::Mutex::new(None);
+
+    pub fn set_restore_stage_hook(hook: Option<fn(&str, u64)>) {
+        *HOOK.lock().unwrap() = hook;
+    }
+
+    pub fn stages_enabled() -> bool {
+        HOOK.lock().unwrap().is_some()
+    }
+
+    fn record_stage(name: &str, micros: u64) {
+        let hook = *HOOK.lock().unwrap();
+        if let Some(hook) = hook {
+            hook(name, micros);
+        }
+    }
+
+    /// Times `body` and reports it under `name`.
+    pub fn stage<T>(name: &str, body: impl FnOnce() -> T) -> T {
+        if !stages_enabled() {
+            return body();
+        }
+        let started = snarky::wasm_instant::Instant::now();
+        let out = body();
+        record_stage(
+            name,
+            (snarky::wasm_instant::Instant::now() - started).as_micros() as u64,
+        );
+        out
+    }
+}
+
 pub use snarky::api::{set_compile_profile_hook, CompileProfile};
+/// A clock that works on both native and wasm targets, for the profiling hooks.
+pub use snarky::wasm_instant;
 pub use tick_tock::{Side, Tick, Tock};
