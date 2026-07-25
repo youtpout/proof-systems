@@ -172,12 +172,22 @@ where
     where
         <Circuit::Curve as AffineRepr>::BaseField: PrimeField,
     {
+        let started = crate::wasm_instant::Instant::now();
         let compiled_circuit = compile(circuit).map_err(|err| err.to_string())?;
+        let lowered_at = crate::wasm_instant::Instant::now();
+        let mut profile = CompileProfile {
+            lowering_micros: (lowered_at - started).as_micros() as u64,
+            ..CompileProfile::default()
+        };
+        record_compile_profile(profile);
         let cs = ConstraintSystem::create(compiled_circuit.gates.clone())
             .public(compiled_circuit.public_input_size)
             .prev_challenges(Circuit::PREV_CHALLENGES)
             .build()
             .map_err(|err| format!("failed to rebuild cached constraint system: {err}"))?;
+        let constraint_system_at = crate::wasm_instant::Instant::now();
+        profile.constraint_system_micros = (constraint_system_at - lowered_at).as_micros() as u64;
+        record_compile_profile(profile);
         if cs.domain.d1.log_size_of_group != verifier.domain.log_size_of_group {
             return Err("cached verifier index domain does not match the circuit".into());
         }
@@ -187,6 +197,9 @@ where
         };
         let srs = Circuit::srs(srs_size);
         srs.get_lagrange_basis(cs.domain.d1);
+        let lagrange_at = crate::wasm_instant::Instant::now();
+        profile.lagrange_micros = (lagrange_at - constraint_system_at).as_micros() as u64;
+        record_compile_profile(profile);
         let endo_q =
             <<Circuit as SnarkyCircuit>::Curve as KimchiCurve<FULL_ROUNDS>>::other_curve_endo();
         let mut prover_index = kimchi::prover_index::ProverIndex::<
@@ -195,6 +208,9 @@ where
             SrsOf<Circuit>,
         >::create(cs, *endo_q, srs, true);
         prover_index.verifier_index = Some(verifier.clone());
+        profile.prover_index_micros =
+            (crate::wasm_instant::Instant::now() - lagrange_at).as_micros() as u64;
+        record_compile_profile(profile);
         Ok((
             Self {
                 compiled_circuit,

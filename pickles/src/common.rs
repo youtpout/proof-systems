@@ -340,21 +340,28 @@ pub fn seed_lagrange_basis_raw(curve: &str, domain_log2: u32, bytes: &[u8]) -> b
     let domain_size = 1usize << domain_log2;
     match curve {
         "vesta" => {
+            let srs = tick_srs(1 << TICK_ROUNDS);
+            // Hosts re-offer the whole cache for every program they compile.
+            // Decoding a basis already in memory only to drop it costs a full
+            // pass over its points each time.
+            if srs.lagrange_bases().contains_key(&domain_size) {
+                return true;
+            }
             let Some(basis) = decode_lagrange_basis_raw::<Vesta>(bytes, domain_size) else {
                 return false;
             };
-            tick_srs(1 << TICK_ROUNDS)
-                .lagrange_bases()
-                .set_once(domain_size, basis);
+            srs.lagrange_bases().set_once(domain_size, basis);
             true
         }
         "pallas" => {
+            let srs = tock_srs(1 << TOCK_ROUNDS);
+            if srs.lagrange_bases().contains_key(&domain_size) {
+                return true;
+            }
             let Some(basis) = decode_lagrange_basis_raw::<Pallas>(bytes, domain_size) else {
                 return false;
             };
-            tock_srs(1 << TOCK_ROUNDS)
-                .lagrange_bases()
-                .set_once(domain_size, basis);
+            srs.lagrange_bases().set_once(domain_size, basis);
             true
         }
         _ => false,
@@ -404,21 +411,26 @@ pub fn seed_lagrange_basis_jsoo(curve: &str, domain_log2: u32, bytes: &[u8]) -> 
     let domain_size = 1usize << domain_log2;
     match curve {
         "vesta" => {
+            let srs = tick_srs(1 << TICK_ROUNDS);
+            // See `seed_lagrange_basis_raw`: skip the parse when it is a no-op.
+            if srs.lagrange_bases().contains_key(&domain_size) {
+                return true;
+            }
             let Some(basis) = decode_lagrange_basis_jsoo::<Vesta>(bytes, domain_size) else {
                 return false;
             };
-            tick_srs(1 << TICK_ROUNDS)
-                .lagrange_bases()
-                .set_once(domain_size, basis);
+            srs.lagrange_bases().set_once(domain_size, basis);
             true
         }
         "pallas" => {
+            let srs = tock_srs(1 << TOCK_ROUNDS);
+            if srs.lagrange_bases().contains_key(&domain_size) {
+                return true;
+            }
             let Some(basis) = decode_lagrange_basis_jsoo::<Pallas>(bytes, domain_size) else {
                 return false;
             };
-            tock_srs(1 << TOCK_ROUNDS)
-                .lagrange_bases()
-                .set_once(domain_size, basis);
+            srs.lagrange_bases().set_once(domain_size, basis);
             true
         }
         _ => false,
