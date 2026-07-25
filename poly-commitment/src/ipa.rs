@@ -991,6 +991,15 @@ impl<G: CommitmentCurve> SRS<G> {
 
         lap!(profile, "evaluation vector and inner product");
         let mut a = p.coeffs;
+        if profile.is_some() {
+            // How much of the padded vector is actually non-zero: the folding
+            // cost is paid on the whole SRS, the polynomial may be far smaller.
+            let degree = a.iter().rposition(|c| !c.is_zero()).map_or(0, |i| i + 1);
+            eprintln!(
+                "[ipa open] polynomial: {degree} non-zero coefficients out of {padded_length} ({:.1}%)",
+                100.0 * degree as f64 / padded_length as f64,
+            );
+        }
         assert!(padded_length >= a.len());
         a.extend(vec![G::ScalarField::zero(); padded_length - a.len()]);
 
