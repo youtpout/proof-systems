@@ -418,8 +418,8 @@ pub fn affine_window_combine<P: SWCurveConfig>(
     x1: P::ScalarField,
     x2: P::ScalarField,
 ) -> Vec<SWJAffine<P>> {
-    let chunk = chunk_size(10_000);
-    let b: Vec<_> = g1.chunks(chunk).zip(g2.chunks(chunk)).collect();
+    const CHUNK_SIZE: usize = 10_000;
+    let b: Vec<_> = g1.chunks(CHUNK_SIZE).zip(g2.chunks(CHUNK_SIZE)).collect();
     let v: Vec<_> = o1_utils::cfg_into_iter!(b)
         .map(|(v1, v2)| affine_window_combine_base(v1, v2, x1, x2))
         .collect();
@@ -430,38 +430,14 @@ pub fn affine_window_combine<P: SWCurveConfig>(
 /// entry is `g1[i] + g2[i].scale(chal.to_field(endo_coeff))`
 ///
 /// Internally, it uses the curve endomorphism to speed up this operation.
-/// Points per rayon task in the base-folding kernels.
-///
-/// The default matches what the kernels used before this was tunable. It is
-/// worth tuning on big.LITTLE phones: with equal chunks a slow core holds the
-/// whole round while the fast ones idle, and smaller chunks let the work
-/// steal. `MINA_COMBINE_CHUNK` overrides it, read once.
-#[cfg(not(target_arch = "wasm32"))]
-fn chunk_size(default: usize) -> usize {
-    use std::sync::OnceLock;
-    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
-    let chosen = OVERRIDE.get_or_init(|| {
-        std::env::var("MINA_COMBINE_CHUNK")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-    });
-    chosen.unwrap_or(default)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn chunk_size(default: usize) -> usize {
-    default
-}
-
 pub fn affine_window_combine_one_endo<P: SWCurveConfig>(
     endo_coeff: P::BaseField,
     g1: &[SWJAffine<P>],
     g2: &[SWJAffine<P>],
     chal: &ScalarChallenge<P::ScalarField>,
 ) -> Vec<SWJAffine<P>> {
-    let chunk = chunk_size(4096);
-    let b: Vec<_> = g1.chunks(chunk).zip(g2.chunks(chunk)).collect();
+    const CHUNK_SIZE: usize = 4096;
+    let b: Vec<_> = g1.chunks(CHUNK_SIZE).zip(g2.chunks(CHUNK_SIZE)).collect();
     let v: Vec<_> = o1_utils::cfg_into_iter!(b)
         .map(|(v1, v2)| affine_window_combine_one_endo_base(endo_coeff, v1, v2, chal))
         .collect();
@@ -472,8 +448,8 @@ pub fn affine_window_combine_one<P: SWCurveConfig>(
     g2: &[SWJAffine<P>],
     x2: P::ScalarField,
 ) -> Vec<SWJAffine<P>> {
-    let chunk = chunk_size(10_000);
-    let b: Vec<_> = g1.chunks(chunk).zip(g2.chunks(chunk)).collect();
+    const CHUNK_SIZE: usize = 10_000;
+    let b: Vec<_> = g1.chunks(CHUNK_SIZE).zip(g2.chunks(CHUNK_SIZE)).collect();
     let v: Vec<_> = o1_utils::cfg_into_iter!(b)
         .map(|(v1, v2)| affine_window_combine_one_base(v1, v2, x2))
         .collect();
