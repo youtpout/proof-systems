@@ -262,6 +262,10 @@ fn gate_type_from_i32(value: i32) -> Result<GateType> {
         ));
     }
 
+    // Mirrors `GateType` position for position. The four Cairo variants are
+    // never constructed, but o1js indexes this enum by discriminant: drop
+    // them and everything from RangeCheck0 on shifts by four, so Xor16 (16)
+    // and Rot64 (17) fall off the end and are rejected outright.
     let variants: &[GateType] = &[
         GateType::Zero,
         GateType::Generic,
@@ -271,6 +275,10 @@ fn gate_type_from_i32(value: i32) -> Result<GateType> {
         GateType::EndoMul,
         GateType::EndoMulScalar,
         GateType::Lookup,
+        GateType::CairoClaim,
+        GateType::CairoInstruction,
+        GateType::CairoFlags,
+        GateType::CairoTransition,
         GateType::RangeCheck0,
         GateType::RangeCheck1,
         GateType::ForeignFieldAdd,
