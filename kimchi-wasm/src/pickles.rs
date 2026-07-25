@@ -443,13 +443,15 @@ pub fn rust_pickles_recorded_base_vk_envelope(
 }
 
 /// Seeds the in-memory Lagrange-basis cache from an o1js `Cache` entry
-/// payload (`lagrange-basis-{f}-{domain}`, jsoo JSON format — the identical
-/// entries jsoo reads and writes). wasm has no filesystem: the JS host reads
-/// the cache through its `Cache` object and passes the bytes in. Returns
-/// false on any mismatch (the basis is then recomputed on demand).
+/// payload (`lagrange-basis-{f}-{domain}`). wasm has no filesystem: the JS
+/// host reads the cache through its `Cache` object and passes the bytes in.
+/// Either layout is accepted — the compact one is magic-tagged, so a cache
+/// written by jsoo still seeds. Returns false on any mismatch (the basis is
+/// then recomputed on demand).
 #[wasm_bindgen]
 pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: &[u8]) -> bool {
-    pickles::common::seed_lagrange_basis_jsoo(&curve, domain_log2, bytes)
+    pickles::common::seed_lagrange_basis_raw(&curve, domain_log2, bytes)
+        || pickles::common::seed_lagrange_basis_jsoo(&curve, domain_log2, bytes)
 }
 
 /// Seeds the process-global SRS from an o1js `Cache` entry payload
@@ -460,8 +462,12 @@ pub fn rust_pickles_seed_lagrange_basis(curve: String, domain_log2: u32, bytes: 
 #[wasm_bindgen]
 pub fn rust_pickles_seed_srs(curve: String, bytes: &[u8]) -> bool {
     match curve.as_str() {
-        "vesta" => pickles::common::seed_tick_srs_jsoo(bytes),
-        "pallas" => pickles::common::seed_tock_srs_jsoo(bytes),
+        "vesta" => {
+            pickles::common::seed_tick_srs_raw(bytes) || pickles::common::seed_tick_srs_jsoo(bytes)
+        }
+        "pallas" => {
+            pickles::common::seed_tock_srs_raw(bytes) || pickles::common::seed_tock_srs_jsoo(bytes)
+        }
         _ => false,
     }
 }
@@ -664,12 +670,22 @@ pub fn rust_pickles_seed_srs_cache_batch(
         for (entry, bytes) in entries.iter().zip(&payloads) {
             let ok = if entry.domain_log2 < 0 {
                 match entry.curve.as_str() {
-                    "vesta" => pickles::common::seed_tick_srs_jsoo(bytes),
-                    "pallas" => pickles::common::seed_tock_srs_jsoo(bytes),
+                    "vesta" => {
+                        pickles::common::seed_tick_srs_raw(bytes)
+                            || pickles::common::seed_tick_srs_jsoo(bytes)
+                    }
+                    "pallas" => {
+                        pickles::common::seed_tock_srs_raw(bytes)
+                            || pickles::common::seed_tock_srs_jsoo(bytes)
+                    }
                     _ => false,
                 }
             } else {
-                pickles::common::seed_lagrange_basis_jsoo(
+                pickles::common::seed_lagrange_basis_raw(
+                    &entry.curve,
+                    entry.domain_log2 as u32,
+                    bytes,
+                ) || pickles::common::seed_lagrange_basis_jsoo(
                     &entry.curve,
                     entry.domain_log2 as u32,
                     bytes,
@@ -683,24 +699,26 @@ pub fn rust_pickles_seed_srs_cache_batch(
     }))
 }
 
-/// Exports the process-global SRS as the jsoo cache payload for the JS host
-/// to persist through its `Cache` object (empty when the SRS has not been
-/// created yet).
+/// Exports the process-global SRS for the JS host to persist through its
+/// `Cache` object (empty when the SRS has not been created yet). The compact
+/// layout is written: about a third of the jsoo JSON, which spells every
+/// coordinate in decimal. Seeding reads either, so a cache written here still
+/// warms a jsoo-written one and vice versa.
 #[wasm_bindgen]
 pub fn rust_pickles_export_srs(curve: String) -> Vec<u8> {
     match curve.as_str() {
-        "vesta" => pickles::common::export_tick_srs_jsoo().unwrap_or_default(),
-        "pallas" => pickles::common::export_tock_srs_jsoo().unwrap_or_default(),
+        "vesta" => pickles::common::export_tick_srs_raw().unwrap_or_default(),
+        "pallas" => pickles::common::export_tock_srs_raw().unwrap_or_default(),
         _ => Vec::new(),
     }
 }
 
-/// Exports a computed Lagrange basis as the jsoo cache payload, so the JS
-/// host can persist it through its `Cache` object. Returns an empty vector
-/// if the basis is not (yet) in the in-memory cache.
+/// Exports a computed Lagrange basis in the compact layout, so the JS host
+/// can persist it through its `Cache` object. Returns an empty vector if the
+/// basis is not (yet) in the in-memory cache.
 #[wasm_bindgen]
 pub fn rust_pickles_export_lagrange_basis(curve: String, domain_log2: u32) -> Vec<u8> {
-    pickles::common::export_lagrange_basis_jsoo(&curve, domain_log2).unwrap_or_default()
+    pickles::common::export_lagrange_basis_raw(&curve, domain_log2).unwrap_or_default()
 }
 
 /// Compiles every method of a recorded program in one call, running the
