@@ -819,6 +819,62 @@ where
 }
 
 #[cfg(feature = "std")]
+
+/// Profiling-only breakdown of [`SRS::open`], the phase the prover spends most
+/// of its time in. `PICKLES_PROFILE` turns it on; without it nothing is
+/// allocated and no clock is read. Not available on wasm, which has no
+/// environment and no `Instant`.
+struct OpenProfile {
+    last: std::time::Instant,
+    totals: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl OpenProfile {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new() -> Option<Self> {
+        std::env::var_os("PICKLES_PROFILE").map(|_| Self {
+            last: std::time::Instant::now(),
+            totals: Vec::new(),
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn new() -> Option<Self> {
+        None
+    }
+
+    /// Closes the interval opened by the previous call and adds it to `name`.
+    fn lap(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        let elapsed = now - self.last;
+        self.last = now;
+        match self.totals.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, total)) => *total += elapsed,
+            None => self.totals.push((name, elapsed)),
+        }
+    }
+
+    fn report(&self, rounds: usize, padded_length: usize) {
+        let total: std::time::Duration = self.totals.iter().map(|(_, t)| *t).sum();
+        eprintln!("[ipa open] {padded_length} coefficients, {rounds} rounds, {total:.2?} total");
+        for (name, elapsed) in &self.totals {
+            eprintln!(
+                "[ipa open]   {elapsed:>10.2?}  {:>3.0}%  {name}",
+                100.0 * elapsed.as_secs_f64() / total.as_secs_f64().max(f64::EPSILON),
+            );
+        }
+    }
+}
+
+/// Adds the time since the last lap to `name`, only when profiling is on.
+macro_rules! lap {
+    ($profile:expr, $name:expr) => {
+        if let Some(profile) = $profile.as_mut() {
+            profile.lap($name);
+        }
+    };
+}
+
 impl<G: CommitmentCurve> SRS<G> {
     /// Creates an opening proof for a batch of polynomial commitments.
     ///
@@ -854,6 +910,7 @@ impl<G: CommitmentCurve> SRS<G> {
         G::BaseField: PrimeField,
         G: EndoCurve,
     {
+        let mut profile = OpenProfile::new();
         let (endo_q, endo_r) = endos::<G>();
 
         let rounds = math::ceil_log2(self.g.len());
@@ -873,7 +930,9 @@ impl<G: CommitmentCurve> SRS<G> {
         // paired with polynomials in `plnms`. In kimchi, these input
         // commitments are poly com blinders, so often `[G::ScalarField::one();
         // num_chunks]` or zeroes.
+        lap!(profile, "clone the SRS bases");
         let (p, blinding_factor) = combine_polys::<G, D>(plnms, polyscale, self.g.len());
+        lap!(profile, "combine the polynomials");
 
         // The initial evaluation vector for polynomial commitment b_init is not
         // just the powers of a single point as in the original IPA
@@ -930,6 +989,7 @@ impl<G: CommitmentCurve> SRS<G> {
             G::of_coordinates(x, y)
         };
 
+        lap!(profile, "evaluation vector and inner product");
         let mut a = p.coeffs;
         assert!(padded_length >= a.len());
         a.extend(vec![G::ScalarField::zero(); padded_length - a.len()]);
@@ -978,6 +1038,7 @@ impl<G: CommitmentCurve> SRS<G> {
             )
             .into_affine();
 
+            lap!(profile, "round: L/R commitments");
             lr.push((l, r));
             blinders.push((rand_l, rand_r));
 
@@ -991,6 +1052,7 @@ impl<G: CommitmentCurve> SRS<G> {
             let u = u_pre.to_field(&endo_r);
             let u_inv = u.inverse().unwrap();
 
+            lap!(profile, "round: sponge and challenge");
             chals.push(u);
             chal_invs.push(u_inv);
 
@@ -1020,8 +1082,10 @@ impl<G: CommitmentCurve> SRS<G> {
                 })
                 .collect();
 
+            lap!(profile, "round: fold the scalars");
             // IPA-folding bases
             g = G::combine_one_endo(endo_r, endo_q, g_lo, g_hi, &u_pre);
+            lap!(profile, "round: fold the bases");
         }
 
         assert!(
@@ -1069,6 +1133,10 @@ impl<G: CommitmentCurve> SRS<G> {
         let z1 = a0 * c + d;
         let z2 = r_prime * c + r_delta;
 
+        lap!(profile, "final commitment and responses");
+        if let Some(profile) = profile.as_ref() {
+            profile.report(rounds, padded_length);
+        }
         OpeningProof {
             delta,
             lr,

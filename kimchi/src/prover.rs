@@ -463,6 +463,7 @@ where
             .iter()
             .for_each(|c| absorb_commitment(&mut fq_sponge, &c.commitment));
 
+        crate::live_trace::checkpoint("lookup tables and sorting");
         let mut lookup_context = LookupContext::default();
 
         //~ 1. If using lookup:
@@ -893,6 +894,7 @@ where
             };
 
             // permutation
+            crate::live_trace::checkpoint("quotient: permutation");
             let (mut t8, bnd) = {
                 let alphas =
                     all_alphas.get_alphas(ArgumentType::Permutation, permutation::CONSTRAINTS);
@@ -903,6 +905,7 @@ where
                 (perm, bnd)
             };
 
+            crate::live_trace::checkpoint("quotient: gate constraints");
             {
                 use crate::circuits::argument::DynArgument;
 
@@ -956,6 +959,7 @@ where
             };
 
             // lookup
+            crate::live_trace::checkpoint("quotient: lookup constraints");
             {
                 if let Some(lcs) = lookup_constraint_system {
                     let constraints = lookup::constraints::constraints(&lcs.configuration, false);
@@ -988,6 +992,7 @@ where
             }
 
             // public polynomial
+            crate::live_trace::checkpoint("quotient: interpolate and divide");
             let mut f = t4.interpolate() + t8.interpolate();
             f += &public_poly;
 
