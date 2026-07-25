@@ -713,12 +713,19 @@ pub fn rust_pickles_export_srs(curve: String) -> Vec<u8> {
     }
 }
 
-/// Exports a computed Lagrange basis in the compact layout, so the JS host
-/// can persist it through its `Cache` object. Returns an empty vector if the
-/// basis is not (yet) in the in-memory cache.
+/// Exports a Lagrange basis in the compact layout, so the JS host can persist
+/// it through its `Cache` object.
+///
+/// A basis that has not been materialized yet is BUILT rather than skipped:
+/// some domains only appear once a proof runs, so a host that merely compiles
+/// could never write them and every visitor would rebuild them instead. o1js
+/// only calls this while writing a cache, which is exactly where that cost
+/// belongs.
 #[wasm_bindgen]
 pub fn rust_pickles_export_lagrange_basis(curve: String, domain_log2: u32) -> Vec<u8> {
-    pickles::common::export_lagrange_basis_raw(&curve, domain_log2).unwrap_or_default()
+    crate::rayon::run_in_pool(move || {
+        pickles::common::export_lagrange_basis_raw_opt(&curve, domain_log2, true).unwrap_or_default()
+    })
 }
 
 /// Compiles every method of a recorded program in one call, running the

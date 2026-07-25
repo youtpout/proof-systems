@@ -364,23 +364,38 @@ pub fn seed_lagrange_basis_raw(curve: &str, domain_log2: u32, bytes: &[u8]) -> b
 /// Exports a computed Lagrange basis as a raw payload; `None` when the basis
 /// is not (yet) in the in-memory cache.
 pub fn export_lagrange_basis_raw(curve: &str, domain_log2: u32) -> Option<Vec<u8>> {
+    export_lagrange_basis_raw_opt(curve, domain_log2, false)
+}
+
+/// Exports a Lagrange basis in the compact layout. With `generate`, a basis
+/// that has not been materialized yet is built instead of skipped.
+///
+/// Some domains only appear once a proof runs, so a caller that merely
+/// compiles can never observe them; a cache written from compilation alone is
+/// therefore incomplete and every consumer pays to rebuild them. Generating
+/// belongs to cache WRITING only — it is the expensive step the cache exists
+/// to avoid.
+pub fn export_lagrange_basis_raw_opt(
+    curve: &str,
+    domain_log2: u32,
+    generate: bool,
+) -> Option<Vec<u8>> {
     let domain_size = 1usize << domain_log2;
-    fn export<G>(srs: &SRS<G>, domain_size: usize) -> Option<Vec<u8>>
+    fn export<G>(srs: &SRS<G>, domain_size: usize, generate: bool) -> Option<Vec<u8>>
     where
         G: poly_commitment::commitment::CommitmentCurve,
         G::BaseField: ark_ff::PrimeField,
     {
-        if !srs.lagrange_bases().contains_key(&domain_size) {
+        if !generate && !srs.lagrange_bases().contains_key(&domain_size) {
             return None;
         }
-        let basis = srs
-            .lagrange_bases()
-            .get_or_generate(domain_size, || unreachable!("checked contains_key"));
+        let domain = ark_poly::EvaluationDomain::new(domain_size)?;
+        let basis = srs.get_lagrange_basis(domain);
         encode_lagrange_basis_raw(&basis)
     }
     match curve {
-        "vesta" => export(&tick_srs(1 << TICK_ROUNDS), domain_size),
-        "pallas" => export(&tock_srs(1 << TOCK_ROUNDS), domain_size),
+        "vesta" => export(&tick_srs(1 << TICK_ROUNDS), domain_size, generate),
+        "pallas" => export(&tock_srs(1 << TOCK_ROUNDS), domain_size, generate),
         _ => None,
     }
 }
