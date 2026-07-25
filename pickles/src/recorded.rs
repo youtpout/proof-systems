@@ -2277,22 +2277,25 @@ impl RecordedCompiledBaseProgram {
         if std::env::var_os("PICKLES_PROFILE").is_some() {
             // Every prover phase is linear in the domain, so how much of it the
             // circuits actually fill is where a proving budget starts.
-            let report = |label: &str, gates: usize, log2: u32| {
+            let report = |label: &str, gates: usize, log2: u32, srs_len: usize| {
                 let domain = 1usize << log2;
                 eprintln!(
-                    "[base program prove] {label}: domain=2^{log2} ({domain} rows), gates={gates}, filled={:.0}%",
+                    "[base program prove] {label}: domain=2^{log2} ({domain} rows), gates={gates}, filled={:.0}%, srs={srs_len} (IPA rounds={})",
                     100.0 * gates as f64 / domain as f64,
+                    srs_len.next_power_of_two().trailing_zeros(),
                 );
             };
             report(
                 &format!("step branch {branch_index}"),
                 step_indexes.0.index.cs.gates.len(),
                 step_indexes.1.index.domain.log_size_of_group,
+                step_indexes.0.index.srs.g.len(),
             );
             report(
                 "wrap",
                 wrap_indexes.0.index.cs.gates.len(),
                 wrap_indexes.1.index.domain.log_size_of_group,
+                wrap_indexes.0.index.srs.g.len(),
             );
         }
         branch.compiled.step_indexes = Some(step_indexes);
