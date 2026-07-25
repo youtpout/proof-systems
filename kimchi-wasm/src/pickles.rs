@@ -922,7 +922,13 @@ fn parse_program_branches(
 pub fn rust_pickles_recorded_program_cache_key(branches_json: String) -> Result<String, JsError> {
     console_error_panic_hook::set_once();
     let parsed = parse_program_branches(&branches_json)?;
-    Ok(pickles::recorded::RecordedCompiledProgram::cache_key(&parsed))
+    // A non-recursive program compiles to a different shape, so it takes a
+    // key of its own rather than colliding with the recursive one.
+    Ok(if parsed.iter().all(|branch| branch.proofs_verified == 0) {
+        pickles::recorded::RecordedCompiledBaseProgram::cache_key(&parsed)
+    } else {
+        pickles::recorded::RecordedCompiledProgram::cache_key(&parsed)
+    })
 }
 
 /// Serializes a compiled program's prover-key cache payload.
@@ -934,9 +940,9 @@ pub fn rust_pickles_recorded_program_cache_bytes(
         WasmRecordedProgramInner::Recursive(program) => program
             .to_cache_bytes()
             .map_err(|err| JsError::new(&format!("program cache encode failed: {err}"))),
-        WasmRecordedProgramInner::Base(_) => Err(JsError::new(
-            "shared base-program cache serialization is not implemented",
-        )),
+        WasmRecordedProgramInner::Base(program) => program
+            .to_cache_bytes()
+            .map_err(|err| JsError::new(&format!("program cache encode failed: {err}"))),
     }
 }
 
@@ -949,11 +955,18 @@ pub fn rust_pickles_compile_recorded_program_from_cache_bytes(
 ) -> Result<WasmRecordedProgram, JsError> {
     console_error_panic_hook::set_once();
     let parsed = parse_program_branches(&branches_json)?;
+    let all_base = parsed.iter().all(|branch| branch.proofs_verified == 0);
     let program = crate::rayon::run_in_pool(|| {
-        pickles::recorded::RecordedCompiledProgram::from_cache_bytes(parsed, &cache_bytes)
+        if all_base {
+            pickles::recorded::RecordedCompiledBaseProgram::from_cache_bytes(parsed, &cache_bytes)
+                .map(WasmRecordedProgramInner::Base)
+        } else {
+            pickles::recorded::RecordedCompiledProgram::from_cache_bytes(parsed, &cache_bytes)
+                .map(WasmRecordedProgramInner::Recursive)
+        }
     })
     .map_err(|err| JsError::new(&format!("program cache restore failed: {err:?}")))?;
-    Ok(WasmRecordedProgram(WasmRecordedProgramInner::Recursive(program)))
+    Ok(WasmRecordedProgram(program))
 }
 
 /// Debug bisection of the shared program compile: runs up to phase `stage`

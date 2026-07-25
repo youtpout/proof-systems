@@ -2000,6 +2000,17 @@ impl RecordedCompiledBaseProgram {
         })
     }
 
+    /// The cache id of a base program (the o1js Cache persistentId). It is
+    /// distinct from the recursive programs' so the two never collide.
+    pub fn cache_key(branches: &[RecordedProgramBranch]) -> String {
+        let digest = recorded_base_program_circuits_digest(branches.iter().map(|b| &b.circuit));
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("recorded-base-program-v{RECORDED_BASE_PROGRAM_CACHE_VERSION}-{hex}")
+    }
+
     /// The program's verifier indexes, as a cache payload that
     /// [`Self::from_cache_bytes`] can restore. Only verifier indexes travel,
     /// so the payload is kilobytes rather than the hundreds of megabytes a
@@ -2020,7 +2031,9 @@ impl RecordedCompiledBaseProgram {
             .ok_or_else(|| "compiled Wrap index is temporarily in use".to_string())?;
         rmp_serde::to_vec(&RecordedBaseProgramIndexCache {
             version: RECORDED_BASE_PROGRAM_CACHE_VERSION,
-            branches_digest: recorded_base_program_branches_digest(&self.branches),
+            branches_digest: recorded_base_program_circuits_digest(
+                self.branches.iter().map(|branch| &branch.circuit),
+            ),
             step_verifiers,
             wrap_verifier: rmp_serde::to_vec(&wrap.1.index).map_err(|err| err.to_string())?,
         })
@@ -2064,7 +2077,9 @@ impl RecordedCompiledBaseProgram {
                 restore_step_verifier(raw),
             )?);
         }
-        if cache.branches_digest != recorded_base_program_branches_digest(&compiled) {
+        if cache.branches_digest
+            != recorded_base_program_circuits_digest(compiled.iter().map(|base| &base.circuit))
+        {
             return Err(fail(
                 "cached indexes belong to a different program".into(),
             ));
@@ -4057,12 +4072,14 @@ struct RecordedBaseProgramIndexCache {
     wrap_verifier: Vec<u8>,
 }
 
-fn recorded_base_program_branches_digest(branches: &[RecordedCompiledBase]) -> [u8; 32] {
+fn recorded_base_program_circuits_digest<'a>(
+    circuits: impl Iterator<Item = &'a RecordedCircuit>,
+) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    for branch in branches {
+    for circuit in circuits {
         hasher.update([0u8]);
-        hasher.update(serde_json::to_vec(&branch.circuit).expect("circuit serializes"));
+        hasher.update(serde_json::to_vec(circuit).expect("circuit serializes"));
     }
     hasher.finalize().into()
 }
